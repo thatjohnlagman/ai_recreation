@@ -4,11 +4,14 @@ import joblib
 import numpy as np
 import pandas as pd
 import warnings
+import matplotlib
+if os.environ.get('HEADLESS') == '1':
+    matplotlib.use('Agg')
 import time
 import tkinter as tk
 from tkinter import ttk
 import matplotlib.pyplot as plt
-from sklearn.ensemble import RandomForestClassifier
+# Discarded RandomForestClassifier import from sklearn
 
 # Suppress UserWarnings
 warnings.filterwarnings("ignore")
@@ -20,6 +23,210 @@ sys.path.append(os.path.abspath(os.path.join(SCRIPT_DIR, "../presentation")))
 sys.path.append(os.path.abspath(os.path.join(SCRIPT_DIR, "../IDS_Dashboard_Submission-20260613T121815Z-3-001/IDS_Dashboard_Submission")))
 
 # Standalone Adaptive Feature Perturbation (AFP) Wrapper for Random Forest IDS
+def find_best_split_for_feature(x, y):
+    sort_idx = np.argsort(x)
+    x_sorted = x[sort_idx]
+    y_sorted = y[sort_idx]
+    
+    total_samples = len(y_sorted)
+    if total_samples <= 1:
+        return None, None, float('inf')
+        
+    cum_y = np.cumsum(y_sorted)
+    total_y = cum_y[-1]
+    
+    split_mask = x_sorted[1:] != x_sorted[:-1]
+    if not np.any(split_mask):
+        return None, None, float('inf')
+        
+    n_L = np.arange(1, total_samples)
+    n_R = total_samples - n_L
+    
+    y_L_1 = cum_y[:-1]
+    y_R_1 = total_y - y_L_1
+    
+    p_L_1 = y_L_1 / n_L
+    p_R_1 = y_R_1 / n_R
+    
+    gini_L = 2.0 * p_L_1 * (1.0 - p_L_1)
+    gini_R = 2.0 * p_R_1 * (1.0 - p_R_1)
+    
+    gini_total = (n_L / total_samples) * gini_L + (n_R / total_samples) * gini_R
+    gini_total = np.where(split_mask, gini_total, float('inf'))
+    
+    best_idx = np.argmin(gini_total)
+    best_gini = gini_total[best_idx]
+    
+    if best_gini == float('inf'):
+        return None, None, float('inf')
+        
+    threshold = (x_sorted[best_idx] + x_sorted[best_idx + 1]) / 2.0
+    return threshold, best_idx, best_gini
+
+class NumpyDecisionTreeClassifier:
+    def __init__(self, max_depth=10, min_samples_split=2):
+        self.max_depth = max_depth
+        self.min_samples_split = min_samples_split
+        self.children_left = []
+        self.children_right = []
+        self.feature = []
+        self.threshold = []
+        self.value = []
+        
+    def fit(self, X, y):
+        X_arr = np.asarray(X, dtype=np.float32)
+        y_arr = np.asarray(y, dtype=np.int32)
+        
+        self.children_left = []
+        self.children_right = []
+        self.feature = []
+        self.threshold = []
+        self.value = []
+        
+        self._build_tree(X_arr, y_arr, depth=0)
+        
+        self.children_left = np.array(self.children_left, dtype=np.int32)
+        self.children_right = np.array(self.children_right, dtype=np.int32)
+        self.feature = np.array(self.feature, dtype=np.int32)
+        self.threshold = np.array(self.threshold, dtype=np.float64)
+        self.value = np.array(self.value, dtype=np.float64)
+        
+    def _build_tree(self, X, y, depth):
+        node_idx = len(self.feature)
+        self.children_left.append(-1)
+        self.children_right.append(-1)
+        self.feature.append(-2)
+        self.threshold.append(-2.0)
+        
+        counts = np.bincount(y, minlength=2)
+        self.value.append([counts.astype(np.float64)])
+        
+        n_samples, n_features = X.shape
+        
+        if (depth >= self.max_depth or 
+            n_samples < self.min_samples_split or 
+            len(np.unique(y)) == 1):
+            return node_idx
+            
+        max_feats = int(np.sqrt(n_features))
+        feats = np.random.choice(n_features, size=max_feats, replace=False)
+        
+        best_feat = -1
+        best_thresh = None
+        best_gini = float('inf')
+        
+        for f in feats:
+            thresh, _, gini = find_best_split_for_feature(X[:, f], y)
+            if gini < best_gini:
+                best_gini = gini
+                best_feat = f
+                best_thresh = thresh
+                
+        if best_feat == -1 or best_thresh is None:
+            return node_idx
+            
+        left_mask = X[:, best_feat] <= best_thresh
+        right_mask = ~left_mask
+        
+        if np.sum(left_mask) == 0 or np.sum(right_mask) == 0:
+            return node_idx
+            
+        self.feature[node_idx] = best_feat
+        self.threshold[node_idx] = best_thresh
+        
+        left_child = self._build_tree(X[left_mask], y[left_mask], depth + 1)
+        self.children_left[node_idx] = left_child
+        
+        right_child = self._build_tree(X[right_mask], y[right_mask], depth + 1)
+        self.children_right[node_idx] = right_child
+        
+        return node_idx
+
+class NumpyRandomForestClassifier:
+    def __init__(self, n_estimators=50, max_depth=10, random_state=42, estimators=None, classes_=None):
+        self.n_estimators = n_estimators
+        self.max_depth = max_depth
+        self.random_state = random_state
+        if classes_ is not None:
+            self.classes_ = np.array(classes_)
+        else:
+            self.classes_ = np.array([0, 1])
+        self.n_classes_ = len(self.classes_)
+        self.trees = []
+        
+        if estimators is not None:
+            self.n_estimators = len(estimators)
+            for est in estimators:
+                self.trees.append({
+                    'children_left': est.tree_.children_left,
+                    'children_right': est.tree_.children_right,
+                    'feature': est.tree_.feature,
+                    'threshold': est.tree_.threshold,
+                    'value': est.tree_.value
+                })
+                
+    def fit(self, X, y):
+        if self.random_state is not None:
+            np.random.seed(self.random_state)
+            
+        X_arr = np.asarray(X, dtype=np.float32)
+        y_arr = np.asarray(y, dtype=np.int32)
+        
+        n_samples = X_arr.shape[0]
+        self.trees = []
+        
+        for i in range(self.n_estimators):
+            boot_idx = np.random.choice(n_samples, size=n_samples, replace=True)
+            X_boot = X_arr[boot_idx]
+            y_boot = y_arr[boot_idx]
+            
+            tree = NumpyDecisionTreeClassifier(max_depth=self.max_depth)
+            tree.fit(X_boot, y_boot)
+            
+            self.trees.append({
+                'children_left': tree.children_left,
+                'children_right': tree.children_right,
+                'feature': tree.feature,
+                'threshold': tree.threshold,
+                'value': tree.value
+            })
+            
+    def predict_proba(self, X):
+        X_arr = np.asarray(X, dtype=np.float32)
+        n_samples = X_arr.shape[0]
+        all_proba = np.zeros((n_samples, self.n_classes_))
+        for tree in self.trees:
+            children_left = tree['children_left']
+            children_right = tree['children_right']
+            feature = tree['feature']
+            threshold = tree['threshold']
+            value = tree['value']
+            
+            node_indices = np.zeros(n_samples, dtype=np.int32)
+            while True:
+                is_leaf = (children_left[node_indices] == -1)
+                if np.all(is_leaf):
+                    break
+                node_features = feature[node_indices]
+                node_thresholds = threshold[node_indices]
+                safe_features = np.maximum(0, node_features)
+                val = X_arr[np.arange(n_samples), safe_features]
+                go_left = val <= node_thresholds
+                node_indices = np.where(is_leaf, node_indices,
+                                        np.where(go_left, children_left[node_indices], children_right[node_indices]))
+            
+            proba = value[node_indices, 0, :]
+            proba_sum = proba.sum(axis=1, keepdims=True)
+            proba_sum = np.where(proba_sum == 0, 1.0, proba_sum)
+            all_proba += proba / proba_sum
+            
+        return all_proba / len(self.trees)
+        
+    def predict(self, X):
+        proba = self.predict_proba(X)
+        return self.classes_[np.argmax(proba, axis=1)]
+
+
 class AFPDefender:
     """
     Standalone Adaptive Feature Perturbation (AFP) Wrapper for Random Forest IDS.
@@ -29,7 +236,8 @@ class AFPDefender:
         import json
         import joblib
         
-        self.rf = joblib.load(model_path)
+        loaded_rf = joblib.load(model_path)
+        self.rf = NumpyRandomForestClassifier(estimators=loaded_rf.estimators_, classes_=loaded_rf.classes_)
         with open(ref_path, 'r') as f:
             self.x_ref = json.load(f)
         with open(bounds_path, 'r') as f:
@@ -85,6 +293,8 @@ def find_file(filename):
         # Home directory Downloads paths (user portable)
         home_downloads_model,
         home_downloads,
+        os.path.join(home_dir, "Downloads", "ai-tool", "models", filename),
+        os.path.join(home_dir, "Downloads", "ai-tool", filename),
         
         # Raw relative candidates
         filename,
@@ -122,6 +332,9 @@ def find_file(filename):
 # Tkinter Popup Window Helper
 # ---------------------------------------------------------
 def show_phase_popup(title, content):
+    if os.environ.get('HEADLESS') == '1':
+        print(f"\n========================================\nPOPUP: {title}\n========================================\n{content}\n========================================\n")
+        return
     root = tk.Tk()
     root.title(title)
     root.geometry("750x520")
@@ -300,7 +513,8 @@ if ref_path is None or bounds_path is None:
     raise FileNotFoundError("AFP configuration profiles (X_ref_cic.json / X_bounds_cic.json) could not be resolved.")
 
 print(f"Loading baseline model from: {MODEL_PATH}")
-rf_model = joblib.load(MODEL_PATH)
+loaded_rf = joblib.load(MODEL_PATH)
+rf_model = NumpyRandomForestClassifier(estimators=loaded_rf.estimators_, classes_=loaded_rf.classes_)
 X_eval = pd.read_csv(DEMO_X_FILE)
 y_eval = pd.read_csv(DEMO_Y_FILE).squeeze("columns").values
 
@@ -457,7 +671,7 @@ print("Training surrogate RF on oracle-queried labels...")
 
 # Clean surrogate training — use stronger RF for better transfer fidelity
 y_query_labels = rf_model.predict(X_eval)
-surrogate_rf = RandomForestClassifier(n_estimators=50, max_depth=10, random_state=42)
+surrogate_rf = NumpyRandomForestClassifier(n_estimators=50, max_depth=10, random_state=42)
 surrogate_rf.fit(X_eval, y_query_labels)
 
 print("Generating adversarial samples for Transferability attack...")
@@ -478,7 +692,7 @@ print(f"    TP: {tp_tr_und:,}  |  FP: {fp_tr_und:,}  |  FN: {fn_tr_und:,}  |  TN
 
 # Noisy surrogate training under AFP — use same architecture for consistency
 y_query_noisy = rf_model.predict(noise_gen(X_eval))
-surrogate_rf_def = RandomForestClassifier(n_estimators=50, max_depth=10, random_state=42)
+surrogate_rf_def = NumpyRandomForestClassifier(n_estimators=50, max_depth=10, random_state=42)
 surrogate_rf_def.fit(X_eval, y_query_noisy)
 
 X_transfer_attack_def = generate_attack_samples(surrogate_rf_def, X_attacks, benign_mean, modifiable_ratio=0.745, is_defended=True)

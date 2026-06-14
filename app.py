@@ -9,6 +9,56 @@ import time
 # Ensure SCRIPT_DIR is determined for robust relative pathing
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
+class NumpyRandomForestClassifier:
+    def __init__(self, estimators, classes_):
+        self.classes_ = np.array(classes_)
+        self.n_classes_ = len(classes_)
+        self.trees = []
+        for est in estimators:
+            self.trees.append({
+                'children_left': est.tree_.children_left,
+                'children_right': est.tree_.children_right,
+                'feature': est.tree_.feature,
+                'threshold': est.tree_.threshold,
+                'value': est.tree_.value
+            })
+            
+    def predict_proba(self, X):
+        X_arr = np.asarray(X, dtype=np.float32)
+        n_samples = X_arr.shape[0]
+        all_proba = np.zeros((n_samples, self.n_classes_))
+        for tree in self.trees:
+            children_left = tree['children_left']
+            children_right = tree['children_right']
+            feature = tree['feature']
+            threshold = tree['threshold']
+            value = tree['value']
+            
+            node_indices = np.zeros(n_samples, dtype=np.int32)
+            while True:
+                is_leaf = (children_left[node_indices] == -1)
+                if np.all(is_leaf):
+                    break
+                node_features = feature[node_indices]
+                node_thresholds = threshold[node_indices]
+                safe_features = np.maximum(0, node_features)
+                val = X_arr[np.arange(n_samples), safe_features]
+                go_left = val <= node_thresholds
+                node_indices = np.where(is_leaf, node_indices,
+                                        np.where(go_left, children_left[node_indices], children_right[node_indices]))
+            
+            proba = value[node_indices, 0, :]
+            proba_sum = proba.sum(axis=1, keepdims=True)
+            proba_sum = np.where(proba_sum == 0, 1.0, proba_sum)
+            all_proba += proba / proba_sum
+            
+        return all_proba / len(self.trees)
+        
+    def predict(self, X):
+        proba = self.predict_proba(X)
+        return self.classes_[np.argmax(proba, axis=1)]
+
+
 # ---------------------------------------------------------
 # Page Configuration
 # ---------------------------------------------------------
@@ -31,6 +81,8 @@ def find_dataset(filename):
         os.path.join(SCRIPT_DIR, "../IDS_Dashboard_Submission-20260613T121815Z-3-001/IDS_Dashboard_Submission/datasets", filename),
         os.path.join(home_dir, "Downloads", filename),
         os.path.join(home_dir, "Downloads", "models-20260613T064206Z-3-001", "models", filename),
+        os.path.join(home_dir, "Downloads", "ai-tool", "models", filename),
+        os.path.join(home_dir, "Downloads", "ai-tool", filename),
     ]
     for c in candidates:
         if os.path.exists(c):
@@ -47,6 +99,8 @@ def find_model():
         os.path.join(SCRIPT_DIR, "../../Downloads/models-20260613T064206Z-3-001/models/rf_ids_cic.pkl"),
         os.path.join(home_dir, "Downloads", "models-20260613T064206Z-3-001", "models", "rf_ids_cic.pkl"),
         os.path.join(home_dir, "Downloads", "rf_ids_cic.pkl"),
+        os.path.join(home_dir, "Downloads", "ai-tool", "models", "rf_ids_cic.pkl"),
+        os.path.join(home_dir, "Downloads", "ai-tool", "rf_ids_cic.pkl"),
     ]
     for c in candidates:
         if os.path.exists(c):
@@ -62,7 +116,8 @@ def load_base_model():
     if model_path is None:
         return None
     try:
-        model = joblib.load(model_path)
+        loaded_model = joblib.load(model_path)
+        model = NumpyRandomForestClassifier(loaded_model.estimators_, loaded_model.classes_)
         return model
     except Exception as e:
         st.error(f"Error loading model: {e}")
