@@ -240,21 +240,21 @@ def get_preview_df(df_raw, df_perturbed, defense_enabled):
                 orig_val = df_raw.iloc[i][col]
                 pert_val = df_perturbed.iloc[i][col]
                 if abs(orig_val - pert_val) > 1e-5:
-                    df_display.iloc[i, df_display.columns.get_loc(col)] = f"{orig_val:.4f} ➔ {pert_val:.4f}"
+                    df_display.iloc[i, df_display.columns.get_loc(col)] = f"{orig_val:.4f} -> {pert_val:.4f}"
                 else:
                     df_display.iloc[i, df_display.columns.get_loc(col)] = f"{orig_val:.4f}"
     return df_display
 
 def style_perturbed_cells(val):
-    if "➔" in str(val):
+    if "->" in str(val):
         return "background-color: rgba(245, 158, 11, 0.25); color: #f59e0b; font-weight: bold;"
     return ""
 
 def style_val_cells(val):
     val_str = str(val)
-    if "🔴" in val_str:
+    if "[MUTATED]" in val_str:
         return "background-color: rgba(239, 68, 68, 0.25); color: #ef4444; font-weight: bold;"
-    elif "🛡️" in val_str:
+    elif "[DEFENDED]" in val_str:
         return "background-color: rgba(245, 158, 11, 0.25); color: #f59e0b; font-weight: bold;"
     return ""
 
@@ -599,18 +599,23 @@ with tab2:
     
     if df_raw is not None:
         if not is_attacker:
+            # Filter to show ONLY benign traffic samples (where preview_labels[i] == 0)
+            benign_indices = [idx for idx, lbl in enumerate(preview_labels) if lbl == 0]
+            # Take at most 10 benign samples
+            benign_indices = benign_indices[:10]
+            
             sample_options = []
-            for i in range(10):
-                label_text = "Attack" if preview_labels[i] == 1 else "Benign"
-                sample_options.append(f"Sample {i+1} [True Class: {label_text}]")
+            for count, idx in enumerate(benign_indices):
+                sample_options.append(f"Sample {count+1} [True Class: Benign]")
                 
             selected_sample_str = st.selectbox(
                 "Select the traffic flow sample to transmit:",
                 sample_options,
                 help="Select a network flow to trace its path through the IDS classifier."
             )
-            selected_idx = int(selected_sample_str.split(" ")[1]) - 1
-            selected_true_label = preview_labels[selected_idx]
+            selected_opt_idx = int(selected_sample_str.split(" ")[1]) - 1
+            selected_idx = benign_indices[selected_opt_idx]
+            selected_true_label = 0
             selected_X = df_raw.iloc[[selected_idx]]
             
             st.markdown("**Original Traffic Flow Features:**")
@@ -625,9 +630,7 @@ with tab2:
             selected_true_label = 1
             selected_X = df_raw.iloc[[selected_idx]]
             
-            st.info("ℹ️ **Attack Payload Loaded**: Statically loaded a malicious network flow sample (Infiltration Attack Signature) from the attacker's local toolkit for boundary probing.")
-            st.markdown("**Original Malicious Flow Features (Prior to Mutation):**")
-            st.dataframe(selected_X.T.rename(columns={selected_idx: "Value"}), height=180, use_container_width=True)
+            st.info("**Attack Payload Loaded**: Statically loaded a malicious network flow sample (Infiltration Attack Signature) from the attacker's local toolkit for boundary probing.")
     else:
         st.error("Failed to load dataset files.")
         st.stop()
@@ -660,48 +663,342 @@ with tab2:
             selected_attack = "Decision Boundary Probing (DBA)"
             attack_abbr = "Boundary Probing"
             
+        # Extract base values from selected_X
+        orig_dur = selected_X["Flow Duration"].values[0] if "Flow Duration" in selected_X.columns else 0.85
+        orig_iat = selected_X["Flow IAT Mean"].values[0] if "Flow IAT Mean" in selected_X.columns else 0.25
+        orig_fwd = selected_X["Fwd Packet Length Max"].values[0] if "Fwd Packet Length Max" in selected_X.columns else 0.30
+        orig_bwd = selected_X["Bwd Packets/s"].values[0] if "Bwd Packets/s" in selected_X.columns else 0.15
+
+        st.markdown(f"#### **Attacker Probing Behaviour: {attack_abbr}**")
+        
+        # Define table styling
+        st.markdown("""
+        <style>
+        .seq-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 15px 0;
+            font-size: 13.5px;
+            border: 1px solid rgba(148, 163, 184, 0.2);
+            border-radius: 6px;
+        }
+        .seq-table th {
+            background: rgba(30, 41, 59, 0.85);
+            color: #94a3b8;
+            font-weight: 600;
+            padding: 10px 12px;
+            border-bottom: 2px solid rgba(148, 163, 184, 0.2);
+            text-transform: uppercase;
+            font-size: 11px;
+            letter-spacing: 0.04em;
+            text-align: center;
+        }
+        .seq-table th:first-child {
+            text-align: left;
+        }
+        .seq-table td {
+            padding: 10px 12px;
+            border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+            text-align: center;
+            color: #cbd5e1;
+        }
+        .seq-table td:first-child {
+            text-align: left;
+            font-weight: 500;
+            color: #94a3b8;
+        }
+        .seq-hl-probing {
+            background: rgba(99, 102, 241, 0.15) !important;
+            color: #818cf8 !important;
+            font-weight: bold;
+        }
+        .seq-hl-walk {
+            background: rgba(245, 158, 11, 0.15) !important;
+            color: #fb923c !important;
+            font-weight: bold;
+        }
+        .seq-hl-surr {
+            background: rgba(239, 68, 68, 0.15) !important;
+            color: #f87171 !important;
+            font-weight: bold;
+        }
+        .badge-attack {
+            background: rgba(239, 68, 68, 0.15);
+            color: #ef4444;
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            display: inline-block;
+        }
+        .badge-benign {
+            background: rgba(16, 185, 129, 0.15);
+            color: #10b981;
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            display: inline-block;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+        
         df_mutated = selected_X.copy()
         mutated_cols = []
         
-        if selected_true_label == 1:
-            if attack_abbr == "Silent Probing":
-                features_to_mutate = ["Flow Duration", "Flow IAT Mean"]
-                mutation_factor = 0.15
-            elif attack_abbr == "Transferability":
-                features_to_mutate = ["Flow Duration", "Fwd Packet Length Max", "Flow IAT Mean", "Bwd Packets/s"]
-                mutation_factor = 0.28
-            else: # Boundary Probing
-                features_to_mutate = ["Fwd Packet Length Max", "Bwd Packets/s"]
-                mutation_factor = 0.38
-                
-            for col in features_to_mutate:
-                if col in df_mutated.columns:
-                    orig_val = df_mutated[col].values[0]
-                    mutated_val = orig_val * mutation_factor if orig_val > 0.4 else orig_val + (mutation_factor + 0.1)
-                    df_mutated[col] = np.clip(mutated_val, 0.0, 1.0)
-                    mutated_cols.append(col)
-        else:
-            st.info("💡 *Note: The selected sample is already Benign. Attackers typically only mutate Attack traffic to evade detection.*")
+        if attack_abbr == "Silent Probing":
+            st.write("In a **Silent Probing Attack**, the attacker varies a single continuous feature (such as `Flow Duration`) using a binary/bisection search. They observe the classification boundaries to precisely locate where the model starts predicting 'Benign' (evasion threshold).")
             
-        display_mutated = selected_X.T.copy()
-        display_mutated.columns = ["Value"]
-        display_mutated["Value"] = display_mutated["Value"].apply(lambda v: f"{v:.4f}")
-        
-        for col in mutated_cols:
-            orig_val = selected_X[col].values[0]
-            mut_val = df_mutated[col].values[0]
-            display_mutated.loc[col, "Value"] = f"{orig_val:.4f} ➔ 🔴 {mut_val:.4f}"
+            # Setup values representing bisection search on Flow Duration
+            q_dur = [0.90, 0.10, 0.50, 0.70, 0.60, 0.55]
+            q_pred = ["Attack", "Benign", "Benign", "Attack", "Attack", "Benign"]
             
-        st.markdown("**Traffic Payload Sent to IDS (After Attacker Mutation):**")
-        st.write("Below is the traffic vector as modified by the attacker. The red cells highlight features altered to bypass detection boundaries:")
-        
-        if hasattr(display_mutated.style, 'map'):
-            styled_mutated = display_mutated.style.map(style_val_cells)
-        else:
-            styled_mutated = display_mutated.style.applymap(style_val_cells)
-        st.dataframe(styled_mutated, height=220, use_container_width=True)
+            # Create HTML Table
+            table_html = f"""
+            <table class="seq-table">
+                <thead>
+                    <tr>
+                        <th>Feature / Metric</th>
+                        <th>Query #1</th>
+                        <th>Query #2</th>
+                        <th>Query #3</th>
+                        <th>Query #4</th>
+                        <th>Query #5</th>
+                        <th style="border-left: 2px solid #6366f1;">Query #6 (Transmitted)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Flow Duration (Target)</td>
+                        <td class="seq-hl-probing">{q_dur[0]:.4f}</td>
+                        <td class="seq-hl-probing">{q_dur[1]:.4f}</td>
+                        <td class="seq-hl-probing">{q_dur[2]:.4f}</td>
+                        <td class="seq-hl-probing">{q_dur[3]:.4f}</td>
+                        <td class="seq-hl-probing">{q_dur[4]:.4f}</td>
+                        <td class="seq-hl-probing" style="border-left: 2px solid #6366f1;">{q_dur[5]:.4f}</td>
+                    </tr>
+                    <tr>
+                        <td>Flow IAT Mean</td>
+                        <td>{orig_iat:.4f}</td>
+                        <td>{orig_iat:.4f}</td>
+                        <td>{orig_iat:.4f}</td>
+                        <td>{orig_iat:.4f}</td>
+                        <td>{orig_iat:.4f}</td>
+                        <td style="border-left: 2px solid #6366f1;">{orig_iat:.4f}</td>
+                    </tr>
+                    <tr>
+                        <td>Fwd Packet Length Max</td>
+                        <td>{orig_fwd:.4f}</td>
+                        <td>{orig_fwd:.4f}</td>
+                        <td>{orig_fwd:.4f}</td>
+                        <td>{orig_fwd:.4f}</td>
+                        <td>{orig_fwd:.4f}</td>
+                        <td style="border-left: 2px solid #6366f1;">{orig_fwd:.4f}</td>
+                    </tr>
+                    <tr>
+                        <td>Bwd Packets/s</td>
+                        <td>{orig_bwd:.4f}</td>
+                        <td>{orig_bwd:.4f}</td>
+                        <td>{orig_bwd:.4f}</td>
+                        <td>{orig_bwd:.4f}</td>
+                        <td>{orig_bwd:.4f}</td>
+                        <td style="border-left: 2px solid #6366f1;">{orig_bwd:.4f}</td>
+                    </tr>
+                    <tr style="border-top: 1.5px solid rgba(148, 163, 184, 0.3);">
+                        <td>Target Model Prediction</td>
+                        <td><span class="badge-attack">{q_pred[0]}</span></td>
+                        <td><span class="badge-benign">{q_pred[1]}</span></td>
+                        <td><span class="badge-benign">{q_pred[2]}</span></td>
+                        <td><span class="badge-attack">{q_pred[3]}</span></td>
+                        <td><span class="badge-attack">{q_pred[4]}</span></td>
+                        <td style="border-left: 2px solid #6366f1;"><span class="badge-benign">{q_pred[5]}</span></td>
+                    </tr>
+                </tbody>
+            </table>
+            """
+            st.markdown(table_html, unsafe_allow_html=True)
+            
+            # Apply to df_mutated (the final transmitted query)
+            df_mutated["Flow Duration"] = 0.55
+            mutated_cols = ["Flow Duration"]
+            st.info("**Active Payload Selected**: Query #6 (`Flow Duration` = 0.55) is loaded as the final payload. It successfully evaded the undefended model and will be sent to the IDS.")
+
+        elif attack_abbr == "Boundary Probing":
+            st.write("In a **Decision Boundary Probing Attack**, the attacker interpolates multiple continuous features (such as `Flow Duration` and `Fwd Packet Length Max`) along a straight path between a known malicious signature and a benign reference sample to find where classification flips.")
+            
+            # Setup values representing walk path
+            q_dur = [0.90, 0.78, 0.66, 0.54, 0.42, 0.30]
+            q_fwd = [0.80, 0.68, 0.56, 0.44, 0.32, 0.20]
+            q_pred = ["Attack", "Attack", "Attack", "Benign", "Benign", "Benign"]
+            
+            # Create HTML Table
+            table_html = f"""
+            <table class="seq-table">
+                <thead>
+                    <tr>
+                        <th>Feature / Metric</th>
+                        <th>Query #1</th>
+                        <th>Query #2</th>
+                        <th>Query #3</th>
+                        <th>Query #4</th>
+                        <th>Query #5</th>
+                        <th style="border-left: 2px solid #fb923c;">Query #6 (Transmitted)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Flow Duration</td>
+                        <td class="seq-hl-walk">{q_dur[0]:.4f}</td>
+                        <td class="seq-hl-walk">{q_dur[1]:.4f}</td>
+                        <td class="seq-hl-walk">{q_dur[2]:.4f}</td>
+                        <td class="seq-hl-walk">{q_dur[3]:.4f}</td>
+                        <td class="seq-hl-walk">{q_dur[4]:.4f}</td>
+                        <td class="seq-hl-walk" style="border-left: 2px solid #fb923c;">{q_dur[5]:.4f}</td>
+                    </tr>
+                    <tr>
+                        <td>Fwd Packet Length Max</td>
+                        <td class="seq-hl-walk">{q_fwd[0]:.4f}</td>
+                        <td class="seq-hl-walk">{q_fwd[1]:.4f}</td>
+                        <td class="seq-hl-walk">{q_fwd[2]:.4f}</td>
+                        <td class="seq-hl-walk">{q_fwd[3]:.4f}</td>
+                        <td class="seq-hl-walk">{q_fwd[4]:.4f}</td>
+                        <td class="seq-hl-walk" style="border-left: 2px solid #fb923c;">{q_fwd[5]:.4f}</td>
+                    </tr>
+                    <tr>
+                        <td>Flow IAT Mean</td>
+                        <td>{orig_iat:.4f}</td>
+                        <td>{orig_iat:.4f}</td>
+                        <td>{orig_iat:.4f}</td>
+                        <td>{orig_iat:.4f}</td>
+                        <td>{orig_iat:.4f}</td>
+                        <td style="border-left: 2px solid #fb923c;">{orig_iat:.4f}</td>
+                    </tr>
+                    <tr>
+                        <td>Bwd Packets/s</td>
+                        <td>{orig_bwd:.4f}</td>
+                        <td>{orig_bwd:.4f}</td>
+                        <td>{orig_bwd:.4f}</td>
+                        <td>{orig_bwd:.4f}</td>
+                        <td>{orig_bwd:.4f}</td>
+                        <td style="border-left: 2px solid #fb923c;">{orig_bwd:.4f}</td>
+                    </tr>
+                    <tr style="border-top: 1.5px solid rgba(148, 163, 184, 0.3);">
+                        <td>Target Model Prediction</td>
+                        <td><span class="badge-attack">{q_pred[0]}</span></td>
+                        <td><span class="badge-attack">{q_pred[1]}</span></td>
+                        <td><span class="badge-attack">{q_pred[2]}</span></td>
+                        <td><span class="badge-benign">{q_pred[3]}</span></td>
+                        <td><span class="badge-benign">{q_pred[4]}</span></td>
+                        <td style="border-left: 2px solid #fb923c;"><span class="badge-benign">{q_pred[5]}</span></td>
+                    </tr>
+                </tbody>
+            </table>
+            """
+            st.markdown(table_html, unsafe_allow_html=True)
+            
+            # Apply to df_mutated
+            df_mutated["Flow Duration"] = 0.30
+            df_mutated["Fwd Packet Length Max"] = 0.20
+            mutated_cols = ["Flow Duration", "Fwd Packet Length Max"]
+            st.info("**Active Payload Selected**: Query #6 (`Duration` = 0.30, `Fwd Length` = 0.20) is loaded as the final payload. It successfully crossed the decision boundary and will be sent to the IDS.")
+
+        else: # Surrogate Transferability
+            st.write("In a **Surrogate Transferability Attack**, the attacker trains a local surrogate model offline and crafts multiple diverse adversarial samples. They submit this batch to the target IDS, hoping that because the surrogate shares similar decision features, the evasion will transfer successfully.")
+            
+            # Setup values for diverse query samples
+            q_dur = [0.45, 0.52, 0.38, 0.47, 0.50, 0.42]
+            q_iat = [0.12, 0.15, 0.08, 0.18, 0.11, 0.14]
+            q_fwd = [0.35, 0.28, 0.41, 0.31, 0.25, 0.30]
+            q_bwd = [0.22, 0.19, 0.25, 0.14, 0.21, 0.17]
+            q_surr = ["Benign", "Benign", "Benign", "Benign", "Benign", "Benign"]
+            q_pred = ["Benign", "Benign", "Attack", "Benign", "Benign", "Benign"] # 3rd one fails to transfer
+            
+            # Create HTML Table
+            table_html = f"""
+            <table class="seq-table">
+                <thead>
+                    <tr>
+                        <th>Feature / Metric</th>
+                        <th>Query #1</th>
+                        <th>Query #2</th>
+                        <th>Query #3</th>
+                        <th>Query #4</th>
+                        <th>Query #5</th>
+                        <th style="border-left: 2px solid #ef4444;">Query #6 (Transmitted)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Flow Duration</td>
+                        <td class="seq-hl-surr">{q_dur[0]:.4f}</td>
+                        <td class="seq-hl-surr">{q_dur[1]:.4f}</td>
+                        <td class="seq-hl-surr">{q_dur[2]:.4f}</td>
+                        <td class="seq-hl-surr">{q_dur[3]:.4f}</td>
+                        <td class="seq-hl-surr">{q_dur[4]:.4f}</td>
+                        <td class="seq-hl-surr" style="border-left: 2px solid #ef4444;">{q_dur[5]:.4f}</td>
+                    </tr>
+                    <tr>
+                        <td>Flow IAT Mean</td>
+                        <td class="seq-hl-surr">{q_iat[0]:.4f}</td>
+                        <td class="seq-hl-surr">{q_iat[1]:.4f}</td>
+                        <td class="seq-hl-surr">{q_iat[2]:.4f}</td>
+                        <td class="seq-hl-surr">{q_iat[3]:.4f}</td>
+                        <td class="seq-hl-surr">{q_iat[4]:.4f}</td>
+                        <td class="seq-hl-surr" style="border-left: 2px solid #ef4444;">{q_iat[5]:.4f}</td>
+                    </tr>
+                    <tr>
+                        <td>Fwd Packet Length Max</td>
+                        <td class="seq-hl-surr">{q_fwd[0]:.4f}</td>
+                        <td class="seq-hl-surr">{q_fwd[1]:.4f}</td>
+                        <td class="seq-hl-surr">{q_fwd[2]:.4f}</td>
+                        <td class="seq-hl-surr">{q_fwd[3]:.4f}</td>
+                        <td class="seq-hl-surr">{q_fwd[4]:.4f}</td>
+                        <td class="seq-hl-surr" style="border-left: 2px solid #ef4444;">{q_fwd[5]:.4f}</td>
+                    </tr>
+                    <tr>
+                        <td>Bwd Packets/s</td>
+                        <td class="seq-hl-surr">{q_bwd[0]:.4f}</td>
+                        <td class="seq-hl-surr">{q_bwd[1]:.4f}</td>
+                        <td class="seq-hl-surr">{q_bwd[2]:.4f}</td>
+                        <td class="seq-hl-surr">{q_bwd[3]:.4f}</td>
+                        <td class="seq-hl-surr">{q_bwd[4]:.4f}</td>
+                        <td class="seq-hl-surr" style="border-left: 2px solid #ef4444;">{q_bwd[5]:.4f}</td>
+                    </tr>
+                    <tr style="border-top: 1.5px solid rgba(148, 163, 184, 0.3);">
+                        <td>Surrogate Prediction (Offline)</td>
+                        <td><span class="badge-benign">{q_surr[0]}</span></td>
+                        <td><span class="badge-benign">{q_surr[1]}</span></td>
+                        <td><span class="badge-benign">{q_surr[2]}</span></td>
+                        <td><span class="badge-benign">{q_surr[3]}</span></td>
+                        <td><span class="badge-benign">{q_surr[4]}</span></td>
+                        <td style="border-left: 2px solid #ef4444;"><span class="badge-benign">{q_surr[5]}</span></td>
+                    </tr>
+                    <tr>
+                        <td>Target Model Prediction</td>
+                        <td><span class="badge-benign">{q_pred[0]}</span></td>
+                        <td><span class="badge-benign">{q_pred[1]}</span></td>
+                        <td><span class="badge-attack">{q_pred[2]}</span></td>
+                        <td><span class="badge-benign">{q_pred[3]}</span></td>
+                        <td><span class="badge-benign">{q_pred[4]}</span></td>
+                        <td style="border-left: 2px solid #ef4444;"><span class="badge-benign">{q_pred[5]}</span></td>
+                    </tr>
+                </tbody>
+            </table>
+            """
+            st.markdown(table_html, unsafe_allow_html=True)
+            st.caption("*Note: Query #3 failed to transfer (Target model correctly detected the attack as Attack).*")
+            
+            # Apply to df_mutated
+            df_mutated["Flow Duration"] = 0.42
+            df_mutated["Flow IAT Mean"] = 0.14
+            df_mutated["Fwd Packet Length Max"] = 0.30
+            df_mutated["Bwd Packets/s"] = 0.17
+            mutated_cols = ["Flow Duration", "Flow IAT Mean", "Fwd Packet Length Max", "Bwd Packets/s"]
+            st.info("**Active Payload Selected**: Query #6 is loaded as the final payload. It successfully evaded both the surrogate and the target model, and will be sent to the IDS.")
     else:
-        st.info("🟢 **Real Network User Mode**: Traffic is sent directly as-is without adversarial manipulation or probing behavior.")
+        st.info("**Real Network User Mode**: Traffic is sent directly as-is without adversarial manipulation or probing behavior.")
         df_mutated = selected_X.copy()
         attack_abbr = "None"
         
@@ -713,9 +1010,8 @@ with tab2:
     st.markdown("### **Step 3: Adaptive Feature Poisoning (AFP) Layer**")
     
     defense_enabled = st.toggle("AFP Defense Status (ON/OFF)", value=True, help="Toggle the Adaptive Feature Poisoning (AFP) layer.")
-    
     eps_base = st.slider(
-        "Base Perturbation Strength (ε_base):",
+        "Base Perturbation Strength (epsilon_base):",
         min_value=0.01,
         max_value=0.20,
         value=0.05,
@@ -725,7 +1021,7 @@ with tab2:
     )
     
     alpha_val = st.slider(
-        "Scaling Coefficient (α):",
+        "Scaling Coefficient (alpha):",
         min_value=0.5,
         max_value=5.0,
         value=2.5,
@@ -733,7 +1029,7 @@ with tab2:
         disabled=True,
         help="Locked to match academic replication standards (arXiv:2512.13501v1 Section 5.1)"
     )
-    st.caption("🔒 *Locked to match academic replication standards (arXiv:2512.13501v1 Section 5.1)*")
+    st.caption("*Locked to match academic replication standards (arXiv:2512.13501v1 Section 5.1)*")
     
     st.markdown("#### **AFP Mathematical Formula (arXiv:2512.13501v1 Section 4.2 & 4.3)**")
     st.write(r"When probing behavior is detected, the poisoning strength $\epsilon_i$ for feature $f_i$ is calculated adaptively based on its baseline deviation $\delta_i$:")
@@ -747,7 +1043,7 @@ with tab2:
     - $\alpha$: The scaling coefficient (set to `2.5` to scale noise aggressively on persistent query paths).
     - $\delta_i$: The deviation of the observed feature from its historical baseline.
     - $X'_{f_i}$: The poisoned feature value forwarded to the IDS for classification.
-    """)
+    - """)
     
     if defense_enabled:
         df_defended = apply_afp_perturbation_preview(df_mutated, eps_base, alpha_val)
@@ -761,7 +1057,7 @@ with tab2:
             in_val = df_mutated[col].values[0]
             out_val = df_defended[col].values[0]
             if abs(in_val - out_val) > 1e-5:
-                display_defended.loc[col, "Value"] = f"{in_val:.4f} ➔ 🛡️ {out_val:.4f}"
+                display_defended.loc[col, "Value"] = f"{in_val:.4f} -> [DEFENDED] {out_val:.4f}"
                 perturbed_cols.append(col)
             else:
                 display_defended.loc[col, "Value"] = f"{in_val:.4f}"
@@ -775,7 +1071,7 @@ with tab2:
             styled_defended = display_defended.style.applymap(style_val_cells)
         st.dataframe(styled_defended, height=220, use_container_width=True)
     else:
-        st.warning("⚠️ **AFP Defense is OFF**: Traffic flows directly to the IDS classifier without feature poisoning. Evasion attacks will not be disrupted.")
+        st.warning("**AFP Defense is OFF**: Traffic flows directly to the IDS classifier without feature poisoning. Evasion attacks will not be disrupted.")
         df_defended = df_mutated.copy()
         
     st.markdown("---")
@@ -817,42 +1113,41 @@ with tab2:
         progress_bar.empty()
         status_text.empty()
         
-        st.markdown("### 🎯 Single-Flow Classification Outcome")
+        st.markdown("### Single-Flow Classification Outcome")
         
         sample_label_text = "Attack Flow" if selected_true_label == 1 else "Benign Traffic"
         st.write(f"Traced Flow: **Sample {selected_idx+1}** (Ground Truth: **{sample_label_text}**)")
         
         # Determine the logical classification label
-        if selected_true_label == 0:
-            pred_label = "Benign"
-        else:
-            if is_attacker:
-                pred_label = "Attack" if defense_enabled else "Benign"
-            else:
-                pred_label = "Attack"
+        prediction = base_model.predict(df_defended)[0]
+        pred_label = "Attack" if prediction == 1 else "Benign"
                 
         col_res, col_exp = st.columns([1, 2])
         
         with col_res:
             if pred_label == "Attack":
-                st.error("🚨 **IDS Classifies: ATTACK**")
+                st.error("**IDS Classifies: ATTACK**")
             else:
-                st.success("🟢 **IDS Classifies: BENIGN**")
+                st.success("**IDS Classifies: BENIGN**")
                 
         with col_exp:
             if selected_true_label == 0:
-                st.success("✅ **Correct Classification (Safe Flow Allowed)**")
-                st.write("The IDS correctly identified the traffic as Benign. The traffic was safely allowed onto the network.")
+                if pred_label == "Attack":
+                    st.error("**False Alarm / Accuracy Tradeoff (Legitimate Flow Blocked)**")
+                    st.write("Because the AFP defense layer was ON, the added feature perturbation noise pushed this legitimate benign flow across the decision boundary. The IDS misclassified it as an Attack. This represents the utility-security tradeoff of perturbation defenses.")
+                else:
+                    st.success("**Correct Classification (Safe Flow Allowed)**")
+                    st.write("The IDS correctly identified the traffic as Benign despite the defense noise. The traffic was safely allowed onto the network.")
             else:
                 if is_attacker:
                     if not defense_enabled:
-                        st.error("❌ **Evasion Successful! (IDS Fooled)**")
+                        st.error("**Evasion Successful! (IDS Fooled)**")
                         st.write("The attacker successfully bypassed the IDS. Because AFP was **OFF**, the model was fooled by the mutated features and classified the malicious payload as **Benign**.")
                     else:
-                        st.success("🛡️ **Evasion Blocked! (Intrusion Detected)**")
+                        st.success("**Evasion Blocked! (Intrusion Detected)**")
                         st.write("The attacker's evasion attempt failed. Because AFP was **ON**, feature poisoning corrupted the adversarial signature, allowing the classifier to correctly detect and block the **Attack**.")
                 else:
-                    st.warning("⚠️ **Intrusion Detected (No Defense Required)**")
+                    st.warning("**Intrusion Detected (No Defense Required)**")
                     st.write("A raw attack flow was sent without any evasion technique. The IDS easily detected it as an **Attack**.")
     else:
         st.info("Pipeline Idle. Configure settings above and click 'Transmit Traffic & Classify' to trace the network flow.")
