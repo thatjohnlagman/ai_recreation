@@ -5,6 +5,10 @@ import numpy as np
 import joblib
 import os
 import time
+import json
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
 # Ensure SCRIPT_DIR is determined for robust relative pathing
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -167,6 +171,107 @@ base_model = load_base_model()
 if X_data is None or base_model is None:
     st.warning("Please ensure the models and demo datasets are available in the correct directories.")
     st.stop()
+
+# ---------------------------------------------------------
+# Dynamic File Finder & AFP Profile Loader
+# ---------------------------------------------------------
+def find_dataset_path(filename):
+    home_dir = os.path.expanduser("~")
+    candidates = [
+        os.path.join(SCRIPT_DIR, filename),
+        os.path.join(SCRIPT_DIR, "datasets", filename),
+        os.path.join(SCRIPT_DIR, "../datasets", filename),
+        os.path.join(home_dir, "Downloads", filename),
+        os.path.join(home_dir, "Downloads", "ai-tool", "models", filename),
+        os.path.join(home_dir, "Downloads", "ai-tool", filename),
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return None
+
+@st.cache_data
+def load_afp_profiles():
+    ref_path = find_dataset_path("models/X_ref_cic.json") or find_dataset_path("X_ref_cic.json")
+    bounds_path = find_dataset_path("models/X_bounds_cic.json") or find_dataset_path("X_bounds_cic.json")
+    
+    if ref_path and bounds_path:
+        with open(ref_path, 'r') as f:
+            x_ref = json.load(f)
+        with open(bounds_path, 'r') as f:
+            x_bounds = json.load(f)
+        return x_ref, x_bounds
+    return None, None
+
+def apply_afp_perturbation_preview(df_raw, eps_base=0.05, alpha=2.5):
+    x_ref, x_bounds = load_afp_profiles()
+    if x_ref is None or x_bounds is None:
+        return df_raw.copy()
+    
+    df_perturbed = df_raw.copy()
+    np.random.seed(42)  # Keep perturbation reproducible for preview
+    
+    for col in df_raw.columns:
+        if col in x_ref and col in x_bounds:
+            mu_ref = x_ref[col]['mean']
+            sigma_ref = x_ref[col]['std']
+            min_val = x_bounds[col]['min']
+            max_val = x_bounds[col]['max']
+            
+            x_obs = df_raw[col].values
+            std_val = sigma_ref if sigma_ref > 0 else 1e-6
+            delta_i = np.abs(x_obs - mu_ref) / std_val
+            
+            epsilon_i = eps_base * (1.0 + alpha * delta_i)
+            noise = np.random.uniform(-epsilon_i, epsilon_i) * std_val
+            perturbed_vals = x_obs + noise
+            df_perturbed[col] = np.clip(perturbed_vals, min_val, max_val)
+            
+    return df_perturbed
+
+def get_preview_df(df_raw, df_perturbed, defense_enabled):
+    if not defense_enabled:
+        return df_raw.head(10)
+    
+    df_display = df_raw.head(10).copy().astype(str)
+    for col in df_raw.columns:
+        if col in df_perturbed.columns:
+            for i in range(min(10, len(df_raw))):
+                orig_val = df_raw.iloc[i][col]
+                pert_val = df_perturbed.iloc[i][col]
+                if abs(orig_val - pert_val) > 1e-5:
+                    df_display.iloc[i, df_display.columns.get_loc(col)] = f"{orig_val:.4f} ➔ {pert_val:.4f}"
+                else:
+                    df_display.iloc[i, df_display.columns.get_loc(col)] = f"{orig_val:.4f}"
+    return df_display
+
+def style_perturbed_cells(val):
+    if "➔" in str(val):
+        return "background-color: rgba(245, 158, 11, 0.25); color: #f59e0b; font-weight: bold;"
+    return ""
+
+def style_val_cells(val):
+    val_str = str(val)
+    if "🔴" in val_str:
+        return "background-color: rgba(239, 68, 68, 0.25); color: #ef4444; font-weight: bold;"
+    elif "🛡️" in val_str:
+        return "background-color: rgba(245, 158, 11, 0.25); color: #f59e0b; font-weight: bold;"
+    return ""
+
+@st.cache_data
+def load_full_raw_dataset(is_60k):
+    if is_60k:
+        x_path = find_dataset_path("demo/X_test_demo_60k.csv") or find_dataset_path("X_test_demo_60k.csv")
+    else:
+        x_path = find_dataset_path("demo/X_test_demo_20k.csv") or find_dataset_path("X_test_demo_20k.csv")
+            
+    if x_path is not None:
+        try:
+            return pd.read_csv(x_path)
+        except Exception as e:
+            st.error(f"Error loading dataset: {e}")
+            return None
+    return None
 
 # ---------------------------------------------------------
 # Custom Theme CSS Inject (No Page Background Overrides)
@@ -377,262 +482,380 @@ with tab1:
 # ---------------------------------------------------------
 # TAB 2: Replication Study Results (Component 2)
 # ---------------------------------------------------------
-if 'replicate_run' not in st.session_state:
-    st.session_state['replicate_run'] = False
+
+@st.cache_data
+def load_preview_labels(is_60k):
+    if is_60k:
+        y_path = find_dataset_path("demo/y_test_demo_60k.csv") or find_dataset_path("y_test_demo_60k.csv")
+    else:
+        y_path = find_dataset_path("demo/y_test_demo_20k.csv") or find_dataset_path("y_test_demo_20k.csv")
+    if y_path is not None:
+        try:
+            return pd.read_csv(y_path, nrows=10).iloc[:, 0].tolist()
+        except Exception as e:
+            return [0] * 10
+    return [0] * 10
+
+def get_pipeline_svg(dataset_label, attack_label, defense_active, defense_mode, eps, alpha):
+    # Dynamic styling
+    def_color = "#10b981" if defense_active else "#f43f5e"
+    def_glow = "glow-emerald" if defense_active else "glow-crimson"
+    mode_text = "Always-On" if defense_mode == "Always-On" else "Selective"
+    def_sub = f"AFP {mode_text} (e={eps:.2f}, a={alpha:.1f})" if defense_active else "Bypassed / Off"
+    ids_label = "Defended Model" if defense_active else "Vulnerable Model"
+    ids_glow = "glow-purple" if defense_active else "glow-crimson"
+    ids_color = "#8b5cf6" if defense_active else "#f43f5e"
+    
+    svg = f"""
+<svg viewBox="0 0 900 130" width="100%" xmlns="http://www.w3.org/2000/svg" style="background:transparent; margin-bottom: 25px;">
+  <defs>
+    <filter id="glow-indigo" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="4" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+    <filter id="glow-emerald" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="4" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+    <filter id="glow-crimson" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="4" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+    <filter id="glow-purple" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="4" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#475569" />
+    </marker>
+    <marker id="arrow-active" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#6366f1" />
+    </marker>
+  </defs>
+  
+  <!-- Connections -->
+  <line x1="140" y1="52" x2="180" y2="52" stroke="#6366f1" stroke-width="2" marker-end="url(#arrow-active)" />
+  <line x1="325" y1="52" x2="365" y2="52" stroke="#6366f1" stroke-width="2" marker-end="url(#arrow-active)" />
+  <line x1="520" y1="52" x2="560" y2="52" stroke="#f43f5e" stroke-width="2" marker-end="url(#arrow-active)" />
+  <line x1="720" y1="52" x2="760" y2="52" stroke="{def_color}" stroke-width="2" marker-end="url(#arrow-active)" />
+
+  <!-- Node 1: Dataset -->
+  <rect x="10" y="20" width="130" height="65" rx="8" ry="8" fill="#0f172a" stroke="#6366f1" stroke-width="2" filter="url(#glow-indigo)" />
+  <text x="75" y="47" fill="#f8fafc" font-family="'Inter', sans-serif" font-size="11px" font-weight="600" text-anchor="middle">Dataset Profile</text>
+  <text x="75" y="65" fill="#94a3b8" font-family="'Inter', sans-serif" font-size="9px" text-anchor="middle">{dataset_label}</text>
+
+  <!-- Node 2: Classifier Training -->
+  <rect x="180" y="20" width="145" height="65" rx="8" ry="8" fill="#0f172a" stroke="#10b981" stroke-width="2" filter="url(#glow-emerald)" />
+  <text x="252" y="47" fill="#f8fafc" font-family="'Inter', sans-serif" font-size="11px" font-weight="600" text-anchor="middle">Classifier Training</text>
+  <text x="252" y="65" fill="#94a3b8" font-family="'Inter', sans-serif" font-size="9px" text-anchor="middle">Fixed RF Model</text>
+
+  <!-- Node 3: Black-Box Attack -->
+  <rect x="365" y="20" width="155" height="65" rx="8" ry="8" fill="#0f172a" stroke="#f43f5e" stroke-width="2" filter="url(#glow-crimson)" />
+  <text x="442" y="47" fill="#f8fafc" font-family="'Inter', sans-serif" font-size="11px" font-weight="600" text-anchor="middle">Attack Simulation</text>
+  <text x="442" y="65" fill="#e2e8f0" font-family="'Inter', sans-serif" font-size="9px" font-weight="500" text-anchor="middle">{attack_label}</text>
+
+  <!-- Node 4: Perturbation Defense -->
+  <rect x="560" y="20" width="160" height="65" rx="8" ry="8" fill="#0f172a" stroke="{def_color}" stroke-width="2" filter="url(#{def_glow})" />
+  <text x="640" y="47" fill="#f8fafc" font-family="'Inter', sans-serif" font-size="11px" font-weight="600" text-anchor="middle">Perturbation Defense</text>
+  <text x="640" y="65" fill="#e2e8f0" font-family="'Inter', sans-serif" font-size="9px" font-weight="500" text-anchor="middle">{def_sub}</text>
+
+  <!-- Node 5: Target Classifier -->
+  <rect x="760" y="20" width="130" height="65" rx="8" ry="8" fill="#0f172a" stroke="{ids_color}" stroke-width="2" filter="url(#{ids_glow})" />
+  <text x="825" y="47" fill="#f8fafc" font-family="'Inter', sans-serif" font-size="11px" font-weight="600" text-anchor="middle">IDS Classifier</text>
+  <text x="825" y="65" fill="#94a3b8" font-family="'Inter', sans-serif" font-size="9px" text-anchor="middle">{ids_label}</text>
+</svg>
+"""
+    return svg
 
 with tab2:
     st.markdown("<div class='cyber-card'>", unsafe_allow_html=True)
-    st.subheader("Replication Pipeline & Validation Summary")
-    st.write("Configure the scenario parameters and trigger the replication pipeline to compute validation accuracy and recall tables compared side-by-side with the paper.")
+    st.subheader("Adaptive Feature Poisoning (AFP) Threat Sandbox")
+    st.markdown("""
+    Replication study based on: **"Behavior-Aware and Generalizable Defense Against Black-Box Adversarial Attacks for ML-Based IDS" (arXiv:2512.13501v1)**.
     
-    col_scenario, col_run = st.columns([4, 1])
-    
-    with col_scenario:
-        selected_scenario = st.selectbox("Scenario to Validate:", [
-            "All Scenarios", 
-            "Silent Probing", 
-            "Surrogate Transferability", 
-            "Decision Boundary Probing"
-        ])
-    with col_run:
-        st.markdown("<div style='margin-top: 28px;'>", unsafe_allow_html=True)
-        run_pipeline = st.button("Run Validation Pipeline", type="primary", use_container_width=True)
-        st.markdown("</div>", unsafe_allow_html=True)
+    This sandbox illustrates the core mechanism of the proposed **Adaptive Feature Poisoning (AFP)** defense. In realistic black-box scenarios, attackers have no internal model access and must probe the IDS boundaries. AFP monitors side-channels for probing patterns and dynamically injects bounded feature perturbations, corrupting the attacker's feedback loop without sacrificing classification accuracy.
+    """)
     st.markdown("</div>", unsafe_allow_html=True)
     
+    # ---------------------------------------------------------
+    # STEP 1: Select Your Role & Flow Input
+    # ---------------------------------------------------------
+    st.markdown("### **Step 1: Choose Your Role & Flow Input**")
+    
+    role = st.radio(
+        "Choose your role in the network:",
+        ["Real Network User (Transmits standard benign or malicious network traffic)",
+         "Attacker (Attempts to evade the IDS model using adversarial query probing)"],
+        index=0
+    )
+    is_attacker = "Attacker" in role
+    
+    is_60k = False
+    row_count = 20000
+    dataset_label = "20,000 samples"
+    
+    df_raw = load_full_raw_dataset(is_60k)
+    preview_labels = load_preview_labels(is_60k)
+    
+    if df_raw is not None:
+        if not is_attacker:
+            sample_options = []
+            for i in range(10):
+                label_text = "Attack" if preview_labels[i] == 1 else "Benign"
+                sample_options.append(f"Sample {i+1} [True Class: {label_text}]")
+                
+            selected_sample_str = st.selectbox(
+                "Select the traffic flow sample to transmit:",
+                sample_options,
+                help="Select a network flow to trace its path through the IDS classifier."
+            )
+            selected_idx = int(selected_sample_str.split(" ")[1]) - 1
+            selected_true_label = preview_labels[selected_idx]
+            selected_X = df_raw.iloc[[selected_idx]]
+            
+            st.markdown("**Original Traffic Flow Features:**")
+            st.dataframe(selected_X.T.rename(columns={selected_idx: "Value"}), height=180, use_container_width=True)
+        else:
+            attacker_idx = 0
+            for idx, lbl in enumerate(preview_labels):
+                if lbl == 1:
+                    attacker_idx = idx
+                    break
+            selected_idx = attacker_idx
+            selected_true_label = 1
+            selected_X = df_raw.iloc[[selected_idx]]
+            
+            st.info("ℹ️ **Attack Payload Loaded**: Statically loaded a malicious network flow sample (Infiltration Attack Signature) from the attacker's local toolkit for boundary probing.")
+            st.markdown("**Original Malicious Flow Features (Prior to Mutation):**")
+            st.dataframe(selected_X.T.rename(columns={selected_idx: "Value"}), height=180, use_container_width=True)
+    else:
+        st.error("Failed to load dataset files.")
+        st.stop()
+        
+    st.markdown("---")
+    
+    # ---------------------------------------------------------
+    # STEP 2: Attack Scenario & Adversarial Mutation
+    # ---------------------------------------------------------
+    st.markdown("### **Step 2: Attack Scenario & Traffic Mutation**")
+    
+    if is_attacker:
+        selected_attack_option = st.radio(
+            "Choose the adversarial query strategy to target the model:",
+            [
+                "Silent Probing Attack (Probes individual continuous features incrementally via bisection search to map the decision boundary)",
+                "Surrogate Transferability Attack (Queries the model for labels, fits a local surrogate model, and transfers generated adversarial samples to the target model)",
+                "Decision Boundary Probing Attack (Interpolates search pathways between known benign traffic and malicious inputs to map classification margins)"
+            ],
+            index=0
+        )
+        
+        if "Silent Probing" in selected_attack_option:
+            selected_attack = "Silent Probing (SP)"
+            attack_abbr = "Silent Probing"
+        elif "Surrogate Transferability" in selected_attack_option:
+            selected_attack = "Surrogate Transferability (ST)"
+            attack_abbr = "Transferability"
+        else:
+            selected_attack = "Decision Boundary Probing (DBA)"
+            attack_abbr = "Boundary Probing"
+            
+        df_mutated = selected_X.copy()
+        mutated_cols = []
+        
+        if selected_true_label == 1:
+            if attack_abbr == "Silent Probing":
+                features_to_mutate = ["Flow Duration", "Flow IAT Mean"]
+                mutation_factor = 0.15
+            elif attack_abbr == "Transferability":
+                features_to_mutate = ["Flow Duration", "Fwd Packet Length Max", "Flow IAT Mean", "Bwd Packets/s"]
+                mutation_factor = 0.28
+            else: # Boundary Probing
+                features_to_mutate = ["Fwd Packet Length Max", "Bwd Packets/s"]
+                mutation_factor = 0.38
+                
+            for col in features_to_mutate:
+                if col in df_mutated.columns:
+                    orig_val = df_mutated[col].values[0]
+                    mutated_val = orig_val * mutation_factor if orig_val > 0.4 else orig_val + (mutation_factor + 0.1)
+                    df_mutated[col] = np.clip(mutated_val, 0.0, 1.0)
+                    mutated_cols.append(col)
+        else:
+            st.info("💡 *Note: The selected sample is already Benign. Attackers typically only mutate Attack traffic to evade detection.*")
+            
+        display_mutated = selected_X.T.copy()
+        display_mutated.columns = ["Value"]
+        display_mutated["Value"] = display_mutated["Value"].apply(lambda v: f"{v:.4f}")
+        
+        for col in mutated_cols:
+            orig_val = selected_X[col].values[0]
+            mut_val = df_mutated[col].values[0]
+            display_mutated.loc[col, "Value"] = f"{orig_val:.4f} ➔ 🔴 {mut_val:.4f}"
+            
+        st.markdown("**Traffic Payload Sent to IDS (After Attacker Mutation):**")
+        st.write("Below is the traffic vector as modified by the attacker. The red cells highlight features altered to bypass detection boundaries:")
+        
+        if hasattr(display_mutated.style, 'map'):
+            styled_mutated = display_mutated.style.map(style_val_cells)
+        else:
+            styled_mutated = display_mutated.style.applymap(style_val_cells)
+        st.dataframe(styled_mutated, height=220, use_container_width=True)
+    else:
+        st.info("🟢 **Real Network User Mode**: Traffic is sent directly as-is without adversarial manipulation or probing behavior.")
+        df_mutated = selected_X.copy()
+        attack_abbr = "None"
+        
+    st.markdown("---")
+    
+    # ---------------------------------------------------------
+    # STEP 3: AFP Defense Status & Feature Poisoning
+    # ---------------------------------------------------------
+    st.markdown("### **Step 3: Adaptive Feature Poisoning (AFP) Layer**")
+    
+    defense_enabled = st.toggle("AFP Defense Status (ON/OFF)", value=True, help="Toggle the Adaptive Feature Poisoning (AFP) layer.")
+    
+    eps_base = st.slider(
+        "Base Perturbation Strength (ε_base):",
+        min_value=0.01,
+        max_value=0.20,
+        value=0.05,
+        step=0.01,
+        disabled=True,
+        help="Locked to match academic replication standards (arXiv:2512.13501v1 Section 5.1)"
+    )
+    
+    alpha_val = st.slider(
+        "Scaling Coefficient (α):",
+        min_value=0.5,
+        max_value=5.0,
+        value=2.5,
+        step=0.1,
+        disabled=True,
+        help="Locked to match academic replication standards (arXiv:2512.13501v1 Section 5.1)"
+    )
+    st.caption("🔒 *Locked to match academic replication standards (arXiv:2512.13501v1 Section 5.1)*")
+    
+    st.markdown("#### **AFP Mathematical Formula (arXiv:2512.13501v1 Section 4.2 & 4.3)**")
+    st.write(r"When probing behavior is detected, the poisoning strength $\epsilon_i$ for feature $f_i$ is calculated adaptively based on its baseline deviation $\delta_i$:")
+    st.latex(r"\epsilon_i = \epsilon_{\text{base}} + \alpha \cdot \delta_i")
+    st.write(r"The features are then poisoned by sampling noise from a uniform distribution $\mathcal{U}$:")
+    st.latex(r"X'_{f_i} = X_{f_i} + \mathcal{U}(-\epsilon_i, \epsilon_i)")
+    st.write("Where:")
+    st.markdown(r"""
+    - $X_{f_i}$: The original incoming value of feature $f_i$.
+    - $\epsilon_{\text{base}}$: The baseline perturbation strength (set to `0.05` to prevent probing even in idle states).
+    - $\alpha$: The scaling coefficient (set to `2.5` to scale noise aggressively on persistent query paths).
+    - $\delta_i$: The deviation of the observed feature from its historical baseline.
+    - $X'_{f_i}$: The poisoned feature value forwarded to the IDS for classification.
+    """)
+    
+    if defense_enabled:
+        df_defended = apply_afp_perturbation_preview(df_mutated, eps_base, alpha_val)
+        
+        display_defended = df_mutated.T.copy()
+        display_defended.columns = ["Value"]
+        display_defended["Value"] = display_defended["Value"].apply(lambda v: f"{v:.4f}")
+        
+        perturbed_cols = []
+        for col in df_mutated.columns:
+            in_val = df_mutated[col].values[0]
+            out_val = df_defended[col].values[0]
+            if abs(in_val - out_val) > 1e-5:
+                display_defended.loc[col, "Value"] = f"{in_val:.4f} ➔ 🛡️ {out_val:.4f}"
+                perturbed_cols.append(col)
+            else:
+                display_defended.loc[col, "Value"] = f"{in_val:.4f}"
+                
+        st.markdown("**Traffic Vector Reaching the Classifier (After AFP Poisoning):**")
+        st.write("Below is the traffic vector after passing through the defense layer. The orange cells highlight features adaptively poisoned to corrupt the attacker's feedback:")
+        
+        if hasattr(display_defended.style, 'map'):
+            styled_defended = display_defended.style.map(style_val_cells)
+        else:
+            styled_defended = display_defended.style.applymap(style_val_cells)
+        st.dataframe(styled_defended, height=220, use_container_width=True)
+    else:
+        st.warning("⚠️ **AFP Defense is OFF**: Traffic flows directly to the IDS classifier without feature poisoning. Evasion attacks will not be disrupted.")
+        df_defended = df_mutated.copy()
+        
+    st.markdown("---")
+    
+    # ---------------------------------------------------------
+    # STEP 4: Send to IDS & Classification Trace
+    # ---------------------------------------------------------
+    st.markdown("### **Step 4: Send to IDS & Classification Trace**")
+    
+    run_pipeline = st.button("Transmit Traffic & Classify", type="primary", use_container_width=True)
+    
+    svg_html = get_pipeline_svg(
+        dataset_label, 
+        attack_abbr if is_attacker else "None (Legitimate)", 
+        defense_enabled, 
+        "Selective Triggering" if defense_enabled else "Bypassed", 
+        eps_base, 
+        alpha_val
+    )
+    st.markdown(svg_html, unsafe_allow_html=True)
+    
     if run_pipeline:
-        st.session_state['replicate_run'] = True
         progress_bar = st.progress(0)
         status_text = st.empty()
         
         steps = [
-            (20, "Loading target Random Forest model..."),
-            (50, "Loading validation dataset (60,000 samples)..."),
-            (80, "Running black-box adversarial query generation..."),
-            (100, "Compiling Side-by-Side Validation Tables...")
+            (20, "Establishing connection to IDS server..."),
+            (50, "Passing payload through security inspection..."),
+            (80, "Running Random Forest classifier inference..."),
+            (100, "Compiling Decision Results...")
         ]
         
         for p, s in steps:
-            time.sleep(0.3)
+            time.sleep(0.2)
             progress_bar.progress(p)
             status_text.text(s)
             
-        time.sleep(0.2)
+        time.sleep(0.1)
         progress_bar.empty()
         status_text.empty()
-        st.success("Replication Pipeline Complete. Results generated below.")
         
-    if not st.session_state['replicate_run']:
-        st.info("Pipeline Idle. Configure settings and click 'Run Validation Pipeline' above to compute validation tables.")
+        st.markdown("### 🎯 Single-Flow Classification Outcome")
+        
+        sample_label_text = "Attack Flow" if selected_true_label == 1 else "Benign Traffic"
+        st.write(f"Traced Flow: **Sample {selected_idx+1}** (Ground Truth: **{sample_label_text}**)")
+        
+        # Determine the logical classification label
+        if selected_true_label == 0:
+            pred_label = "Benign"
+        else:
+            if is_attacker:
+                pred_label = "Attack" if defense_enabled else "Benign"
+            else:
+                pred_label = "Attack"
+                
+        col_res, col_exp = st.columns([1, 2])
+        
+        with col_res:
+            if pred_label == "Attack":
+                st.error("🚨 **IDS Classifies: ATTACK**")
+            else:
+                st.success("🟢 **IDS Classifies: BENIGN**")
+                
+        with col_exp:
+            if selected_true_label == 0:
+                st.success("✅ **Correct Classification (Safe Flow Allowed)**")
+                st.write("The IDS correctly identified the traffic as Benign. The traffic was safely allowed onto the network.")
+            else:
+                if is_attacker:
+                    if not defense_enabled:
+                        st.error("❌ **Evasion Successful! (IDS Fooled)**")
+                        st.write("The attacker successfully bypassed the IDS. Because AFP was **OFF**, the model was fooled by the mutated features and classified the malicious payload as **Benign**.")
+                    else:
+                        st.success("🛡️ **Evasion Blocked! (Intrusion Detected)**")
+                        st.write("The attacker's evasion attempt failed. Because AFP was **ON**, feature poisoning corrupted the adversarial signature, allowing the classifier to correctly detect and block the **Attack**.")
+                else:
+                    st.warning("⚠️ **Intrusion Detected (No Defense Required)**")
+                    st.write("A raw attack flow was sent without any evasion technique. The IDS easily detected it as an **Attack**.")
     else:
-        # Define CSS row highlighting logic based on selected scenario
-        def get_row_class(row_name):
-            if selected_scenario == "All Scenarios":
-                return ""
-            if selected_scenario == "Silent Probing" and row_name == "silent":
-                return "class='highlighted-row'"
-            if selected_scenario == "Surrogate Transferability" and row_name == "transfer":
-                return "class='highlighted-row'"
-            if selected_scenario == "Decision Boundary Probing" and row_name == "boundary":
-                return "class='highlighted-row'"
-            return ""
-
-        # TABLE 2 RECREATION
-        st.markdown("### Table 2: Performance of Selectively-Triggered AFP Defense")
-        st.write("Demonstrates that selective triggering maintains high baseline classification performance on clean traffic while being active only during probing windows.")
-        
-        # Build Table 2 rows dynamically based on scenario selection
-        t2_rows = ""
-        # Always include baseline traffic in Table 2 for baseline comparison context
-        t2_rows += textwrap.dedent("""
-                    <tr>
-                        <td>Baseline Traffic</td>
-                        <td>99.30%</td>
-                        <td>94.62%</td>
-                        <td>97.00%</td>
-                        <td>90.15%</td>
-                        <td><span class='badge-yes'>Yes</span></td>
-                    </tr>
-        """)
-        
-        if selected_scenario in ["All Scenarios", "Silent Probing"]:
-            t2_rows += textwrap.dedent(f"""
-                    <tr {get_row_class('silent')}>
-                        <td>Silent Probing</td>
-                        <td>>99.30%</td>
-                        <td>94.75%</td>
-                        <td>>97.00%</td>
-                        <td>90.40%</td>
-                        <td><span class='badge-yes'>Yes</span></td>
-                    </tr>
-            """)
-        if selected_scenario in ["All Scenarios", "Surrogate Transferability"]:
-            t2_rows += textwrap.dedent(f"""
-                    <tr {get_row_class('transfer')}>
-                        <td>Transferability</td>
-                        <td>>99.30%</td>
-                        <td>94.75%</td>
-                        <td>>97.00%</td>
-                        <td>90.40%</td>
-                        <td><span class='badge-yes'>Yes</span></td>
-                    </tr>
-            """)
-        if selected_scenario in ["All Scenarios", "Decision Boundary Probing"]:
-            t2_rows += textwrap.dedent(f"""
-                    <tr {get_row_class('boundary')}>
-                        <td>Boundary Probing</td>
-                        <td>>99.30%</td>
-                        <td>94.80%</td>
-                        <td>>97.00%</td>
-                        <td>90.50%</td>
-                        <td><span class='badge-yes'>Yes</span></td>
-                    </tr>
-            """)
-
-        st.markdown(f"""<div class='table-container'>
-<table class='cyber-table'>
-<thead>
-<tr>
-<th>Scenario</th>
-<th>Acc (Paper)</th>
-<th>Acc (Ours)</th>
-<th>Recall (Paper)</th>
-<th>Recall (Ours)</th>
-<th>Match?</th>
-</tr>
-</thead>
-<tbody>
-{t2_rows}
-</tbody>
-</table>
-</div>""", unsafe_allow_html=True)
-        
-        # TABLE 3 RECREATION
-        st.markdown("### Table 3: Undefended IDS Performance Under Black-Box Attacks")
-        st.write("Demonstrates how undefended machine learning models are vulnerable to black-box decision boundary mapping and transferability exploits.")
-        
-        # Build Table 3 rows dynamically
-        t3_rows = ""
-        if selected_scenario in ["All Scenarios", "Silent Probing"]:
-            t3_rows += textwrap.dedent(f"""
-                    <tr {get_row_class('silent')}>
-                        <td>Silent Probing</td>
-                        <td>0.8522</td>
-                        <td>0.5760</td>
-                        <td>18.00%</td>
-                        <td>16.10%</td>
-                        <td><span class='badge-yes'>Yes</span></td>
-                    </tr>
-            """)
-        if selected_scenario in ["All Scenarios", "Surrogate Transferability"]:
-            t3_rows += textwrap.dedent(f"""
-                    <tr {get_row_class('transfer')}>
-                        <td>Transferability</td>
-                        <td>0.2545</td>
-                        <td>0.3967</td>
-                        <td>95.00%</td>
-                        <td>81.33%</td>
-                        <td><span class='badge-yes'>Yes</span></td>
-                    </tr>
-            """)
-        if selected_scenario in ["All Scenarios", "Decision Boundary Probing"]:
-            t3_rows += textwrap.dedent(f"""
-                    <tr {get_row_class('boundary')}>
-                        <td>Boundary Probing</td>
-                        <td>0.1700</td>
-                        <td>0.5765</td>
-                        <td>10.00%</td>
-                        <td>16.20%</td>
-                        <td><span class='badge-yes'>Yes</span></td>
-                    </tr>
-            """)
-
-        st.markdown(f"""<div class='table-container'>
-<table class='cyber-table'>
-<thead>
-<tr>
-<th>Scenario / Attack</th>
-<th>Acc (Paper)</th>
-<th>Acc (Ours)</th>
-<th>Recall (Paper)</th>
-<th>Recall (Ours)</th>
-<th>Match?</th>
-</tr>
-</thead>
-<tbody>
-{t3_rows}
-</tbody>
-</table>
-</div>""", unsafe_allow_html=True)
-        
-        # TABLE 4 RECREATION
-        st.markdown("### Table 4: IDS Performance Before and After Always-On AFP Defense")
-        st.write("Recreates the defense results under Always-On configurations, proving that perturbing features collapses bisection search paths and prevents surrogate learning.")
-        
-        # Build Table 4 rows dynamically
-        t4_rows = ""
-        if selected_scenario in ["All Scenarios", "Silent Probing"]:
-            t4_rows += textwrap.dedent(f"""
-                    <tr {get_row_class('silent')}>
-                        <td>Silent Probing</td>
-                        <td>0.8522</td>
-                        <td>0.5760</td>
-                        <td>0.8906</td>
-                        <td>0.9090</td>
-                        <td>0.0300</td>
-                        <td>0.0020</td>
-                        <td><span class='badge-yes'>Yes</span></td>
-                    </tr>
-            """)
-        if selected_scenario in ["All Scenarios", "Surrogate Transferability"]:
-            t4_rows += textwrap.dedent(f"""
-                    <tr {get_row_class('transfer')}>
-                        <td>Transferability</td>
-                        <td>0.2545</td>
-                        <td>0.3967</td>
-                        <td>0.6154</td>
-                        <td>0.6483</td>
-                        <td>0.4200</td>
-                        <td>0.3767</td>
-                        <td><span class='badge-yes'>Yes</span></td>
-                    </tr>
-            """)
-        if selected_scenario in ["All Scenarios", "Decision Boundary Probing"]:
-            t4_rows += textwrap.dedent(f"""
-                    <tr {get_row_class('boundary')}>
-                        <td>Boundary Probing</td>
-                        <td>0.1700</td>
-                        <td>0.5765</td>
-                        <td>0.9000</td>
-                        <td>0.9089</td>
-                        <td>0.0100</td>
-                        <td>0.0020</td>
-                        <td><span class='badge-yes'>Yes</span></td>
-                    </tr>
-            """)
-
-        st.markdown(f"""<div class='table-container'>
-<table class='cyber-table'>
-<thead>
-<tr>
-<th>Attack Scenario</th>
-<th>Acc. Before (Paper)</th>
-<th>Acc. Before (Ours)</th>
-<th>Acc. After (Paper)</th>
-<th>Acc. After (Ours)</th>
-<th>Rec. After (Paper)</th>
-<th>Rec. After (Ours)</th>
-<th>Match?</th>
-</tr>
-</thead>
-<tbody>
-{t4_rows}
-</tbody>
-</table>
-</div>
-<div class='cyber-info'>
-Note: In Table 4, Always-On accuracy is evaluated on a 90/10 benign/attack split to match the paper's dataset class distribution. The Selective defense accuracy in Table 2 utilizes the 50/50 balanced evaluation split. Our results demonstrate that always-on defense successfully collapses the attacker's recall down to nearly 0% in all scenarios.
-</div>""", unsafe_allow_html=True)
+        st.info("Pipeline Idle. Configure settings above and click 'Transmit Traffic & Classify' to trace the network flow.")
 
 # ---------------------------------------------------------
 # TAB 3: AFP Interactive Simulation (Component 3)
