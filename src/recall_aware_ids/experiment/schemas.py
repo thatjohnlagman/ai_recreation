@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, Any, List, Optional
 import json
 
@@ -11,6 +11,8 @@ class AttackCacheManifest:
     frozen_rf_hash: str
     evaluation_roles_hash: str
     evaluation_batches_hash: str
+    X_eval_hash: str
+    metadata_eval_hash: str
     measurement_identity_hash: str
     crafting_identity_hash: str
     feature_names_hash: str
@@ -25,11 +27,16 @@ class AttackCacheManifest:
 
 @dataclass(frozen=True)
 class AttackedSampleStatus:
-    sample_id: int
+    eval_position: int
     eligible: bool
     attempted: bool
     successful: bool
+    status_code: str
     queries_used: int
+    l0: float
+    l1: float
+    l2: float
+    linf: float
 
 @dataclass(frozen=True)
 class BatchConfigLog:
@@ -38,9 +45,22 @@ class BatchConfigLog:
     config_id: str
     intensity: float
     state: str
+    multiplier: float
     rolling_recall: float
     hit_min_bound: bool
     hit_max_bound: bool
+    zero_denominator: bool
+    tp: Optional[int] = None
+    fn: Optional[int] = None
+    window_start_batch_id: Optional[int] = None
+    window_end_batch_id: Optional[int] = None
+    configured_window_size: Optional[int] = None
+    window_batch_count: Optional[int] = None
+    window_tp_sum: Optional[int] = None
+    window_fn_sum: Optional[int] = None
+    unclipped_next_intensity: Optional[float] = None
+    clipped_next_intensity: Optional[float] = None
+    fs_effective_d: Optional[float] = None
 
 @dataclass(frozen=True)
 class BatchConfusionLog:
@@ -59,7 +79,8 @@ class BatchConfusionLog:
     eligible_count: int
     attempted_count: int
     successful_count: int
-    asr: float
+    asr_applicable: bool
+    asr: Optional[float]
 
 @dataclass(frozen=True)
 class RunSummary:
@@ -69,14 +90,20 @@ class RunSummary:
     defense: str
     config_id: str
     total_batches: int
-    clean_tp: int
-    clean_fn: int
-    attacked_tp: int
-    attacked_fn: int
+    tp: int
+    fp: int
+    tn: int
+    fn: int
+    accuracy: float
+    recall: float
+    precision: float
+    f1: float
+    balanced_accuracy: float
+    pr_auc_average_precision: float
     total_eligible: int
     total_attempted: int
     total_successful: int
-    global_asr: float
+    global_asr: Optional[float]
     completed_successfully: bool
 
 @dataclass(frozen=True)
@@ -84,6 +111,10 @@ class CompletionMarker:
     run_id: str
     timestamp: str
     provenance_hashes: Dict[str, str]
+    
+    def __post_init__(self):
+        if not self.provenance_hashes:
+            raise ValueError("provenance_hashes must be nonempty")
 
 @dataclass(frozen=True)
 class FailureRecord:

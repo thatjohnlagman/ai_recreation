@@ -1,23 +1,36 @@
-?? .gitignore
-?? GIT_STATUS.txt
-?? artifacts/
-?? configs/
-?? data/
-?? defense_calibration.json
-?? docs/
-?? pyproject.toml
-?? requirements-lock.txt
-?? scratch_bundle/
-?? scripts/
-?? src/
-?? tests/
+ M .gitignore
+ M GIT_STATUS.txt
+ M artifacts/reports/phase10a_integration_validation.md
+ M configs/experiment.yaml
+ M scripts/run_m2_pilot.py
+ M src/recall_aware_ids/attacks/base.py
+ M src/recall_aware_ids/controller/recall_controller.py
+ M src/recall_aware_ids/experiment/caching.py
+ M src/recall_aware_ids/experiment/metrics.py
+ M src/recall_aware_ids/experiment/policies.py
+ M src/recall_aware_ids/experiment/runner.py
+ M src/recall_aware_ids/experiment/schemas.py
+ M tests/test_experiment_runner.py
+?? scripts/build_phase10a_final_review_bundle.py
+?? src/recall_aware_ids/experiment/boundary_selection.py
+?? src/recall_aware_ids/experiment/matrix.py
+?? src/recall_aware_ids/experiment/role_resolution.py
+?? tests/test_boundary_selection.py
+?? tests/test_caching.py
+?? tests/test_matrix.py
+?? tests/test_role_resolution.py
+?? tests/test_runner_validation.py
+?? tests/test_schemas.py
 !! .pytest_cache/
 !! .venv/
 !! BUNDLE_MANIFEST.txt
 !! FILE_HASHES.sha256
 !! FOCUSED_TEST_LOG.txt
+!! FORBIDDEN_REFERENCE_SCAN.txt
 !! FULL_TEST_LOG.txt
 !! FULL_TEST_OUTPUT.txt
+!! GIT_DIFF_STAT.txt
+!! GIT_LOG.txt
 !! HASH_COMPARISON.txt
 !! INTEGRATION_TEST_LOG.txt
 !! LEGACY_TEST_LOG.txt
@@ -35,6 +48,7 @@
 !! data/interim/
 !! data/processed/
 !! data/raw/
+!! phase10a_repair_review_bundle.zip
 !! phase10a_review_bundle.zip
 !! phase5_review_bundle.zip
 !! phase6_review_bundle.zip

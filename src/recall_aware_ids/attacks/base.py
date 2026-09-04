@@ -32,10 +32,14 @@ class BaseAttack:
         self.feature_names = feature_names
         self.modifiable_mask = np.array(modifiable_mask, dtype=bool)
         self.protected_mask = ~self.modifiable_mask
+        if 'feature' in training_bounds.columns:
+            training_bounds = training_bounds.set_index('feature')
+            
+        min_col = 'train_min' if 'train_min' in training_bounds.columns else 'min'
+        max_col = 'train_max' if 'train_max' in training_bounds.columns else 'max'
         
-        self.train_min = np.array(training_bounds['min'].values, dtype=np.float32)
-        self.train_max = np.array(training_bounds['max'].values, dtype=np.float32)
-        
+        self.train_min = np.array(training_bounds[min_col].values, dtype=np.float32)
+        self.train_max = np.array(training_bounds[max_col].values, dtype=np.float32)
         if len(self.train_min) != 78 or len(self.train_max) != 78:
             raise ValueError("Bounds must be length 78")
             

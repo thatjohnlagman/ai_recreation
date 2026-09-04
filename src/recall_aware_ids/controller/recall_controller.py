@@ -59,6 +59,10 @@ def _validate_real(val: Any, name: str) -> float:
     return val_float
 
 class RecallAwareController:
+    @property
+    def requires_feedback(self) -> bool:
+        return True
+
     def __init__(self, config: Dict[str, Any], defense_config: Dict[str, Any], defense_name: str, zero_division_value: Any = 0.0):
         if not isinstance(config, collections.abc.Mapping):
             raise ValueError("config must be a mapping")

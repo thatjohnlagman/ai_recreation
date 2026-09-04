@@ -2,75 +2,104 @@ import pytest
 import numpy as np
 import pandas as pd
 from pathlib import Path
+import json
+
 from recall_aware_ids.experiment.policies import FixedIntensityPolicy
 from recall_aware_ids.experiment.metrics import calculate_metrics
 from recall_aware_ids.experiment.caching import validate_cache_manifest
+from recall_aware_ids.experiment.role_resolution import validate_and_resolve_roles
+from recall_aware_ids.experiment.boundary_selection import select_boundary_targets
+from recall_aware_ids.experiment.schemas import BatchConfigLog, BatchConfusionLog
+from recall_aware_ids.experiment.runner import ExperimentRunner, AttackCacheProvider, LabelProvider
 
-def test_fixed_intensity_policy():
-    policy = FixedIntensityPolicy(config_id="Base", fixed_intensity=0.0003)
+def test_role_joins_and_exact_counts():
+    # Construct synthetic valid
+    metadata = pd.DataFrame({"eval_position": np.arange(90000)})
+    
+    # 18000 crafting, 72000 measurement
+    roles = pd.DataFrame({
+        "eval_position": np.arange(90000),
+        "role": ["crafting"]*18000 + ["measurement"]*72000
+    })
+    
+    # 144 batches of 500 for measurement
+    batches = pd.DataFrame({
+        "eval_position": np.arange(18000, 90000),
+        "batch_id": np.repeat(np.arange(144), 500)
+    })
+    
+    resolved = validate_and_resolve_roles(metadata, roles, batches)
+    # validate_and_resolve_roles returns canonical measurement-only mapping (72000 rows)
+    assert len(resolved) == 72000
+    
+def test_role_overlap_rejection():
+    metadata = pd.DataFrame({"eval_position": np.arange(90000)})
+    roles = pd.DataFrame({
+        "eval_position": np.arange(90000),
+        "role": ["crafting"]*18000 + ["measurement"]*72000
+    })
+    
+    # Put a crafting eval_position into batches
+    batches = pd.DataFrame({
+        "eval_position": np.concatenate([np.array([0]), np.arange(18001, 90000)]),
+        "batch_id": np.repeat(np.arange(144), 500)
+    })
+    
+    with pytest.raises(ValueError, match="Cross-role identity"):
+        validate_and_resolve_roles(metadata, roles, batches)
+
+def test_immutable_fixed_policy():
+    policy = FixedIntensityPolicy(config_id="Base", fixed_intensity=0.0003, intensity_min=0.0001, intensity_max=0.0005)
     dec = policy.get_intensity(0)
-    assert dec.batch_id == 0
     assert dec.intensity == 0.0003
     
-    upd = policy.submit_observations(0, 10, 5)
-    assert upd.state == "Base"
-    assert upd.used_intensity == 0.0003
-    
-    # test reset
-    policy.reset()
-    dec2 = policy.get_intensity(1)
-    assert dec2.intensity == 0.0003
+    with pytest.raises(Exception): # Frozen dataclass
+        policy.fixed_intensity = 0.0004
+        
+def test_metrics_strict_validation():
+    # Value error on malformed
+    with pytest.raises(ValueError, match="Inputs must be 1D arrays"):
+        calculate_metrics(np.array([[1]]), np.array([1]), np.array([0.9]))
+        
+    with pytest.raises(ValueError, match="Labels and predictions must be strictly binary"):
+        calculate_metrics(np.array([2]), np.array([1]), np.array([0.9]))
+        
+    # None for Silent Probing ASR
+    metrics = calculate_metrics(np.array([1]), np.array([1]), np.array([0.9]), asr_applicable=False)
+    assert metrics["asr"] is None
+    assert metrics["asr_applicable"] is False
 
-def test_calculate_metrics():
-    y_true = np.array([1, 1, 0, 0, 1])
-    y_pred = np.array([1, 0, 0, 1, 1])
-    positive_scores = np.array([0.9, 0.4, 0.2, 0.8, 0.95])
-    
-    # 2 TP, 1 FN, 1 TN, 1 FP
-    eligible = np.array([True, True, False, False, True])
-    attempted = np.array([True, False, False, False, True])
-    successful = np.array([True, False, False, False, False])
-    
-    metrics = calculate_metrics(y_true, y_pred, positive_scores, eligible, attempted, successful)
-    
-    assert metrics["tp"] == 2
-    assert metrics["fn"] == 1
-    assert metrics["tn"] == 1
-    assert metrics["fp"] == 1
-    
-    assert metrics["eligible_count"] == 3
-    assert metrics["attempted_count"] == 2
-    assert metrics["successful_count"] == 1
-    assert metrics["asr"] == 0.5
-    
-    assert metrics["pr_auc_average_precision"] >= 0.0
-    assert metrics["pr_auc_average_precision"] <= 1.0
-
-def test_metrics_zero_division():
-    # Test zero division explicitly
-    metrics = calculate_metrics(np.array([1]), np.array([0]), np.array([0.1]))
-    assert metrics["precision"] == 0.0
-    assert metrics["pr_auc_average_precision"] == 0.0
-
-def test_cache_validation(tmp_path):
+def test_complete_cache_validation(tmp_path):
     manifest_path = tmp_path / "manifest.json"
-    import json
+    artifact_path = tmp_path / "X_attacked.parquet"
     
-    valid_data = {
-        "frozen_rf_hash": "abc",
-        "attack_script_hashes": {"main.py": "def"}
+    with open(artifact_path, "wb") as f:
+        f.write(b"dummy")
+        
+    from recall_aware_ids.experiment.caching import calculate_file_hash
+    ahash = calculate_file_hash(artifact_path)
+    
+    good_manifest = {
+        "X_eval_hash": "a", "metadata_eval_hash": "b", "evaluation_roles_hash": "c", "evaluation_batches_hash": "d",
+        "crafting_identity_hash": "e", "measurement_identity_hash": "f",
+        "attacks_yaml_hash": "g", "attack_script_hashes": {"script.py": "h"},
+        "frozen_rf_hash": "i", "scaler_hash": "j", "feature_names_hash": "k", "feature_mask_hash": "l", "training_bounds_hash": "m",
+        "attack_parameters": {"param": 1}, "query_budgets": {"queries": 50},
+        "attack_scenario": "Surrogate", "effective_seed": 42,
+        "schema_version": "1.0", "row_count": 72000, "output_sha256": ahash
     }
     
     with open(manifest_path, "w") as f:
-        json.dump(valid_data, f)
+        json.dump(good_manifest, f)
         
-    expected_good = {"frozen_rf_hash": "abc", "attack_script_hashes": {"main.py": "def"}}
-    assert validate_cache_manifest(manifest_path, expected_good) is True
+    # Validation succeeds
+    assert validate_cache_manifest(manifest_path, artifact_path, good_manifest) is True
     
-    expected_bad = {"frozen_rf_hash": "xyz"}
-    with pytest.raises(ValueError, match="Cache invalid: Hash mismatch"):
-        validate_cache_manifest(manifest_path, expected_bad)
+    # Missing required key
+    bad = good_manifest.copy()
+    del bad["X_eval_hash"]
+    with open(manifest_path, "w") as f:
+        json.dump(bad, f)
         
-    expected_bad_script = {"attack_script_hashes": {"main.py": "xyz"}}
-    with pytest.raises(ValueError, match="Cache invalid: Hash mismatch"):
-        validate_cache_manifest(manifest_path, expected_bad_script)
+    with pytest.raises(ValueError, match="Missing required key"):
+         validate_cache_manifest(manifest_path, artifact_path, good_manifest)

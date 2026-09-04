@@ -52,8 +52,8 @@ feature_exclusions:
     - "Src IP"
     - "Dst IP"
     - "Timestamp"
+    - "Src Port"  # Excluded due to 153,335 missing values and presence in only one source capture (Phase 4 decision)
   review_required:
-    - "Src Port"  # Kept unless proven leakage — per handoff
     - "Dst Port"  # Kept unless proven leakage — per handoff
 
 # Data storage
