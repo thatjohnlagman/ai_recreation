@@ -1,0 +1,70 @@
+# experiment.yaml
+# Master experiment configuration — frozen before final evaluation
+# DO NOT modify after final runs begin.
+# SHA-256 hash of this file is recorded in every run's metadata.
+
+experiment:
+  name: "Recall-Aware IDS Experiment"
+  thesis_title: "Performance of Recall-Aware Control for Perturbation Defenses in Intrusion Detection Systems Against Black-Box Probing Attacks"
+  version: "1.0.0"
+  date_frozen: null  # Set when protocol is frozen
+
+# Dataset
+dataset:
+  raw_path: "/Users/johnferrylagman/Desktop/thesissep20276/datasets/cic-ids2018"
+  raw_is_read_only: true  # NEVER modify original CSVs
+  working_sample_size: 300000
+  sampling_seed: 42
+  label_column: "Label"
+  benign_label: "Benign"
+  attack_label: 1
+  benign_binary: 0
+
+# Split
+split:
+  train_fraction: 0.70
+  eval_fraction: 0.30
+  stratify: true
+  split_seed: 42
+
+# Calibration partition (from within training only)
+calibration:
+  fraction_of_train: 0.15  # 15% of 70% = ~10.5% of total
+  calibration_seed: 42
+
+# Batch
+evaluation:
+  batch_size: 500
+  stratified_batches: true
+  batch_seed: 42
+  zero_division_value: 0.0  # Used when TP+FP=0 or TP+FN=0
+
+# Seeds
+stochastic:
+  primary_seeds: [42, 43, 44, 45, 46]      # 5 seeds for C1 primary comparison
+  sensitivity_seeds: [42, 43, 44]          # 3 seeds for C1-C7 sensitivity
+  # DO NOT use 30 seeds on M2/8GB hardware
+
+# Features to exclude
+feature_exclusions:
+  definite:
+    - "Flow ID"
+    - "Src IP"
+    - "Dst IP"
+    - "Timestamp"
+  review_required:
+    - "Src Port"  # Kept unless proven leakage — per handoff
+    - "Dst Port"  # Kept unless proven leakage — per handoff
+
+# Data storage
+storage:
+  format: "parquet"
+  float_dtype: "float32"
+  label_dtype: "int8"
+  chunk_size: 50000
+
+# Reproducibility
+reproducibility:
+  global_python_seed: 42
+  global_numpy_seed: 42
+  global_sklearn_seed: 42

@@ -1,0 +1,53 @@
+# Credentials and local environment
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+
+# Python caches and tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# macOS and editors
+.DS_Store
+.idea/
+.vscode/
+
+# Large or generated data/model artifacts
+/data/raw/
+/data/interim/
+/data/processed/
+*.parquet
+*.joblib
+*.pkl
+
+# Generated experiment caches and predictions
+/artifacts/models/
+/artifacts/attacks/
+/artifacts/cache/
+/artifacts/runs/
+/artifacts/results/
+/artifacts/predictions/
+
+# Temporary/runtime files
+*.tmp
+*.log
+phase*_review_bundle*.zip
+phase*_diagnostic*.zip
+*_TEST_LOG.txt
+FULL_TEST_OUTPUT.txt
+TEST_OUTPUT.txt
+PILOT_LOG.txt
+before_hashes.txt
+after_hashes.txt
+HASH_COMPARISON.txt
+FILE_HASHES.sha256
+BUNDLE_MANIFEST.txt
+MISSING_FILES.txt
+FORBIDDEN_REFERENCE_SCAN.txt

@@ -1,0 +1,23 @@
+{
+  "input_file": "/Users/johnferrylagman/Desktop/thesissep20276/september 2026/recall-aware-ids/data/interim/working_sample.parquet",
+  "input_sha256": "1a612e440ea68d1526524d8788463b90bfe0a2e287c11e336136c236f12c73b9",
+  "train_rows": 178500,
+  "eval_rows": 90000,
+  "calibration_rows": 31500,
+  "n_features": 78,
+  "n_modifiable_features": 63,
+  "split_seed": 42,
+  "cal_seed": 42,
+  "train_class_dist": {
+    "0": 148114,
+    "1": 30386
+  },
+  "eval_class_dist": {
+    "0": 74679,
+    "1": 15321
+  },
+  "cal_class_dist": {
+    "0": 26138,
+    "1": 5362
+  }
+}

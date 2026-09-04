@@ -1,0 +1,100 @@
+[
+  {
+    "file": "Friday-02-03-2018_TrafficForML_CICFlowMeter.csv",
+    "valid_rows": 1044525,
+    "invalid_rows": 4050,
+    "class_counts": {
+      "Benign": 758334,
+      "Bot": 286191
+    }
+  },
+  {
+    "file": "Friday-16-02-2018_TrafficForML_CICFlowMeter.csv",
+    "valid_rows": 1048574,
+    "invalid_rows": 1,
+    "class_counts": {
+      "DoS attacks-Hulk": 461912,
+      "Benign": 446772,
+      "DoS attacks-SlowHTTPTest": 139890
+    }
+  },
+  {
+    "file": "Friday-23-02-2018_TrafficForML_CICFlowMeter.csv",
+    "valid_rows": 1042867,
+    "invalid_rows": 5708,
+    "class_counts": {
+      "Benign": 1042301,
+      "Brute Force -Web": 362,
+      "Brute Force -XSS": 151,
+      "SQL Injection": 53
+    }
+  },
+  {
+    "file": "Thuesday-20-02-2018_TrafficForML_CICFlowMeter.csv",
+    "valid_rows": 7889295,
+    "invalid_rows": 59453,
+    "class_counts": {
+      "Benign": 7313104,
+      "DDoS attacks-LOIC-HTTP": 576191
+    }
+  },
+  {
+    "file": "Thursday-01-03-2018_TrafficForML_CICFlowMeter.csv",
+    "valid_rows": 328180,
+    "invalid_rows": 2945,
+    "class_counts": {
+      "Benign": 235777,
+      "Infilteration": 92403
+    }
+  },
+  {
+    "file": "Thursday-15-02-2018_TrafficForML_CICFlowMeter.csv",
+    "valid_rows": 1040548,
+    "invalid_rows": 8027,
+    "class_counts": {
+      "Benign": 988050,
+      "DoS attacks-GoldenEye": 41508,
+      "DoS attacks-Slowloris": 10990
+    }
+  },
+  {
+    "file": "Thursday-22-02-2018_TrafficForML_CICFlowMeter.csv",
+    "valid_rows": 1042965,
+    "invalid_rows": 5610,
+    "class_counts": {
+      "Benign": 1042603,
+      "Brute Force -Web": 249,
+      "Brute Force -XSS": 79,
+      "SQL Injection": 34
+    }
+  },
+  {
+    "file": "Wednesday-14-02-2018_TrafficForML_CICFlowMeter.csv",
+    "valid_rows": 1044751,
+    "invalid_rows": 3824,
+    "class_counts": {
+      "Benign": 663808,
+      "FTP-BruteForce": 193354,
+      "SSH-Bruteforce": 187589
+    }
+  },
+  {
+    "file": "Wednesday-21-02-2018_TrafficForML_CICFlowMeter.csv",
+    "valid_rows": 1048575,
+    "invalid_rows": 0,
+    "class_counts": {
+      "DDOS attack-HOIC": 686012,
+      "Benign": 360833,
+      "DDOS attack-LOIC-UDP": 1730
+    }
+  },
+  {
+    "file": "Wednesday-28-02-2018_TrafficForML_CICFlowMeter.csv",
+    "valid_rows": 606902,
+    "invalid_rows": 6202,
+    "class_counts": {
+      "Benign": 538666,
+      "Infilteration": 68236
+    }
+  }
+]
