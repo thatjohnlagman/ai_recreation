@@ -19,9 +19,9 @@ from typing import Dict, List, Set
 ROOT = Path(__file__).resolve().parents[1]
 
 AUTHORITATIVE_HASHES = {
-    "artifacts/models/frozen_rf.joblib": "9608dbbe007996c5617c0a96996dcd37e0c8b9dbb72bc0de3fbbcd97c55c2f30",
-    "data/processed/evaluation_roles.csv": "cbf6259ce36ed3b8bd103b41d06371cf3181829e59ed1ccbf6aab01c0c2bb12a",
-    "data/processed/evaluation_batches.csv": "4084debf6c7ceb3fb49ed7a06ef7f415307a0c8b2c8a149c47087612c6a084eb",
+    "artifacts/models/frozen_rf.joblib": "9608672c5d5e38a9272c560679cdd2291399de0e0917c8c9dff373bfd200f51d",
+    "data/manifests/evaluation_roles.csv": "cbf650879aa1369fa26b803777f30d4b0add9e7aff2c05d399ba7f42563f7b45",
+    "data/manifests/evaluation_batches.csv": "4084017e5593732e455763416f7fc38254fc9dab2466eca289b66e68dc0ff79a",
 }
 
 def calculate_sha256(filepath: Path) -> str:
