@@ -80,7 +80,7 @@ def build_bundle():
     check_external_hashes()
     check_experiment_frozen()
 
-    bundle_path = ROOT / "phase10a_freeze_candidate_bundle_v2.zip"
+    bundle_path = ROOT / "phase10a_freeze_candidate_bundle_v3.zip"
     print(f"\nBuilding bundle: {bundle_path.name}")
     
     # Paths to include in the bundle (source code, tests, configs, plan)
