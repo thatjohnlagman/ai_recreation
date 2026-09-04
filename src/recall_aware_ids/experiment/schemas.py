@@ -1,7 +1,71 @@
+"""
+Frozen dataclasses for all Phase 10 experiment records.
+Every dataclass carries __post_init__ validation — malformed objects are rejected at construction time.
+"""
+from __future__ import annotations
+import math
+import json
+import re
 from dataclasses import dataclass, field
 from typing import Dict, Any, List, Optional
-import json
 
+# ---------------------------------------------------------------------------
+# Allowed sentinel values
+# ---------------------------------------------------------------------------
+_VALID_STATES = frozenset({"Base", "Green", "Yellow", "Red"})
+_HEX64 = re.compile(r'^[0-9a-f]{64}$')
+
+_REQUIRED_PROVENANCE_KEYS = frozenset({
+    "frozen_rf_hash",
+    "scaler_hash",
+    "feature_names_hash",
+    "feature_mask_hash",
+    "training_bounds_hash",
+    "evaluation_roles_hash",
+    "evaluation_batches_hash",
+    "attacks_yaml_hash",
+    "controllers_yaml_hash",
+    "defenses_yaml_hash",
+    "experiment_yaml_hash",
+})
+
+_PLACEHOLDER_STRINGS = frozenset({"dummy", "hash", "placeholder", "todo", "none", "null", "xxx"})
+
+_ALLOWED_STATUS_CODES = frozenset({
+    "SUCCESS", "TARGET_REJECTION", "NO_FEASIBLE_CANDIDATE",
+    "BUDGET_EXHAUSTION", "INSUFFICIENT_BUDGET_FOR_FULL_SEARCH",
+    "PROJECTION_FAILED_BEFORE_TRANSFER", "PROJECTION_FAILED_DURING_SEARCH",
+    "INELIGIBLE_FALSE_NEGATIVE", "INELIGIBLE_TRUE_BENIGN",
+    "NOT_ATTEMPTED", "NOT_APPLICABLE",
+})
+
+def _is_hex64(s: str) -> bool:
+    return bool(_HEX64.match(s))
+
+def _check_finite_nonneg_float(val, name: str):
+    if not isinstance(val, float):
+        val = float(val)
+    if not math.isfinite(val):
+        raise ValueError(f"{name} must be finite, got {val!r}")
+    if val < 0.0:
+        raise ValueError(f"{name} must be >= 0, got {val}")
+    return val
+
+def _check_metric_range(val, name: str):
+    """Validates a fraction/metric in [0,1]; None passes through."""
+    if val is None:
+        return
+    if not isinstance(val, float):
+        val = float(val)
+    if not math.isfinite(val):
+        raise ValueError(f"{name} must be finite")
+    if not (0.0 <= val <= 1.0):
+        raise ValueError(f"{name} must be in [0,1], got {val}")
+
+
+# ---------------------------------------------------------------------------
+# AttackCacheManifest
+# ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class AttackCacheManifest:
     attack_scenario: str
@@ -23,8 +87,42 @@ class AttackCacheManifest:
     attack_parameters: Dict[str, Any]
     schema_version: str
     row_count: int
+    X_attacked_sha256: str
+    status_sha256: str
+    # Legacy combined field – keep for compatibility but may equal X_attacked_sha256
     output_sha256: str
 
+    def __post_init__(self):
+        if not self.attack_scenario:
+            raise ValueError("attack_scenario must be nonempty")
+        if isinstance(self.effective_seed, bool):
+            raise TypeError("effective_seed cannot be bool")
+        if not isinstance(self.effective_seed, int) or self.effective_seed < 0:
+            raise ValueError("effective_seed must be a non-negative int")
+        if self.row_count != 72000:
+            raise ValueError(f"row_count must be 72000, got {self.row_count}")
+        if self.schema_version != "1.0":
+            raise ValueError(f"schema_version must be '1.0', got {self.schema_version!r}")
+        # Hash fields must be 64-char hex
+        for fname in ("frozen_rf_hash", "evaluation_roles_hash", "evaluation_batches_hash",
+                      "X_eval_hash", "metadata_eval_hash", "measurement_identity_hash",
+                      "crafting_identity_hash", "feature_names_hash", "feature_mask_hash",
+                      "scaler_hash", "training_bounds_hash",
+                      "X_attacked_sha256", "status_sha256", "output_sha256"):
+            val = getattr(self, fname)
+            if not _is_hex64(val):
+                raise ValueError(f"{fname} must be a 64-char lowercase hex string, got {val!r}")
+        if not isinstance(self.attack_script_hashes, dict):
+            raise TypeError("attack_script_hashes must be a dict")
+        if not isinstance(self.query_budgets, dict):
+            raise TypeError("query_budgets must be a dict")
+        if not isinstance(self.attack_parameters, dict):
+            raise TypeError("attack_parameters must be a dict")
+
+
+# ---------------------------------------------------------------------------
+# AttackedSampleStatus
+# ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class AttackedSampleStatus:
     eval_position: int
@@ -38,6 +136,38 @@ class AttackedSampleStatus:
     l2: float
     linf: float
 
+    def __post_init__(self):
+        if isinstance(self.eval_position, bool):
+            raise TypeError("eval_position cannot be bool")
+        if not isinstance(self.eval_position, int) or self.eval_position < 0:
+            raise ValueError("eval_position must be a non-negative int")
+        if not isinstance(self.eligible, bool):
+            raise TypeError("eligible must be bool")
+        if not isinstance(self.attempted, bool):
+            raise TypeError("attempted must be bool")
+        if not isinstance(self.successful, bool):
+            raise TypeError("successful must be bool")
+        if self.status_code not in _ALLOWED_STATUS_CODES:
+            raise ValueError(f"status_code {self.status_code!r} not in allowed set: {sorted(_ALLOWED_STATUS_CODES)}")
+        if isinstance(self.queries_used, bool):
+            raise TypeError("queries_used cannot be bool")
+        if not isinstance(self.queries_used, int) or self.queries_used < 0:
+            raise ValueError("queries_used must be a non-negative int")
+        for name, val in (("l0", self.l0), ("l1", self.l1), ("l2", self.l2), ("linf", self.linf)):
+            if not math.isfinite(val):
+                raise ValueError(f"{name} must be finite")
+            if val < 0.0:
+                raise ValueError(f"{name} must be >= 0")
+        # Logical consistency
+        if self.successful and not self.attempted:
+            raise ValueError("successful=True requires attempted=True")
+        if self.attempted and not self.eligible:
+            raise ValueError("attempted=True requires eligible=True")
+
+
+# ---------------------------------------------------------------------------
+# BatchConfigLog
+# ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class BatchConfigLog:
     run_id: str
@@ -50,6 +180,7 @@ class BatchConfigLog:
     hit_min_bound: bool
     hit_max_bound: bool
     zero_denominator: bool
+    # RA-only fields (None for Base)
     tp: Optional[int] = None
     fn: Optional[int] = None
     window_start_batch_id: Optional[int] = None
@@ -60,8 +191,68 @@ class BatchConfigLog:
     window_fn_sum: Optional[int] = None
     unclipped_next_intensity: Optional[float] = None
     clipped_next_intensity: Optional[float] = None
-    fs_effective_d: Optional[float] = None
+    fs_effective_d: Optional[int] = None
 
+    def __post_init__(self):
+        if not self.run_id:
+            raise ValueError("run_id must be nonempty")
+        if isinstance(self.batch_id, bool):
+            raise TypeError("batch_id cannot be bool")
+        if not isinstance(self.batch_id, int) or self.batch_id < 0:
+            raise ValueError("batch_id must be a non-negative int")
+        if not self.config_id:
+            raise ValueError("config_id must be nonempty")
+        if not math.isfinite(self.intensity) or self.intensity < 0.0:
+            raise ValueError(f"intensity must be finite and >= 0, got {self.intensity}")
+        if self.state not in _VALID_STATES:
+            raise ValueError(f"state {self.state!r} not in {sorted(_VALID_STATES)}")
+        if not math.isfinite(self.multiplier) or self.multiplier <= 0.0:
+            raise ValueError(f"multiplier must be finite and > 0, got {self.multiplier}")
+        if not isinstance(self.hit_min_bound, bool):
+            raise TypeError("hit_min_bound must be bool")
+        if not isinstance(self.hit_max_bound, bool):
+            raise TypeError("hit_max_bound must be bool")
+        if not isinstance(self.zero_denominator, bool):
+            raise TypeError("zero_denominator must be bool")
+
+        is_base = (self.state == "Base")
+        ra_fields = (self.tp, self.fn, self.window_start_batch_id, self.window_end_batch_id,
+                     self.configured_window_size, self.window_batch_count,
+                     self.window_tp_sum, self.window_fn_sum,
+                     self.unclipped_next_intensity, self.clipped_next_intensity)
+
+        if is_base:
+            # All RA fields must be None
+            for name, val in zip(
+                ("tp", "fn", "window_start_batch_id", "window_end_batch_id",
+                 "configured_window_size", "window_batch_count",
+                 "window_tp_sum", "window_fn_sum",
+                 "unclipped_next_intensity", "clipped_next_intensity"),
+                ra_fields
+            ):
+                if val is not None:
+                    raise ValueError(f"Base log must have {name}=None, got {val!r}")
+        else:
+            # RA fields must be present and valid
+            if self.tp is None or self.fn is None:
+                raise ValueError("RA log must have tp and fn")
+            if isinstance(self.tp, bool) or not isinstance(self.tp, int) or self.tp < 0:
+                raise ValueError("tp must be a non-negative int")
+            if isinstance(self.fn, bool) or not isinstance(self.fn, int) or self.fn < 0:
+                raise ValueError("fn must be a non-negative int")
+            if self.rolling_recall is not None and not (0.0 <= self.rolling_recall <= 1.0):
+                raise ValueError(f"rolling_recall must be in [0,1], got {self.rolling_recall}")
+            for name, val in (("unclipped_next_intensity", self.unclipped_next_intensity),
+                               ("clipped_next_intensity", self.clipped_next_intensity)):
+                if val is None:
+                    raise ValueError(f"RA log must have {name}")
+                if not math.isfinite(val) or val < 0.0:
+                    raise ValueError(f"{name} must be finite and >= 0")
+
+
+# ---------------------------------------------------------------------------
+# BatchConfusionLog
+# ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class BatchConfusionLog:
     run_id: str
@@ -82,6 +273,46 @@ class BatchConfusionLog:
     asr_applicable: bool
     asr: Optional[float]
 
+    def __post_init__(self):
+        if not self.run_id:
+            raise ValueError("run_id must be nonempty")
+        if isinstance(self.batch_id, bool) or not isinstance(self.batch_id, int) or self.batch_id < 0:
+            raise ValueError("batch_id must be a non-negative int")
+        for name in ("tp", "fp", "tn", "fn", "eligible_count", "attempted_count", "successful_count"):
+            val = getattr(self, name)
+            if isinstance(val, bool):
+                raise TypeError(f"{name} cannot be bool")
+            if not isinstance(val, int) or val < 0:
+                raise ValueError(f"{name} must be a non-negative int")
+        for name in ("accuracy", "recall", "precision", "f1", "balanced_accuracy", "pr_auc_average_precision"):
+            val = getattr(self, name)
+            if not math.isfinite(val):
+                raise ValueError(f"{name} must be finite")
+            if not (0.0 <= val <= 1.0):
+                raise ValueError(f"{name} must be in [0,1], got {val}")
+        if not isinstance(self.asr_applicable, bool):
+            raise TypeError("asr_applicable must be bool")
+        # asr nullability
+        if self.asr_applicable and self.asr is None:
+            raise ValueError("asr_applicable=True but asr is None")
+        if not self.asr_applicable and self.asr is not None:
+            raise ValueError("asr_applicable=False but asr is not None")
+        if self.asr is not None:
+            if not math.isfinite(self.asr) or not (0.0 <= self.asr <= 1.0):
+                raise ValueError(f"asr must be in [0,1], got {self.asr}")
+        # Count relationships
+        if self.attempted_count > self.eligible_count:
+            raise ValueError(f"attempted_count ({self.attempted_count}) > eligible_count ({self.eligible_count})")
+        if self.successful_count > self.attempted_count:
+            raise ValueError(f"successful_count ({self.successful_count}) > attempted_count ({self.attempted_count})")
+        total = self.tp + self.fp + self.tn + self.fn
+        if total > 500:
+            raise ValueError(f"confusion sum {total} exceeds max batch size 500")
+
+
+# ---------------------------------------------------------------------------
+# RunSummary
+# ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class RunSummary:
     run_id: str
@@ -106,16 +337,72 @@ class RunSummary:
     global_asr: Optional[float]
     completed_successfully: bool
 
+    def __post_init__(self):
+        if not self.run_id:
+            raise ValueError("run_id must be nonempty")
+        if isinstance(self.seed, bool) or not isinstance(self.seed, int):
+            raise TypeError("seed must be int")
+        if self.total_batches != 144:
+            raise ValueError(f"total_batches must be 144, got {self.total_batches}")
+        for name in ("tp", "fp", "tn", "fn", "total_eligible", "total_attempted", "total_successful"):
+            val = getattr(self, name)
+            if isinstance(val, bool):
+                raise TypeError(f"{name} cannot be bool")
+            if not isinstance(val, int) or val < 0:
+                raise ValueError(f"{name} must be a non-negative int")
+        for name in ("accuracy", "recall", "precision", "f1", "balanced_accuracy", "pr_auc_average_precision"):
+            val = getattr(self, name)
+            if not math.isfinite(val) or not (0.0 <= val <= 1.0):
+                raise ValueError(f"{name} must be in [0,1], got {val}")
+        if self.global_asr is not None:
+            if not math.isfinite(self.global_asr) or not (0.0 <= self.global_asr <= 1.0):
+                raise ValueError(f"global_asr must be in [0,1], got {self.global_asr}")
+        if not isinstance(self.completed_successfully, bool):
+            raise TypeError("completed_successfully must be bool")
+        if self.total_attempted > self.total_eligible:
+            raise ValueError("total_attempted > total_eligible")
+        if self.total_successful > self.total_attempted:
+            raise ValueError("total_successful > total_attempted")
+
+
+# ---------------------------------------------------------------------------
+# CompletionMarker
+# ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class CompletionMarker:
     run_id: str
     timestamp: str
     provenance_hashes: Dict[str, str]
-    
+
     def __post_init__(self):
+        if not self.run_id:
+            raise ValueError("run_id must be nonempty")
         if not self.provenance_hashes:
             raise ValueError("provenance_hashes must be nonempty")
+        # Check required keys
+        missing = _REQUIRED_PROVENANCE_KEYS - set(self.provenance_hashes.keys())
+        if missing:
+            raise ValueError(f"provenance_hashes missing required keys: {sorted(missing)}")
+        # Validate each value
+        for key, val in self.provenance_hashes.items():
+            if not isinstance(key, str) or not isinstance(val, str):
+                raise TypeError(f"provenance key/value must be strings, got {key!r}: {val!r}")
+            if key.lower() in _PLACEHOLDER_STRINGS or val.lower() in _PLACEHOLDER_STRINGS:
+                raise ValueError(f"provenance_hashes contains placeholder: {key!r}: {val!r}")
+            if not _is_hex64(val):
+                raise ValueError(
+                    f"provenance_hashes[{key!r}] must be a 64-char lowercase hex string, got {val!r}"
+                )
+        # JSON-serialisable (no exotic types)
+        try:
+            json.dumps(self.provenance_hashes)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"provenance_hashes must be JSON-serialisable: {exc}")
 
+
+# ---------------------------------------------------------------------------
+# FailureRecord
+# ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class FailureRecord:
     run_id: str
@@ -123,3 +410,12 @@ class FailureRecord:
     error_type: str
     error_message: str
     failed_at_batch: Optional[int]
+
+    def __post_init__(self):
+        if not self.run_id:
+            raise ValueError("run_id must be nonempty")
+        if self.failed_at_batch is not None:
+            if isinstance(self.failed_at_batch, bool):
+                raise TypeError("failed_at_batch cannot be bool")
+            if not isinstance(self.failed_at_batch, int) or self.failed_at_batch < 0:
+                raise ValueError("failed_at_batch must be a non-negative int")

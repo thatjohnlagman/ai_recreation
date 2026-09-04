@@ -1,18 +1,65 @@
+"""
+ExperimentRunner for Phase 10.
+
+Execution order per batch:
+  1. get_intensity(t)         — before any label access
+  2. get_batch_data(t)        — cache (no labels involved)
+  3. defend_batch(...)        — defense + model predict on defended output
+  4. get_labels(...)          — labels accessed ONLY after prediction
+  5. calculate_metrics(...)   — TP/FN computed
+  6. submit_observations(...) — RA only, after batch complete; Base never receives TP/FN
+
+Output write order:
+  config.json → confusion.json → scores.json → run_summary.json → completion.json
+
+completion.json is written last and only after all others succeed.
+"""
+from __future__ import annotations
+
 import numpy as np
 import pandas as pd
 import json
 import dataclasses
+import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional
 import shutil
-import datetime
+from sklearn.metrics import average_precision_score
 
-from recall_aware_ids.experiment.schemas import BatchConfigLog, BatchConfusionLog, CompletionMarker, FailureRecord
+from recall_aware_ids.experiment.schemas import (
+    BatchConfigLog, BatchConfusionLog, CompletionMarker,
+    RunSummary, FailureRecord, _REQUIRED_PROVENANCE_KEYS, _is_hex64,
+)
 from recall_aware_ids.experiment.metrics import calculate_metrics
+
+_PLACEHOLDER_STRINGS = frozenset({"dummy", "hash", "placeholder", "todo", "none", "null", "xxx"})
+
+
+def _now_iso() -> str:
+    return datetime.datetime.utcnow().isoformat() + "Z"
+
+
+def _validate_provenance(hashes: Dict[str, str]):
+    if not hashes:
+        raise ValueError("provenance_hashes must be non-empty")
+    missing = _REQUIRED_PROVENANCE_KEYS - set(hashes.keys())
+    if missing:
+        raise ValueError(f"provenance_hashes missing required keys: {sorted(missing)}")
+    for key, val in hashes.items():
+        if not isinstance(key, str) or not isinstance(val, str):
+            raise TypeError(f"provenance key/value must be strings: {key!r}: {val!r}")
+        if key.lower() in _PLACEHOLDER_STRINGS or val.lower() in _PLACEHOLDER_STRINGS:
+            raise ValueError(f"provenance_hashes contains placeholder: {key!r}: {val!r}")
+        if not _is_hex64(val):
+            raise ValueError(
+                f"provenance_hashes[{key!r}] must be a 64-char lowercase hex string, got {val!r}"
+            )
+
 
 class AttackCacheProvider:
     def get_batch_data(self, batch_id: int) -> Dict[str, np.ndarray]:
         raise NotImplementedError
+
 
 class LabelProvider:
     def __init__(self, y_measurement: np.ndarray):
@@ -23,215 +70,339 @@ class LabelProvider:
         self.access_log.append({"event": "label_access", "batch_id": batch_id})
         return self._y[batch_indices]
 
+
 class ExperimentRunner:
-    def __init__(self,
-                 resolved_batches: pd.DataFrame,
-                 label_provider: LabelProvider,
-                 attack_cache: AttackCacheProvider,
-                 defense_adapter,
-                 policy_controller,
-                 output_dir: Path,
-                 run_id: str,
-                 seed: int,
-                 attack_scenario: str,
-                 defense_name: str,
-                 config_id: str):
-        
-        # Validation
+    def __init__(
+        self,
+        resolved_batches: pd.DataFrame,
+        label_provider: LabelProvider,
+        attack_cache: AttackCacheProvider,
+        defense_adapter,
+        policy_controller,
+        output_dir: Path,
+        run_id: str,
+        seed: int,
+        attack_scenario: str,
+        defense_name: str,
+        config_id: str,
+        provenance_hashes: Dict[str, str],
+    ):
+        # Basic validation
+        if not isinstance(run_id, str) or not run_id:
+            raise ValueError("run_id must be a nonempty string")
         if ".." in run_id or "/" in run_id:
             raise ValueError("run_id cannot escape directory")
-        if not isinstance(seed, int):
+        if isinstance(seed, bool) or not isinstance(seed, int):
             raise TypeError("seed must be int")
-            
-        # Batches validation
-        batch_counts = resolved_batches['batch_id'].value_counts()
+
+        # Validate provenance
+        _validate_provenance(provenance_hashes)
+
+        # Batch structure
+        batch_counts = resolved_batches["batch_id"].value_counts()
         if len(batch_counts) != 144:
             raise ValueError(f"Expected 144 batches, got {len(batch_counts)}")
         if not all(batch_counts == 500):
             raise ValueError("Not all batches have exactly 500 records")
-        if set(batch_counts.index) != set(range(144)):
+        if set(batch_counts.index.tolist()) != set(range(144)):
             raise ValueError("Batch IDs must be exactly 0..143")
-        
+
+        # Policy interface
+        if not hasattr(policy_controller, "requires_feedback"):
+            raise ValueError("Policy must have requires_feedback property")
+
         self.resolved_batches = resolved_batches
         self.label_provider = label_provider
         self.attack_cache = attack_cache
         self.defense_adapter = defense_adapter
         self.policy_controller = policy_controller
-        
-        self.output_dir = output_dir
+        self.output_dir = Path(output_dir)
         self.run_id = run_id
         self.seed = seed
         self.attack_scenario = attack_scenario
         self.defense_name = defense_name
         self.config_id = config_id
-        
-        # Policy interface validation
-        if hasattr(self.policy_controller, 'requires_feedback') is False:
-            raise ValueError("Policy must have requires_feedback property")
-        
-    def _get_batch_indices(self, batch_id: int):
-        batch_df = self.resolved_batches[self.resolved_batches['batch_id'] == batch_id]
-        batch_df = batch_df.sort_values('eval_position')
-        return batch_df['measurement_idx'].values
+        self.provenance_hashes = dict(provenance_hashes)
+
+    def _get_batch_indices(self, batch_id: int) -> np.ndarray:
+        batch_df = self.resolved_batches[self.resolved_batches["batch_id"] == batch_id]
+        batch_df = batch_df.sort_values("eval_position")
+        return batch_df["measurement_idx"].values
 
     def execute_run(self):
         final_dir = self.output_dir / self.run_id
         if final_dir.exists():
-            raise FileExistsError(f"Run {self.run_id} already exists. Will not overwrite.")
-            
+            raise FileExistsError(f"Run '{self.run_id}' already exists. Will not overwrite.")
+
         run_tmp_dir = self.output_dir / f"{self.run_id}_tmp"
         if run_tmp_dir.exists():
-            quarantine_dir = self.output_dir / f"{self.run_id}_stale_quarantined_{datetime.datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+            ts = datetime.datetime.utcnow().strftime("%Y%m%d%H%M%S%f")
+            quarantine_dir = self.output_dir / f"{self.run_id}_stale_quarantined_{ts}"
             run_tmp_dir.rename(quarantine_dir)
-            
+
         run_tmp_dir.mkdir(parents=True, exist_ok=False)
-        
-        config_log_path = run_tmp_dir / "config.json"
-        confusion_log_path = run_tmp_dir / "confusion.json"
-        
+
+        # Accumulators for global PR-AUC
+        all_y_true = []
+        all_scores = []
+
         config_logs = []
         confusion_logs = []
-        
+        score_records = []
+
         self.policy_controller.reset()
-        
+
+        asr_applicable = (self.attack_scenario not in ("Silent Probing", "SilentProbing"))
+
         try:
             for batch_id in range(144):
-                # 1. TIMING: Request intensity used [t] BEFORE fetching labels
+                # ---- 1. TIMING: intensity BEFORE label access ----
                 decision = self.policy_controller.get_intensity(batch_id)
                 intensity = decision.intensity
-                
-                # 2. Obtain canonical attacked feature rows (no labels provided to attack)
+
+                # ---- 2. Cache data (no labels) ----
                 cache_data = self.attack_cache.get_batch_data(batch_id)
-                X_attacked = cache_data['X_attacked']
-                
-                if len(X_attacked) != 500:
-                    raise ValueError(f"X_attacked must have 500 rows, got {len(X_attacked)}")
-                if X_attacked.shape[1] != 78:
-                    raise ValueError(f"X_attacked must have 78 columns, got {X_attacked.shape[1]}")
+                X_attacked = cache_data["X_attacked"]
+
+                if X_attacked.shape != (500, 78):
+                    raise ValueError(f"X_attacked shape {X_attacked.shape} != (500, 78)")
                 if not np.all(np.isfinite(X_attacked)):
-                    raise ValueError("X_attacked must be finite")
-                
-                # 3. Apply defense and predict
-                defended_preds, defended_result, defended_scores = self.defense_adapter.defend_batch(
-                    X=X_attacked, 
-                    intensity=intensity, 
-                    seed=self.seed, 
-                    attack_scenario=self.attack_scenario, 
-                    batch_id=batch_id
+                    raise ValueError("X_attacked contains non-finite values")
+
+                # ---- 3. Defense + model predict on defended output ----
+                defended_preds, defense_result, defended_scores = self.defense_adapter.defend_batch(
+                    X=X_attacked,
+                    intensity=intensity,
+                    seed=self.seed,
+                    attack_scenario=self.attack_scenario,
+                    batch_id=batch_id,
                 )
-                
+
                 if len(defended_preds) != 500 or len(defended_scores) != 500:
-                    raise ValueError("Predictions and scores must have length 500")
-                
-                # 4. NOW retrieve labels in the evaluation-only metric layer
+                    raise ValueError("Defended predictions length must be 500")
+
+                # ---- 4. Label access AFTER prediction ----
                 batch_indices = self._get_batch_indices(batch_id)
                 y_batch = self.label_provider.get_labels(batch_indices, batch_id)
-                
-                # 5. Calculate TP/FN and metrics
+
+                # Accumulate for global PR-AUC
+                all_y_true.extend(y_batch.tolist())
+                all_scores.extend(defended_scores.tolist())
+
+                # ---- 5. Calculate metrics ----
                 batch_metrics = calculate_metrics(
                     y_true=y_batch,
                     y_pred=defended_preds,
                     positive_scores=defended_scores,
-                    eligible_mask=cache_data['eligible'],
-                    attempted_mask=cache_data['attempted'],
-                    successful_mask=cache_data['successful'],
-                    asr_applicable=(self.attack_scenario != "Silent Probing")
+                    eligible_mask=cache_data["eligible"],
+                    attempted_mask=cache_data["attempted"],
+                    successful_mask=cache_data["successful"],
+                    asr_applicable=asr_applicable,
                 )
-                
+
                 tp = batch_metrics["tp"]
                 fn = batch_metrics["fn"]
-                
-                # 6. Update RA for batch t+1 (if requires feedback)
+
+                # ---- 6. RA feedback (after batch completion) or Base log ----
+                fs_effective_d = None
+                if hasattr(self.defense_adapter, "last_effective_d"):
+                    fs_effective_d = self.defense_adapter.last_effective_d
+
                 if self.policy_controller.requires_feedback:
+                    # RA: submit observations
                     policy_update = self.policy_controller.submit_observations(batch_id, tp, fn)
                     c_log = BatchConfigLog(
                         run_id=self.run_id,
                         batch_id=batch_id,
                         config_id=self.config_id,
-                        intensity=intensity,
+                        intensity=float(intensity),
                         state=policy_update.state,
-                        multiplier=policy_update.multiplier,
-                        rolling_recall=policy_update.rolling_recall,
-                        hit_min_bound=policy_update.hit_min_bound,
-                        hit_max_bound=policy_update.hit_max_bound,
-                        zero_denominator=policy_update.zero_denominator,
-                        tp=policy_update.tp,
-                        fn=policy_update.fn,
-                        window_start_batch_id=policy_update.window_start_batch_id,
-                        window_end_batch_id=policy_update.window_end_batch_id,
-                        configured_window_size=policy_update.configured_window_size,
-                        window_batch_count=policy_update.window_batch_count,
-                        window_tp_sum=policy_update.window_tp_sum,
-                        window_fn_sum=policy_update.window_fn_sum,
-                        unclipped_next_intensity=policy_update.unclipped_next_intensity,
-                        clipped_next_intensity=policy_update.clipped_next_intensity,
-                        fs_effective_d=None # Can be extracted from defended_result if needed
+                        multiplier=float(policy_update.multiplier),
+                        rolling_recall=float(policy_update.rolling_recall),
+                        hit_min_bound=bool(policy_update.hit_min_bound),
+                        hit_max_bound=bool(policy_update.hit_max_bound),
+                        zero_denominator=bool(policy_update.zero_denominator),
+                        tp=int(policy_update.tp),
+                        fn=int(policy_update.fn),
+                        window_start_batch_id=(
+                            int(policy_update.window_start_batch_id)
+                            if policy_update.window_start_batch_id is not None else None
+                        ),
+                        window_end_batch_id=(
+                            int(policy_update.window_end_batch_id)
+                            if policy_update.window_end_batch_id is not None else None
+                        ),
+                        configured_window_size=int(policy_update.configured_window_size),
+                        window_batch_count=int(policy_update.window_batch_count),
+                        window_tp_sum=int(policy_update.window_tp_sum),
+                        window_fn_sum=int(policy_update.window_fn_sum),
+                        unclipped_next_intensity=float(policy_update.unclipped_next_intensity),
+                        clipped_next_intensity=float(policy_update.clipped_next_intensity),
+                        fs_effective_d=int(fs_effective_d) if fs_effective_d is not None else None,
                     )
                 else:
-                    # Base policy
+                    # Base: never receives TP/FN; all RA-only fields must be None
                     c_log = BatchConfigLog(
                         run_id=self.run_id,
                         batch_id=batch_id,
                         config_id=self.config_id,
-                        intensity=intensity,
+                        intensity=float(intensity),
                         state="Base",
                         multiplier=1.0,
                         rolling_recall=0.0,
                         hit_min_bound=False,
                         hit_max_bound=False,
-                        zero_denominator=False
+                        zero_denominator=False,
+                        # All RA-only fields explicitly None
+                        tp=None,
+                        fn=None,
+                        window_start_batch_id=None,
+                        window_end_batch_id=None,
+                        configured_window_size=None,
+                        window_batch_count=None,
+                        window_tp_sum=None,
+                        window_fn_sum=None,
+                        unclipped_next_intensity=None,
+                        clipped_next_intensity=None,
+                        fs_effective_d=int(fs_effective_d) if fs_effective_d is not None else None,
                     )
-                
+
                 cf_log = BatchConfusionLog(
                     run_id=self.run_id,
                     batch_id=batch_id,
-                    tp=tp,
-                    fp=batch_metrics["fp"],
-                    tn=batch_metrics["tn"],
-                    fn=fn,
-                    accuracy=batch_metrics["accuracy"],
-                    recall=batch_metrics["recall"],
-                    precision=batch_metrics["precision"],
-                    f1=batch_metrics["f1"],
-                    balanced_accuracy=batch_metrics["balanced_accuracy"],
-                    pr_auc_average_precision=batch_metrics["pr_auc_average_precision"],
-                    eligible_count=batch_metrics["eligible_count"],
-                    attempted_count=batch_metrics["attempted_count"],
-                    successful_count=batch_metrics["successful_count"],
-                    asr_applicable=batch_metrics["asr_applicable"],
-                    asr=batch_metrics["asr"]
+                    tp=int(batch_metrics["tp"]),
+                    fp=int(batch_metrics["fp"]),
+                    tn=int(batch_metrics["tn"]),
+                    fn=int(batch_metrics["fn"]),
+                    accuracy=float(batch_metrics["accuracy"]),
+                    recall=float(batch_metrics["recall"]),
+                    precision=float(batch_metrics["precision"]),
+                    f1=float(batch_metrics["f1"]),
+                    balanced_accuracy=float(batch_metrics["balanced_accuracy"]),
+                    pr_auc_average_precision=float(batch_metrics["pr_auc_average_precision"]),
+                    eligible_count=int(batch_metrics["eligible_count"]),
+                    attempted_count=int(batch_metrics["attempted_count"]),
+                    successful_count=int(batch_metrics["successful_count"]),
+                    asr_applicable=bool(batch_metrics["asr_applicable"]),
+                    asr=batch_metrics["asr"],
                 )
-                
+
                 config_logs.append(dataclasses.asdict(c_log))
                 confusion_logs.append(dataclasses.asdict(cf_log))
-                
-            # Write outputs inside tmp dir
-            with open(config_log_path, 'w') as f:
+                score_records.append({
+                    "batch_id": batch_id,
+                    "y_true": y_batch.tolist(),
+                    "scores": defended_scores.tolist(),
+                    "preds": defended_preds.tolist(),
+                    "defense_final_invalid_count": (
+                        defense_result.final_nan_count + defense_result.final_inf_count
+                        + defense_result.final_bounds_violation_count
+                    ),
+                    "protected_feature_modification_count": defense_result.protected_feature_modification_count,
+                    "projected_cell_count": defense_result.projected_cell_count,
+                })
+
+            # ---- Write outputs in strict order ----
+            # 1. config.json
+            with open(run_tmp_dir / "config.json", "w") as f:
                 json.dump(config_logs, f, indent=2)
-                
-            with open(confusion_log_path, 'w') as f:
+
+            # 2. confusion.json
+            with open(run_tmp_dir / "confusion.json", "w") as f:
                 json.dump(confusion_logs, f, indent=2)
-                
-            # Write completion marker
-            marker = CompletionMarker(run_id=self.run_id, timestamp=datetime.datetime.utcnow().isoformat(), provenance_hashes={"dummy": "hash"})
-            with open(run_tmp_dir / "completion.json", 'w') as f:
-                json.dump(dataclasses.asdict(marker), f)
-                
-            # Atomically rename
-            run_tmp_dir.rename(final_dir)
-            
-        except Exception as e:
-            # On failure, quarantine the temp directory and write failure marker
-            quarantine_dir = self.output_dir / f"{self.run_id}_failed_quarantined_{datetime.datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
-            run_tmp_dir.rename(quarantine_dir)
-            
-            fail_record = FailureRecord(
-                run_id=self.run_id,
-                timestamp=datetime.datetime.utcnow().isoformat(),
-                error_type=type(e).__name__,
-                error_message=str(e),
-                failed_at_batch=locals().get('batch_id', None)
+
+            # 3. scores.json
+            with open(run_tmp_dir / "scores.json", "w") as f:
+                json.dump(score_records, f)
+
+            # 4. run_summary.json — global PR-AUC from concatenated scores
+            agg_y = np.array(all_y_true, dtype=int)
+            agg_scores = np.array(all_scores, dtype=float)
+
+            total_tp = sum(r["tp"] for r in (dataclasses.asdict(BatchConfusionLog(**c))
+                                              for c in (json.loads(json.dumps(cf))
+                                                        for cf in confusion_logs)))
+            # Simpler aggregation from confusion_logs directly
+            agg_tp = sum(c["tp"] for c in confusion_logs)
+            agg_fp = sum(c["fp"] for c in confusion_logs)
+            agg_tn = sum(c["tn"] for c in confusion_logs)
+            agg_fn = sum(c["fn"] for c in confusion_logs)
+            agg_eligible = sum(c["eligible_count"] for c in confusion_logs)
+            agg_attempted = sum(c["attempted_count"] for c in confusion_logs)
+            agg_successful = sum(c["successful_count"] for c in confusion_logs)
+
+            denom = agg_tp + agg_fp + agg_tn + agg_fn
+            global_accuracy = (agg_tp + agg_tn) / denom if denom > 0 else 0.0
+            global_recall = agg_tp / (agg_tp + agg_fn) if (agg_tp + agg_fn) > 0 else 0.0
+            global_precision = agg_tp / (agg_tp + agg_fp) if (agg_tp + agg_fp) > 0 else 0.0
+            if (global_precision + global_recall) > 0:
+                global_f1 = 2 * global_precision * global_recall / (global_precision + global_recall)
+            else:
+                global_f1 = 0.0
+            specificity = agg_tn / (agg_tn + agg_fp) if (agg_tn + agg_fp) > 0 else 0.0
+            global_balanced_acc = (global_recall + specificity) / 2.0
+
+            # Global PR-AUC from concatenated row-level labels and scores
+            if len(np.unique(agg_y)) > 1:
+                global_pr_auc = float(average_precision_score(agg_y, agg_scores))
+            else:
+                global_pr_auc = 0.0
+
+            global_asr = (
+                float(agg_successful / agg_attempted) if asr_applicable and agg_attempted > 0 else None
             )
-            with open(quarantine_dir / "quarantined_failure.json", 'w') as f:
-                json.dump(dataclasses.asdict(fail_record), f)
-            raise e
+
+            summary = RunSummary(
+                run_id=self.run_id,
+                seed=self.seed,
+                attack_scenario=self.attack_scenario,
+                defense=self.defense_name,
+                config_id=self.config_id,
+                total_batches=144,
+                tp=agg_tp,
+                fp=agg_fp,
+                tn=agg_tn,
+                fn=agg_fn,
+                accuracy=float(global_accuracy),
+                recall=float(global_recall),
+                precision=float(global_precision),
+                f1=float(global_f1),
+                balanced_accuracy=float(global_balanced_acc),
+                pr_auc_average_precision=float(global_pr_auc),
+                total_eligible=agg_eligible,
+                total_attempted=agg_attempted,
+                total_successful=agg_successful,
+                global_asr=global_asr,
+                completed_successfully=True,
+            )
+
+            with open(run_tmp_dir / "run_summary.json", "w") as f:
+                json.dump(dataclasses.asdict(summary), f, indent=2)
+
+            # 5. completion.json — written LAST
+            marker = CompletionMarker(
+                run_id=self.run_id,
+                timestamp=_now_iso(),
+                provenance_hashes=self.provenance_hashes,
+            )
+            with open(run_tmp_dir / "completion.json", "w") as f:
+                json.dump(dataclasses.asdict(marker), f, indent=2)
+
+            # Atomic rename to final dir
+            run_tmp_dir.rename(final_dir)
+
+        except Exception as e:
+            ts = datetime.datetime.utcnow().strftime("%Y%m%d%H%M%S%f")
+            quarantine_dir = self.output_dir / f"{self.run_id}_failed_quarantined_{ts}"
+            if run_tmp_dir.exists():
+                run_tmp_dir.rename(quarantine_dir)
+                fail_record = FailureRecord(
+                    run_id=self.run_id,
+                    timestamp=_now_iso(),
+                    error_type=type(e).__name__,
+                    error_message=str(e),
+                    failed_at_batch=locals().get("batch_id", None),
+                )
+                with open(quarantine_dir / "quarantined_failure.json", "w") as f:
+                    json.dump(dataclasses.asdict(fail_record), f)
+            raise

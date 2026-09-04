@@ -72,12 +72,16 @@ def test_metrics_strict_validation():
 def test_complete_cache_validation(tmp_path):
     manifest_path = tmp_path / "manifest.json"
     artifact_path = tmp_path / "X_attacked.parquet"
+    status_path = tmp_path / "status.parquet"
     
     with open(artifact_path, "wb") as f:
-        f.write(b"dummy")
+        f.write(b"dummy_x_data")
+    with open(status_path, "wb") as f:
+        f.write(b"dummy_status_data")
         
     from recall_aware_ids.experiment.caching import calculate_file_hash
-    ahash = calculate_file_hash(artifact_path)
+    x_hash = calculate_file_hash(artifact_path)
+    s_hash = calculate_file_hash(status_path)
     
     good_manifest = {
         "X_eval_hash": "a", "metadata_eval_hash": "b", "evaluation_roles_hash": "c", "evaluation_batches_hash": "d",
@@ -86,14 +90,15 @@ def test_complete_cache_validation(tmp_path):
         "frozen_rf_hash": "i", "scaler_hash": "j", "feature_names_hash": "k", "feature_mask_hash": "l", "training_bounds_hash": "m",
         "attack_parameters": {"param": 1}, "query_budgets": {"queries": 50},
         "attack_scenario": "Surrogate", "effective_seed": 42,
-        "schema_version": "1.0", "row_count": 72000, "output_sha256": ahash
+        "schema_version": "1.0", "row_count": 72000,
+        "X_attacked_sha256": x_hash, "status_sha256": s_hash, "output_sha256": x_hash,
     }
     
     with open(manifest_path, "w") as f:
         json.dump(good_manifest, f)
         
     # Validation succeeds
-    assert validate_cache_manifest(manifest_path, artifact_path, good_manifest) is True
+    assert validate_cache_manifest(manifest_path, artifact_path, good_manifest, status_path=status_path) is True
     
     # Missing required key
     bad = good_manifest.copy()
@@ -102,4 +107,4 @@ def test_complete_cache_validation(tmp_path):
         json.dump(bad, f)
         
     with pytest.raises(ValueError, match="Missing required key"):
-         validate_cache_manifest(manifest_path, artifact_path, good_manifest)
+         validate_cache_manifest(manifest_path, artifact_path, good_manifest, status_path=status_path)
