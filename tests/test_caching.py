@@ -149,8 +149,16 @@ def test_validate_cache_manifest_fails_corrupted_json(tmp_path):
 # ─── ConcreteAttackCacheProvider ─────────────────────────────────────────────
 
 def _write_valid_cache(cache_dir: Path, n_rows: int = N):
-    X = np.zeros((n_rows, 78), dtype=np.float32)
-    pd.DataFrame(X).to_parquet(cache_dir / "X_attacked.parquet", index=False)
+    import json
+    feature_names_path = Path(__file__).resolve().parents[1] / "artifacts/preprocessors/feature_mask.json"
+    if feature_names_path.exists():
+        with open(feature_names_path) as f:
+            cols = json.load(f)["feature_columns"]
+    else:
+        cols = [str(i) for i in range(78)]
+
+    X = np.zeros((n_rows, len(cols)), dtype=np.float32)
+    pd.DataFrame(X, columns=cols).to_parquet(cache_dir / "X_attacked.parquet", index=False)
 
     status_df = pd.DataFrame({
         "eval_position": np.arange(n_rows, dtype=int),
@@ -255,7 +263,7 @@ def test_cache_builder_silent_probing_round_trip(tmp_path):
 
     out_dir = builder.build(
         scenario=AttackCacheBuilder.SCENARIO_SILENT_PROBING,
-        X_input=X, y_input=y, eval_positions=eps,
+        X_measurement=X, y_measurement=y, eval_positions=eps,
         output_dir=tmp_path / "cache_sp",
     )
 
@@ -287,12 +295,12 @@ def test_cache_builder_silent_probing_determinism(tmp_path):
 
     out1 = builder.build(
         scenario=AttackCacheBuilder.SCENARIO_SILENT_PROBING,
-        X_input=X, y_input=y, eval_positions=eps,
+        X_measurement=X, y_measurement=y, eval_positions=eps,
         output_dir=tmp_path / "det1",
     )
     out2 = builder.build(
         scenario=AttackCacheBuilder.SCENARIO_SILENT_PROBING,
-        X_input=X, y_input=y, eval_positions=eps,
+        X_measurement=X, y_measurement=y, eval_positions=eps,
         output_dir=tmp_path / "det2",
     )
     h1 = calculate_file_hash(out1 / "X_attacked.parquet")
@@ -313,7 +321,7 @@ def test_cache_builder_provider_integration(tmp_path):
 
     out_dir = builder.build(
         scenario=AttackCacheBuilder.SCENARIO_SILENT_PROBING,
-        X_input=X, y_input=y, eval_positions=eps,
+        X_measurement=X, y_measurement=y, eval_positions=eps,
         output_dir=tmp_path / "cache",
     )
 
@@ -342,4 +350,108 @@ def test_cache_builder_rejects_placeholder_provenance():
             training_bounds=bounds,
             provenance_hashes=bad_prov,
             seed=42,
+        )
+
+class MockSurrogateAttack:
+    def fit_surrogate(self, X, y):
+        self.X_fit = X
+        self.y_fit = y
+        
+    def generate_candidate(self, x):
+        return x + 1.0, {"l0": 1.0, "l1": 1.0, "l2": 1.0, "linf": 1.0}
+
+class MockBoundaryAttack:
+    def generate(self, x, oracle, sample_id, true_label, reference_pool):
+        oracle.predict(x.reshape(1, -1), sample_ids=[sample_id])
+        from recall_aware_ids.attacks.base import AttackResult
+        return AttackResult(
+            sample_id=sample_id, X_adv=x + 2.0, eligible=True, attempted=True, success=True,
+            status_code="SUCCESS", message="Mock success", query_count=1,
+            magnitudes={"l0": 2.0, "l1": 2.0, "l2": 2.0, "linf": 2.0}
+        )
+
+def test_cache_builder_surrogate_semantics(tmp_path):
+    builder = _make_builder()
+    rng = np.random.RandomState(0)
+    X_meas = rng.rand(10, 78).astype(np.float32)
+    y_meas = np.ones(10, dtype=int)
+    eps = np.arange(10)
+    
+    X_craft = rng.rand(5, 78).astype(np.float32)
+    y_craft = np.ones(5, dtype=int)
+    
+    def mock_predict(x, **kwargs):
+        # Always return 1 to make them eligible, except for candidate evaluation
+        return np.ones(len(x), dtype=int)
+        
+    surrogate = MockSurrogateAttack()
+    
+    out_dir = builder.build(
+        scenario=AttackCacheBuilder.SCENARIO_SURROGATE,
+        X_measurement=X_meas, y_measurement=y_meas, eval_positions=eps,
+        output_dir=tmp_path / "surrogate_cache",
+        X_crafting=X_craft, y_crafting=y_craft,
+        oracle_or_predict_fn=mock_predict,
+        surrogate_attack=surrogate
+    )
+    
+    # Prove it fits only on crafting pool
+    assert np.allclose(surrogate.X_fit, X_craft)
+    
+    import pandas as pd
+    status = pd.read_parquet(out_dir / "status.parquet")
+    # All 10 attempted because they were eligible
+    assert status["attempted"].all()
+    # Oracle queries tracked per candidate eval = 1
+    assert (status["queries_used"] == 1).all()
+
+
+def test_cache_builder_boundary_semantics(tmp_path):
+    builder = _make_builder()
+    rng = np.random.RandomState(0)
+    X_meas = rng.rand(100, 78).astype(np.float32)
+    y_meas = np.ones(100, dtype=int)
+    eps = np.arange(100)
+    
+    def mock_predict(x, **kwargs):
+        return np.ones(len(x), dtype=int)
+        
+    boundary = MockBoundaryAttack()
+    
+    out_dir = builder.build(
+        scenario=AttackCacheBuilder.SCENARIO_BOUNDARY,
+        X_measurement=X_meas, y_measurement=y_meas, eval_positions=eps,
+        output_dir=tmp_path / "boundary_cache",
+        oracle_or_predict_fn=mock_predict,
+        boundary_attack=boundary,
+        benign_reference_pool=X_meas,
+        n_boundary_targets=20,
+        max_queries=50
+    )
+    
+    import pandas as pd
+    status = pd.read_parquet(out_dir / "status.parquet")
+    # Exactly 20 attempted
+    assert status["attempted"].sum() == 20
+    assert status["eligible"].sum() == 100
+    # Unattempted have 0 queries
+    assert status.loc[~status["attempted"], "queries_used"].sum() == 0
+    # Attempted have 1 query from our mock
+    assert status.loc[status["attempted"], "queries_used"].sum() == 20
+
+def test_cache_builder_atomic_write(tmp_path):
+    builder = _make_builder()
+    out_dir = tmp_path / "cache"
+    out_dir.mkdir()
+    
+    rng = np.random.RandomState(0)
+    X_meas = rng.rand(10, 78).astype(np.float32)
+    y_meas = np.ones(10, dtype=int)
+    eps = np.arange(10)
+    
+    with pytest.raises(FileExistsError):
+        builder.build(
+            scenario=AttackCacheBuilder.SCENARIO_SILENT_PROBING,
+            X_measurement=X_meas, y_measurement=y_meas, eval_positions=eps,
+            output_dir=out_dir
         )

@@ -199,4 +199,36 @@ def test_rs_adapter_exposes_defense_diagnostics(rs_adapter):
     _, result, _ = rs_adapter.defend_batch(X, intensity=0.0002, seed=42,
                                            attack_scenario="Test", batch_id=0)
     assert hasattr(result, "protected_feature_modification_count")
+
+
+def test_rs_adapter_spy_predictor_logic():
+    from recall_aware_ids.defenses.randomized_smoothing import RandomizedSmoothing
+    rs = RandomizedSmoothing(feature_names=FNAMES, modifiable_mask=MASK,
+                             training_bounds=make_bounds_df(), ensemble_size=5)
+    
+    spy_calls = []
+    def spy_predict(X_batch):
+        spy_calls.append(X_batch.copy())
+        # Predict 1 if the sum of all elements in the row is positive
+        # To make things deterministic, let's just return a constant for each sample
+        # Since RS generates noise, we'll return 1 for row index % 2 == 0
+        return np.ones(len(X_batch), dtype=int)
+        
+    class MockModelWithProba:
+        def predict(self, X):
+            return spy_predict(X)
+        def predict_proba(self, X):
+            raise AssertionError("predict_proba must not be called")
+            
+    adapter = RSDefenseAdapter(rs=rs, predict_func=MockModelWithProba().predict, chunk_size=100)
+    
+    X = make_synthetic_X(seed=1)
+    preds, result, scores = adapter.defend_batch(X, intensity=0.001, seed=42, attack_scenario="Test", batch_id=0)
+    
+    # Assert spy was called exactly ensemble_size * (N / chunk_size) times
+    # ensemble_size is 5, N is 500, chunk is 100 -> 5 * 5 = 25 calls
+    assert len(spy_calls) == 25
+    # Since spy_predict always returns 1, scores should be 1.0, preds should be 1
+    assert np.all(preds == 1)
+    assert np.all(scores == 1.0)
     assert result.protected_feature_modification_count == 0

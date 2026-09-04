@@ -194,101 +194,88 @@ def test_base_log_has_all_ra_fields_none(runner_deps):
             assert log[field] is None, f"Base log field {field!r} should be None"
 
 
-# ─── Label access timing ──────────────────────────────────────────────────────
+# ─── Chronological event log (Base and RA) ────────────────────────────────────
 
-def test_label_access_after_intensity_and_prediction(runner_deps):
-    resolved, lp, out = runner_deps
-
-    prediction_events = []
-    label_events = []
-
-    class OrderCheckingPolicy(MockPolicy):
-        def get_intensity(self, batch_id):
-            prediction_events.append(("get_intensity", batch_id))
-            return super().get_intensity(batch_id)
-
-    class OrderCheckingLabelProvider(LabelProvider):
-        def get_labels(self, batch_indices, batch_id):
-            label_events.append(("get_labels", batch_id))
-            return super().get_labels(batch_indices, batch_id)
-
-    class OrderCheckingDefense(MockDefenseAdapter):
-        def defend_batch(self, X, intensity, seed, attack_scenario, batch_id):
-            prediction_events.append(("predict", batch_id))
-            return super().defend_batch(X, intensity, seed, attack_scenario, batch_id)
-
-    resolved_check = make_resolved_batches()
-    y_check = np.zeros(N_BATCHES * BATCH_SIZE, dtype=int)
-    order_lp = OrderCheckingLabelProvider(y_check)
-
-    runner = ExperimentRunner(
-        resolved_batches=resolved_check,
-        label_provider=order_lp,
-        attack_cache=MockCacheProvider(),
-        defense_adapter=OrderCheckingDefense(),
-        policy_controller=OrderCheckingPolicy(requires_feedback=False),
-        output_dir=out,
-        run_id="run_order",
-        seed=42,
-        attack_scenario="Silent Probing",
-        defense_name="afp",
-        config_id="Base",
-        provenance_hashes=_GOOD_PROV,
-    )
-    runner.execute_run()
-
-    # Reconstruct event sequence for batch 0
+def test_chronological_event_log(runner_deps):
+    resolved, _, out = runner_deps
+    
     events = []
-    for e in prediction_events:
-        if e[1] == 0:
-            events.append(e[0])
-    for e in label_events:
-        if e[1] == 0:
-            events.append(("get_labels", 0)[0])
 
-    # get_intensity BEFORE predict BEFORE get_labels
-    all_events = (
-        [e for e in prediction_events] +
-        [("get_labels", bid) for bid in range(N_BATCHES)]
-    )
-    # Just verify the label provider was called exactly 144 times
-    assert len(order_lp.access_log) == 144
-    assert order_lp.access_log[0]["batch_id"] == 0
-
-
-# ─── Base never receives TP/FN ────────────────────────────────────────────────
-
-def test_base_never_receives_feedback(runner_deps):
-    resolved, lp, out = runner_deps
-
-    class StrictBasePolicy(MockPolicy):
-        def __init__(self):
-            super().__init__(requires_feedback=False)
+    class EventPolicy(MockPolicy):
+        def __init__(self, is_ra):
+            super().__init__(requires_feedback=is_ra)
+        def get_intensity(self, batch_id):
+            events.append(("get_intensity", batch_id))
+            return super().get_intensity(batch_id)
         def submit_observations(self, batch_id, tp, fn):
-            raise AssertionError("Base policy must NEVER receive TP/FN")
-
-    runner = make_runner(resolved, lp, out, "run_strict_base", StrictBasePolicy())
-    runner.execute_run()  # must not raise
-
-
-# ─── RA receives feedback only after each batch ────────────────────────────────
-
-def test_ra_feedback_called_per_batch(runner_deps):
-    resolved, lp, out = runner_deps
-    feedback_batches = []
-
-    class TrackingRAPolicy(MockPolicy):
-        def __init__(self):
-            super().__init__(requires_feedback=True)
-
-        def submit_observations(self, batch_id, tp, fn):
-            feedback_batches.append(batch_id)
+            events.append(("ra_feedback", batch_id))
             return super().submit_observations(batch_id, tp, fn)
 
-    runner = make_runner(resolved, lp, out, "run_track_ra", TrackingRAPolicy())
-    runner.execute_run()
+    class EventLabelProvider(LabelProvider):
+        def get_labels(self, batch_indices, batch_id):
+            events.append(("get_labels", batch_id))
+            return super().get_labels(batch_indices, batch_id)
 
-    assert feedback_batches == list(range(144))
+    class EventDefense(MockDefenseAdapter):
+        def defend_batch(self, X, intensity, seed, attack_scenario, batch_id):
+            events.append(("predict", batch_id))
+            return super().defend_batch(X, intensity, seed, attack_scenario, batch_id)
+
+    class EventCacheProvider(AttackCacheProvider):
+        def get_batch_data(self, batch_id):
+            events.append(("cache_access", batch_id))
+            return {
+                "X_attacked": np.zeros((BATCH_SIZE, 78), dtype=np.float32),
+                "eligible": np.zeros(BATCH_SIZE, dtype=bool),
+                "attempted": np.zeros(BATCH_SIZE, dtype=bool),
+                "successful": np.zeros(BATCH_SIZE, dtype=bool),
+                "queries": np.zeros(BATCH_SIZE, dtype=int),
+            }
+
+    # Test Base
+    events.clear()
+    lp = EventLabelProvider(np.zeros(N_BATCHES * BATCH_SIZE, dtype=int))
+    runner_base = ExperimentRunner(
+        resolved_batches=resolved, label_provider=lp, attack_cache=EventCacheProvider(),
+        defense_adapter=EventDefense(), policy_controller=EventPolicy(is_ra=False),
+        output_dir=out, run_id="run_order_base", seed=42, attack_scenario="Silent Probing",
+        defense_name="afp", config_id="Base", provenance_hashes=_GOOD_PROV,
+    )
+    runner_base.execute_run()
+    
+    # Assert Exact chronological event sequence for Base
+    base_expected = []
+    for bid in range(N_BATCHES):
+        base_expected.extend([
+            ("get_intensity", bid),
+            ("cache_access", bid),
+            ("predict", bid),
+            ("get_labels", bid)
+        ])
+    assert events == base_expected
+
+    # Test RA
+    events.clear()
+    lp = EventLabelProvider(np.zeros(N_BATCHES * BATCH_SIZE, dtype=int))
+    runner_ra = ExperimentRunner(
+        resolved_batches=resolved, label_provider=lp, attack_cache=EventCacheProvider(),
+        defense_adapter=EventDefense(), policy_controller=EventPolicy(is_ra=True),
+        output_dir=out, run_id="run_order_ra", seed=42, attack_scenario="Silent Probing",
+        defense_name="afp", config_id="C1", provenance_hashes=_GOOD_PROV,
+    )
+    runner_ra.execute_run()
+
+    # Assert Exact chronological event sequence for RA
+    ra_expected = []
+    for bid in range(N_BATCHES):
+        ra_expected.extend([
+            ("get_intensity", bid),
+            ("cache_access", bid),
+            ("predict", bid),
+            ("get_labels", bid),
+            ("ra_feedback", bid)
+        ])
+    assert events == ra_expected
 
 
 # ─── Controller reset between runs ────────────────────────────────────────────
@@ -450,9 +437,13 @@ def test_scrambled_eval_position_join(tmp_path):
     """
     rng = np.random.RandomState(99)
 
-    # Distinct per-eval_position label (0 or 1)
+    # Distinct per-eval_position label (0 or 1) and feature
     n_total = N_BATCHES * BATCH_SIZE
-    y_by_ep = rng.randint(0, 2, n_total)  # label at eval_position i
+    y_by_ep = rng.randint(0, 2, n_total)
+    
+    # We'll make feature[0] directly dictate the prediction
+    # If pred_by_ep == 1, feature[0] = 1.0, else 0.0
+    pred_by_ep = rng.randint(0, 2, n_total)
 
     # Scrambled resolved_batches
     resolved = make_resolved_batches(scramble=True, seed=42)
@@ -463,22 +454,32 @@ def test_scrambled_eval_position_join(tmp_path):
 
     lp = LabelProvider(y_measurement)
 
-    # Cache: return all zeros (silent probing identity)
-    class ZeroCacheProvider(AttackCacheProvider):
+    # Cache: return features with column 0 set to pred_by_ep[eval_position]
+    class IdentifiableCacheProvider(AttackCacheProvider):
         def get_batch_data(self, batch_id):
+            batch_df = resolved[resolved["batch_id"] == batch_id].sort_values("eval_position")
+            eps = batch_df["eval_position"].values
+            X = np.zeros((BATCH_SIZE, 78), dtype=np.float32)
+            X[:, 0] = pred_by_ep[eps]
             return {
-                "X_attacked": np.zeros((BATCH_SIZE, 78), dtype=np.float32),
+                "X_attacked": X,
                 "eligible": np.zeros(BATCH_SIZE, dtype=bool),
                 "attempted": np.zeros(BATCH_SIZE, dtype=bool),
                 "successful": np.zeros(BATCH_SIZE, dtype=bool),
                 "queries": np.zeros(BATCH_SIZE, dtype=int),
             }
 
+    # Defense: predict 1 if X[:, 0] > 0.5 else 0
+    class IdentifiableDefenseAdapter(MockDefenseAdapter):
+        def defend_batch(self, X, intensity, seed, attack_scenario, batch_id):
+            preds = (X[:, 0] > 0.5).astype(int)
+            return preds, _DummyDefenseResult(), np.zeros(BATCH_SIZE, dtype=float)
+
     runner = ExperimentRunner(
         resolved_batches=resolved,
         label_provider=lp,
-        attack_cache=ZeroCacheProvider(),
-        defense_adapter=MockDefenseAdapter(),
+        attack_cache=IdentifiableCacheProvider(),
+        defense_adapter=IdentifiableDefenseAdapter(),
         policy_controller=MockPolicy(requires_feedback=False),
         output_dir=tmp_path,
         run_id="run_scrambled",
@@ -490,10 +491,24 @@ def test_scrambled_eval_position_join(tmp_path):
     )
     runner.execute_run()
 
-    # Verify label provider was accessed 144 times (once per batch)
-    assert len(lp.access_log) == 144
-
-    # Read confusion logs and verify that labels were accessed per sorted eval_position
+    # Read confusion logs and verify exact expected values
     with open(tmp_path / "run_scrambled" / "confusion.json") as f:
         cf = json.load(f)
     assert len(cf) == 144
+
+    for batch_id in range(144):
+        batch_df = resolved[resolved["batch_id"] == batch_id].sort_values("eval_position")
+        eps = batch_df["eval_position"].values
+        y_true = y_by_ep[eps]
+        y_pred = pred_by_ep[eps]
+        
+        tp = int(np.sum((y_true == 1) & (y_pred == 1)))
+        tn = int(np.sum((y_true == 0) & (y_pred == 0)))
+        fp = int(np.sum((y_true == 0) & (y_pred == 1)))
+        fn = int(np.sum((y_true == 1) & (y_pred == 0)))
+        
+        log_cf = cf[batch_id]
+        assert log_cf["tp"] == tp
+        assert log_cf["tn"] == tn
+        assert log_cf["fp"] == fp
+        assert log_cf["fn"] == fn

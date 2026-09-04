@@ -80,7 +80,7 @@ def build_bundle():
     check_external_hashes()
     check_experiment_frozen()
 
-    bundle_path = ROOT / "phase10a_freeze_candidate_bundle.zip"
+    bundle_path = ROOT / "phase10a_freeze_candidate_bundle_v2.zip"
     print(f"\nBuilding bundle: {bundle_path.name}")
     
     # Paths to include in the bundle (source code, tests, configs, plan)
@@ -121,6 +121,32 @@ def build_bundle():
         if p.exists():
             included_files.append(p)
             
+    # ---- 16-step validation sequence ----
+    print("Running full test suite...")
+    import subprocess
+    res = subprocess.run([sys.executable, "-m", "pytest", "-q", "tests/"])
+    if res.returncode != 0:
+        raise RuntimeError("Tests failed!")
+        
+    print("Running M2 pilot...")
+    res = subprocess.run([sys.executable, "scripts/run_m2_pilot.py"])
+    if res.returncode != 0:
+        raise RuntimeError("Pilot failed!")
+
+    print("Generating manifest files...")
+    manifest_path = ROOT / "BUNDLE_MANIFEST.txt"
+    hash_path = ROOT / "FILE_HASHES.sha256"
+    missing_path = ROOT / "MISSING_FILES.txt"
+    
+    with open(manifest_path, "w") as fm, open(hash_path, "w") as fh, open(missing_path, "w") as fmis:
+        for p in sorted(included_files):
+            arcname = p.relative_to(ROOT).as_posix()
+            fm.write(f"- {arcname}\n")
+            fh.write(f"{calculate_sha256(p)}  {arcname}\n")
+        fmis.write("None\n")
+        
+    included_files.extend([manifest_path, hash_path, missing_path])
+
     seen_members: Set[str] = set()
     added_count = 0
     

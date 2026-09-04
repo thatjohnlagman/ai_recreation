@@ -81,6 +81,11 @@ def validate_cache_manifest(
     for k in _MANIFEST_REQUIRED_KEYS:
         if k not in manifest:
             raise ValueError(f"Missing required key '{k}' in manifest")
+            
+    # Reject dummy hashes
+    for key, val in manifest.items():
+        if isinstance(val, str) and (val == "0" * 64 or val == "dummy" or "placeholder" in val):
+            raise ValueError(f"Cache invalid: dummy/placeholder hash found for {key}")
 
     # Hash verification
     x_actual = calculate_file_hash(X_attacked_path)
@@ -96,13 +101,16 @@ def validate_cache_manifest(
             f"manifest output_sha256 {manifest.get('output_sha256')}"
         )
 
-    if status_path is not None and status_path.exists():
-        s_actual = calculate_file_hash(status_path)
-        if manifest.get("status_sha256") != s_actual:
-            raise ValueError(
-                f"Cache invalid: status hash {s_actual} does not match "
-                f"manifest status_sha256 {manifest.get('status_sha256')}"
-            )
+    # status.parquet is mandatory, so require it to exist and its hash to match
+    if status_path is None or not status_path.exists():
+         raise ValueError("Cache invalid: status.parquet is required")
+         
+    s_actual = calculate_file_hash(status_path)
+    if manifest.get("status_sha256") != s_actual:
+        raise ValueError(
+            f"Cache invalid: status hash {s_actual} does not match "
+            f"manifest status_sha256 {manifest.get('status_sha256')}"
+        )
 
     # Check all expected hashes match
     for key, expected_val in expected_hashes.items():
@@ -180,40 +188,36 @@ class AttackCacheBuilder:
     def build(
         self,
         scenario: str,
-        X_input: np.ndarray,
-        y_input: np.ndarray,
+        X_measurement: np.ndarray,
+        y_measurement: np.ndarray,
         eval_positions: np.ndarray,
         output_dir: Path,
+        X_crafting: Optional[np.ndarray] = None,
+        y_crafting: Optional[np.ndarray] = None,
         oracle_or_predict_fn=None,
         surrogate_attack=None,
         boundary_attack=None,
         benign_reference_pool: Optional[np.ndarray] = None,
         n_boundary_targets: int = 200,
         max_queries: int = 50,
+        attack_script_hashes: dict = None,
+        attack_parameters: dict = None,
+        query_budgets: dict = None,
     ) -> Path:
         """
         Build cache artifacts for the given scenario.
-
-        X_input: (N, 78) float32 feature matrix (training-derived only during Phase 10A)
-        y_input: (N,) int array of labels
-        eval_positions: (N,) int array — unique identifier for each row (aligned with X_input)
-        output_dir: directory to write X_attacked.parquet, status.parquet, manifest.json
-        oracle_or_predict_fn: callable used for surrogate queries or boundary oracle
-        surrogate_attack: SurrogateTransferAttack instance (required for Surrogate)
-        boundary_attack: DecisionBoundaryAttack instance (required for Boundary)
-        benign_reference_pool: (M, 78) float32 array of benign samples (required for Boundary)
-        n_boundary_targets: number of eligible measurement targets to attempt (Boundary)
-        max_queries: max oracle queries per target (Boundary)
         """
         if scenario == self.SCENARIO_SILENT_PROBING:
-            return self._build_silent_probing(X_input, eval_positions, output_dir)
+            return self._build_silent_probing(X_measurement, eval_positions, output_dir, attack_script_hashes, attack_parameters, query_budgets)
         elif scenario == self.SCENARIO_SURROGATE:
-            return self._build_surrogate(X_input, y_input, eval_positions, output_dir,
-                                         oracle_or_predict_fn, surrogate_attack)
+            return self._build_surrogate(X_measurement, y_measurement, eval_positions, output_dir,
+                                         X_crafting, y_crafting, oracle_or_predict_fn, surrogate_attack,
+                                         attack_script_hashes, attack_parameters, query_budgets)
         elif scenario == self.SCENARIO_BOUNDARY:
-            return self._build_boundary(X_input, y_input, eval_positions, output_dir,
+            return self._build_boundary(X_measurement, y_measurement, eval_positions, output_dir,
                                         oracle_or_predict_fn, boundary_attack,
-                                        benign_reference_pool, n_boundary_targets, max_queries)
+                                        benign_reference_pool, n_boundary_targets, max_queries,
+                                        attack_script_hashes, attack_parameters, query_budgets)
         else:
             raise ValueError(f"Unknown scenario: {scenario!r}")
 
@@ -222,12 +226,9 @@ class AttackCacheBuilder:
     # ------------------------------------------------------------------
 
     def _build_silent_probing(
-        self, X_input: np.ndarray, eval_positions: np.ndarray, output_dir: Path
+        self, X_input: np.ndarray, eval_positions: np.ndarray, output_dir: Path,
+        attack_script_hashes: dict, attack_parameters: dict, query_budgets: dict
     ) -> Path:
-        """
-        Identity transformation: X_attacked = X_input (unchanged), zero queries,
-        all samples ineligible for attack. ASR not applicable.
-        """
         n = len(X_input)
         X_attacked = X_input.astype(np.float32)
 
@@ -235,130 +236,114 @@ class AttackCacheBuilder:
         for i in range(n):
             statuses.append({
                 "eval_position": int(eval_positions[i]),
-                "eligible": False,
-                "attempted": False,
-                "successful": False,
-                "status_code": "NOT_APPLICABLE",
-                "queries_used": 0,
+                "eligible": False, "attempted": False, "successful": False,
+                "status_code": "NOT_APPLICABLE", "queries_used": 0,
                 "l0": 0.0, "l1": 0.0, "l2": 0.0, "linf": 0.0,
             })
 
-        return self._persist(X_attacked, statuses, eval_positions, output_dir,
-                             self.SCENARIO_SILENT_PROBING)
+        return self._write_outputs(self.SCENARIO_SILENT_PROBING, X_attacked, statuses, output_dir,
+                                   attack_script_hashes, attack_parameters, query_budgets)
 
     # ------------------------------------------------------------------
     # Surrogate Transfer
     # ------------------------------------------------------------------
 
     def _build_surrogate(
-        self,
-        X_input: np.ndarray,
-        y_input: np.ndarray,
-        eval_positions: np.ndarray,
-        output_dir: Path,
-        predict_fn: Callable,
-        surrogate_attack,
+        self, X_measurement: np.ndarray, y_measurement: np.ndarray, eval_positions: np.ndarray, output_dir: Path,
+        X_crafting: np.ndarray, y_crafting: np.ndarray, predict_fn: Callable, surrogate_attack,
+        attack_script_hashes: dict, attack_parameters: dict, query_budgets: dict
     ) -> Path:
-        """
-        Surrogate Transfer semantics:
-        - Fit surrogate on all rows where y=1 (or entire pool if not enough).
-        - Generate candidates for every eligible row (y=1, original pred=1).
-        - Rows where no attack is attempted retain their original features.
-        - All queries go through predict_fn (training-derived only during Phase 10A).
-        """
+        from recall_aware_ids.attacks.oracle import BlackBoxOracle
+
         if surrogate_attack is None:
             raise ValueError("surrogate_attack must be provided for SurrogateTransfer")
         if predict_fn is None:
             raise ValueError("predict_fn must be provided for SurrogateTransfer")
+        if X_crafting is None or y_crafting is None:
+            raise ValueError("X_crafting and y_crafting must be provided for SurrogateTransfer")
 
-        n = len(X_input)
+        # Fit surrogate on crafting pool ONLY. Use Oracle to get crafting labels.
+        crafting_oracle = BlackBoxOracle(predict_fn, max_queries_per_sample=None)
+        # Use predict method to simulate oracle usage during surrogate training
+        c_ids = [f"craft_{i}" for i in range(len(X_crafting))]
+        y_pool = crafting_oracle.predict(X_crafting, sample_ids=c_ids)
+        surrogate_attack.fit_surrogate(X_crafting, y_pool)
 
-        # Fit surrogate using all rows
-        y_pool = predict_fn(X_input)
-        surrogate_attack.fit_surrogate(X_input, y_pool)
-
-        X_attacked = X_input.astype(np.float32).copy()
+        n = len(X_measurement)
+        X_attacked = X_measurement.astype(np.float32).copy()
         statuses = []
 
+        # Oracle for target evaluation
+        target_oracle = BlackBoxOracle(predict_fn, max_queries_per_sample=None)
+
+        # Eligibility screening does not count towards budgeted queries per instructions?
+        # Actually it says: "distinguish any clean eligibility-selection computation from budgeted attack queries"
+        # We can just use predict_fn directly for eligibility, or target_oracle if it's considered selection
+        orig_preds = predict_fn(X_measurement)
+
         for i in range(n):
-            orig_pred = int(predict_fn(X_input[i:i+1])[0])
-            true_label = int(y_input[i])
+            ep = int(eval_positions[i])
+            true_label = int(y_measurement[i])
+            orig_pred = int(orig_preds[i])
 
             if orig_pred != 1 or true_label != 1:
-                # Ineligible
                 status = "INELIGIBLE_TRUE_BENIGN" if true_label != 1 else "INELIGIBLE_FALSE_NEGATIVE"
                 statuses.append({
-                    "eval_position": int(eval_positions[i]),
+                    "eval_position": ep,
                     "eligible": False, "attempted": False, "successful": False,
-                    "status_code": status,
-                    "queries_used": 0,
+                    "status_code": status, "queries_used": 0,
                     "l0": 0.0, "l1": 0.0, "l2": 0.0, "linf": 0.0,
                 })
                 continue
 
-            X_cand, mags_or_reason = surrogate_attack.generate_candidate(X_input[i])
-
+            # Target access is oracle-tracked via evaluate_transfer (if surrogate_attack implements it) or just manual oracle call
+            X_cand, mags_or_reason = surrogate_attack.generate_candidate(X_measurement[i])
+            
             if X_cand is None:
                 statuses.append({
-                    "eval_position": int(eval_positions[i]),
+                    "eval_position": ep,
                     "eligible": True, "attempted": True, "successful": False,
-                    "status_code": "NO_FEASIBLE_CANDIDATE",
-                    "queries_used": 0,
+                    "status_code": "NO_FEASIBLE_CANDIDATE", "queries_used": 0,
                     "l0": 0.0, "l1": 0.0, "l2": 0.0, "linf": 0.0,
                 })
                 continue
 
-            # Verify with predict_fn (1 query)
-            final_pred = int(predict_fn(X_cand.reshape(1, -1))[0])
+            sample_id = f"surrogate_{ep}"
+            final_pred = int(target_oracle.predict(X_cand.reshape(1, -1), sample_ids=[sample_id], stage="transfer_eval")[0])
+            queries = target_oracle.get_query_count(sample_id)
             success = (final_pred == 0)
 
             if success:
                 X_attacked[i] = X_cand
 
-            if isinstance(mags_or_reason, dict):
-                mags = mags_or_reason
-            else:
-                mags = {"l0": 0.0, "l1": 0.0, "l2": 0.0, "linf": 0.0}
+            mags = mags_or_reason if isinstance(mags_or_reason, dict) else {"l0": 0.0, "l1": 0.0, "l2": 0.0, "linf": 0.0}
 
             statuses.append({
-                "eval_position": int(eval_positions[i]),
+                "eval_position": ep,
                 "eligible": True, "attempted": True, "successful": success,
                 "status_code": "SUCCESS" if success else "TARGET_REJECTION",
-                "queries_used": 1,
+                "queries_used": int(queries),
                 "l0": float(mags.get("l0", 0.0)),
                 "l1": float(mags.get("l1", 0.0)),
                 "l2": float(mags.get("l2", 0.0)),
                 "linf": float(mags.get("linf", 0.0)),
             })
 
-        return self._persist(X_attacked, statuses, eval_positions, output_dir,
-                             self.SCENARIO_SURROGATE)
+        return self._write_outputs(self.SCENARIO_SURROGATE, X_attacked, statuses, output_dir,
+                                   attack_script_hashes, attack_parameters, query_budgets)
 
     # ------------------------------------------------------------------
     # Decision Boundary
     # ------------------------------------------------------------------
 
     def _build_boundary(
-        self,
-        X_input: np.ndarray,
-        y_input: np.ndarray,
-        eval_positions: np.ndarray,
-        output_dir: Path,
-        predict_fn: Callable,
-        boundary_attack,
-        benign_reference_pool: np.ndarray,
-        n_boundary_targets: int,
-        max_queries: int,
+        self, X_measurement: np.ndarray, y_measurement: np.ndarray, eval_positions: np.ndarray, output_dir: Path,
+        predict_fn: Callable, boundary_attack, benign_reference_pool: np.ndarray,
+        n_boundary_targets: int, max_queries: int,
+        attack_script_hashes: dict, attack_parameters: dict, query_budgets: dict
     ) -> Path:
-        """
-        Decision Boundary semantics:
-        - Deterministic global selection of exactly n_boundary_targets eligible positions
-          (orig pred=1, true label=1), ordered by eval_position ascending.
-        - Max max_queries queries per attempted target.
-        - All 72,000 (or N during Phase 10A) measurement positions preserved;
-          unchanged rows retain original features.
-        """
         from recall_aware_ids.attacks.oracle import BlackBoxOracle
+        from recall_aware_ids.experiment.boundary_selection import select_boundary_targets
 
         if boundary_attack is None:
             raise ValueError("boundary_attack must be provided for DecisionBoundary")
@@ -367,31 +352,34 @@ class AttackCacheBuilder:
         if benign_reference_pool is None:
             raise ValueError("benign_reference_pool must be provided for DecisionBoundary")
 
-        n = len(X_input)
-        oracle = BlackBoxOracle(predict_fn, max_queries_per_sample=max_queries)
+        n = len(X_measurement)
+        
+        # Determine eligibility (clean selection computation)
+        orig_preds = predict_fn(X_measurement)
+        
+        eligible_mask = (orig_preds == 1) & (y_measurement == 1)
+        
+        # Use Canonical seeded global target selector
+        official_mode = (len(eligible_mask) == 72000)
+        target_mask = select_boundary_targets(eligible_mask, self.seed, n_boundary_targets, official_mode=official_mode)
+        target_indices = np.where(target_mask)[0]
+        
+        if len(target_indices) != n_boundary_targets:
+            raise ValueError(f"Could not select exactly {n_boundary_targets} targets (found {len(target_indices)})")
 
-        # Determine eligibility via prediction (1 eligibility query each)
-        orig_preds = predict_fn(X_input)
+        target_set = set(target_indices)
 
-        # Eligible candidates: original prediction is attack class, true label is attack class
-        eligible_indices = [
-            i for i in range(n)
-            if int(orig_preds[i]) == 1 and int(y_input[i]) == 1
-        ]
-
-        # Deterministic selection: take first n_boundary_targets by ascending eval_position order
-        eligible_indices.sort(key=lambda i: int(eval_positions[i]))
-        target_indices = set(eligible_indices[:n_boundary_targets])
-
-        X_attacked = X_input.astype(np.float32).copy()
+        X_attacked = X_measurement.astype(np.float32).copy()
         statuses = []
+        
+        oracle = BlackBoxOracle(predict_fn, max_queries_per_sample=max_queries)
 
         for i in range(n):
             ep = int(eval_positions[i])
-            true_label = int(y_input[i])
+            true_label = int(y_measurement[i])
             orig_pred = int(orig_preds[i])
 
-            if i not in target_indices:
+            if i not in target_set:
                 if orig_pred != 1 or true_label != 1:
                     status = "INELIGIBLE_TRUE_BENIGN" if true_label != 1 else "INELIGIBLE_FALSE_NEGATIVE"
                     statuses.append({
@@ -400,7 +388,6 @@ class AttackCacheBuilder:
                         "l0": 0.0, "l1": 0.0, "l2": 0.0, "linf": 0.0,
                     })
                 else:
-                    # Eligible but not selected for attack
                     statuses.append({
                         "eval_position": ep, "eligible": True, "attempted": False, "successful": False,
                         "status_code": "NOT_ATTEMPTED", "queries_used": 0,
@@ -408,10 +395,9 @@ class AttackCacheBuilder:
                     })
                 continue
 
-            # Attempt boundary attack
             sample_id = f"ep_{ep}"
             result = boundary_attack.generate(
-                X_input[i], oracle, sample_id=sample_id,
+                X_measurement[i], oracle, sample_id=sample_id,
                 true_label=true_label, reference_pool=benign_reference_pool
             )
 
@@ -431,30 +417,32 @@ class AttackCacheBuilder:
                 "linf": float(mags.get("linf", 0.0)),
             })
 
-        return self._persist(X_attacked, statuses, eval_positions, output_dir,
-                             self.SCENARIO_BOUNDARY)
+        return self._write_outputs(self.SCENARIO_BOUNDARY, X_attacked, statuses, output_dir,
+                                   attack_script_hashes, attack_parameters, query_budgets)
 
     # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
 
-    def _persist(
-        self,
-        X_attacked: np.ndarray,
-        statuses: List[Dict],
-        eval_positions: np.ndarray,
-        output_dir: Path,
-        scenario: str,
+    def _write_outputs(
+        self, scenario: str, X_attacked: np.ndarray, statuses: List[dict], output_dir: Path,
+        attack_script_hashes: dict = None, attack_parameters: dict = None, query_budgets: dict = None
     ) -> Path:
-        """Write X_attacked.parquet, status.parquet, manifest.json."""
-        output_dir.mkdir(parents=True, exist_ok=True)
+        if output_dir.exists():
+            raise FileExistsError(f"Cache output directory already exists (cannot overwrite): {output_dir}")
+            
+        tmp_dir = output_dir.with_name(output_dir.name + ".tmp")
+        if tmp_dir.exists():
+            import shutil
+            shutil.rmtree(tmp_dir)
+        tmp_dir.mkdir(parents=True)
 
-        x_path = output_dir / "X_attacked.parquet"
-        s_path = output_dir / "status.parquet"
-        m_path = output_dir / "manifest.json"
+        x_path = tmp_dir / "X_attacked.parquet"
+        s_path = tmp_dir / "status.parquet"
+        m_path = tmp_dir / "manifest.json"
 
         # Write X_attacked
-        df_x = pd.DataFrame(X_attacked.astype(np.float32))
+        df_x = pd.DataFrame(X_attacked.astype(np.float32), columns=self.feature_names)
         df_x.to_parquet(x_path, index=False)
 
         # Write status
@@ -470,7 +458,7 @@ class AttackCacheBuilder:
         x_hash = calculate_file_hash(x_path)
         s_hash = calculate_file_hash(s_path)
 
-        # Manifest
+        # Strict manifest requirements: do not use .get(..., "0" * 64)
         manifest = {
             "schema_version": "1.0",
             "attack_scenario": scenario,
@@ -479,28 +467,33 @@ class AttackCacheBuilder:
             "X_attacked_sha256": x_hash,
             "status_sha256": s_hash,
             "output_sha256": x_hash,  # legacy compat
-            **{k: v for k, v in self.provenance_hashes.items()},
-            # Structural fields expected by manifest schema
-            "attacks_yaml_hash": self.provenance_hashes.get("attacks_yaml_hash", "0" * 64),
-            "attack_script_hashes": {},
-            "attack_parameters": {},
-            "query_budgets": {},
-            "X_eval_hash": self.provenance_hashes.get("X_eval_hash", "0" * 64),
-            "metadata_eval_hash": self.provenance_hashes.get("metadata_eval_hash", "0" * 64),
-            "evaluation_roles_hash": self.provenance_hashes.get("evaluation_roles_hash", "0" * 64),
-            "evaluation_batches_hash": self.provenance_hashes.get("evaluation_batches_hash", "0" * 64),
-            "crafting_identity_hash": self.provenance_hashes.get("crafting_identity_hash", "0" * 64),
-            "measurement_identity_hash": self.provenance_hashes.get("measurement_identity_hash", "0" * 64),
-            "frozen_rf_hash": self.provenance_hashes.get("frozen_rf_hash", "0" * 64),
-            "scaler_hash": self.provenance_hashes.get("scaler_hash", "0" * 64),
-            "feature_names_hash": self.provenance_hashes.get("feature_names_hash", "0" * 64),
-            "feature_mask_hash": self.provenance_hashes.get("feature_mask_hash", "0" * 64),
-            "training_bounds_hash": self.provenance_hashes.get("training_bounds_hash", "0" * 64),
+            
+            # Additional structural fields passed dynamically
+            "attack_script_hashes": attack_script_hashes or {},
+            "attack_parameters": attack_parameters or {},
+            "query_budgets": query_budgets or {},
+            
+            # Require all provenance hashes to be explicitly provided in self.provenance_hashes
+            "attacks_yaml_hash": self.provenance_hashes["attacks_yaml_hash"],
+            "X_eval_hash": self.provenance_hashes["X_eval_hash"],
+            "metadata_eval_hash": self.provenance_hashes["metadata_eval_hash"],
+            "evaluation_roles_hash": self.provenance_hashes["evaluation_roles_hash"],
+            "evaluation_batches_hash": self.provenance_hashes["evaluation_batches_hash"],
+            "crafting_identity_hash": self.provenance_hashes["crafting_identity_hash"],
+            "measurement_identity_hash": self.provenance_hashes["measurement_identity_hash"],
+            "frozen_rf_hash": self.provenance_hashes["frozen_rf_hash"],
+            "scaler_hash": self.provenance_hashes["scaler_hash"],
+            "feature_names_hash": self.provenance_hashes["feature_names_hash"],
+            "feature_mask_hash": self.provenance_hashes["feature_mask_hash"],
+            "training_bounds_hash": self.provenance_hashes["training_bounds_hash"],
+            **{k: v for k, v in self.provenance_hashes.items()}
         }
 
         with open(m_path, "w") as f:
             json.dump(manifest, f, indent=2)
 
+        # Atomic rename
+        tmp_dir.rename(output_dir)
         return output_dir
 
 
@@ -548,27 +541,43 @@ class ConcreteAttackCacheProvider:
         df_x = pd.read_parquet(artifact_path)
         df_status = pd.read_parquet(status_path)
 
-        # Row count
+        # 1. Row count validation
         if len(df_x) != expected_row_count:
             raise ValueError(f"X_attacked has {len(df_x)} rows, expected {expected_row_count}")
         if len(df_status) != expected_row_count:
             raise ValueError(f"status has {len(df_status)} rows, expected {expected_row_count}")
 
-        # Column count
-        if df_x.shape[1] != 78:
+        # 2. Duplicate or missing eval_position
+        if df_status["eval_position"].duplicated().any():
+            raise ValueError("status.parquet contains duplicate eval_positions")
+        if df_status["eval_position"].isnull().any():
+            raise ValueError("status.parquet contains null eval_positions")
+
+        # 3. Exact feature names and ordering
+        import json as _j
+        import pathlib
+        ROOT = pathlib.Path(__file__).resolve().parents[3]
+        feature_names_path = ROOT / "artifacts/preprocessors/feature_mask.json"
+        if feature_names_path.exists():
+            with open(feature_names_path) as _f:
+                _expected_cols = _j.load(_f)["feature_columns"]
+            if list(df_x.columns) != _expected_cols:
+                raise ValueError("X_attacked.parquet columns do not exactly match expected feature_columns in order")
+        elif df_x.shape[1] != 78:
+            # Fallback if testing without artifacts
             raise ValueError(f"X_attacked has {df_x.shape[1]} columns, expected 78")
 
-        # Finite values
+        # 4. Finite values
         X_arr = df_x.values.astype(np.float32)
         if not np.all(np.isfinite(X_arr)):
             raise ValueError("X_attacked contains non-finite values")
 
-        # Required status columns
+        # 5. Required status columns
         missing = _REQUIRED_STATUS_COLS - set(df_status.columns)
         if missing:
             raise ValueError(f"status.parquet missing columns: {missing}")
 
-        # Strict bool validation — reject integer columns
+        # 6. Strict bool validation — reject integer columns
         if validate_strict_bool:
             for col in _BOOL_STATUS_COLS:
                 actual_dtype = df_status[col].dtype
@@ -578,7 +587,7 @@ class ConcreteAttackCacheProvider:
                         "Do not silently cast — fix the cache source."
                     )
 
-        # Magnitude validation
+        # 7. Magnitude validation
         for col in ("l0", "l1", "l2", "linf"):
             vals = df_status[col].values
             if not np.all(np.isfinite(vals)):
@@ -586,17 +595,50 @@ class ConcreteAttackCacheProvider:
             if np.any(vals < 0.0):
                 raise ValueError(f"status.{col} contains negative values")
 
-        # Query count validation
+        # 8. Query count validation
         q_vals = df_status["queries_used"].values
         if np.any(q_vals < 0):
             raise ValueError("status.queries_used contains negative values")
 
-        # eval_position alignment
+        # 9. Allowed status codes
+        allowed_codes = {
+            "NOT_APPLICABLE", "SUCCESS", "MAX_QUERIES_REACHED", "PUSHED_OUT_OF_BOUNDS", "UNKNOWN_ERROR",
+            "INELIGIBLE_TRUE_BENIGN", "INELIGIBLE_FALSE_NEGATIVE", "NOT_ATTEMPTED",
+            "NO_FEASIBLE_CANDIDATE", "TARGET_REJECTION"
+        }
+        invalid_codes = set(df_status["status_code"].unique()) - allowed_codes
+        if invalid_codes:
+            raise ValueError(f"Invalid status_code(s) found: {invalid_codes}")
+
+        # 10. Logical relationships
+        # eligible = False -> attempted = False, successful = False
+        ineligible_invalid = df_status[~df_status["eligible"] & (df_status["attempted"] | df_status["successful"])]
+        if len(ineligible_invalid) > 0:
+            raise ValueError("Found ineligible samples that were marked as attempted or successful")
+            
+        # attempted = False -> successful = False
+        unattempted_invalid = df_status[~df_status["attempted"] & df_status["successful"]]
+        if len(unattempted_invalid) > 0:
+            raise ValueError("Found unattempted samples marked as successful")
+            
+        # successful = True -> attempted = True
+        success_unattempted = df_status[df_status["successful"] & ~df_status["attempted"]]
+        if len(success_unattempted) > 0:
+            raise ValueError("Found successful samples not marked as attempted")
+
+        # 11. eval_position alignment: Exact equality with resolved measurement identities
         cache_eps = set(df_status["eval_position"].values.tolist())
         batch_eps = set(resolved_batches["eval_position"].values.tolist())
-        overlap = cache_eps & batch_eps
-        if len(overlap) == 0 and expected_row_count > 0:
-            raise ValueError("No eval_position overlap between cache and resolved_batches")
+        
+        if expected_row_count == 72000:
+            if len(cache_eps) != 72000:
+                raise ValueError(f"status.parquet contains {len(cache_eps)} unique eval_positions, expected 72000")
+            if cache_eps != batch_eps:
+                raise ValueError("eval_positions in cache do not exactly equal resolved_batches measurement identities")
+        else:
+            # Fallback for small synthetic testing
+            if cache_eps != batch_eps:
+                raise ValueError("eval_positions in cache do not exactly equal resolved_batches measurement identities")
 
         self._X_attacked = X_arr
         self._status = df_status
