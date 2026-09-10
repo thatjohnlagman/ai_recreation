@@ -21,7 +21,7 @@ import altair as alt
 # ── Streamlit Page Configuration ──────────────────────────────────────────────
 st.set_page_config(
     page_title="IDS Security Posture Console | Recall-Aware Defense",
-    page_icon="🛡️",
+    page_icon="",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
