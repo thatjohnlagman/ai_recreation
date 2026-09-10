@@ -1,0 +1,1988 @@
+﻿Performance of Recall-Aware Control for Perturbation Defenses in Intrusion Detection Systems Against 
+Black-Box Probing Attacks
+
+
+
+
+
+
+
+
+
+
+A Thesis
+Presented to the Faculty of the 
+College of Computer and Information Sciences
+Polytechnic University of the Philippines
+
+
+
+
+
+
+
+
+
+
+
+
+ In Partial Fulfilment of the Requirements for the Degree
+Bachelor of Science in Computer Science
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+by
+
+
+
+
+Deposoy, John Gavin
+Lagman, John Ferry D.
+Reyes, Redd Lawrence M.
+Sagun, Eujin Rod L.
+
+
+May, 2026
+TABLE OF CONTENTS
+TITLE
+	i
+	TABLE OF CONTENTS
+	ii
+	LIST OF TABLES
+	iv
+	LIST OF FIGURES
+	v
+	
+
+1. THE PROBLEM AND ITS SETTING        1
+        Introduction        1
+Theoretical Framework        3
+Conceptual Framework        8
+Statement of the Problem        10
+Hypothesis        12
+Scope and Limitation of the Study        12
+Significance of the Study        13
+Definition of Terms        15
+
+
+2. REVIEW OF LITERATURE AND STUDIES        19
+Machine Learning Based Intrusion Detection Systems        19
+Philippine Cyber Threat Landscape and Dataset Relevance        21
+Adversarial Machine Learning Attacks on IDS        23
+Black-Box Adversarial Probing        24
+Black-Box Attack Scenarios for IDS Evaluation        25
+Inference-Time Perturbation Defenses        26
+Perturbation Trade-Offs in IDS        28
+Adaptive Feature Poisoning as an Inference-Time Perturbation Defense        29
+Randomized Smoothing as an Inference-Time Perturbation Defense        31
+Feature Squeezing as an Inference-Time Perturbation Defense        32
+Attacker Feedback Disruption        33
+Feedback Control as Theoretical Basis        33
+Sliding-Window Performance Monitoring        34
+Adaptive IDS and Concept Drift Monitoring        35
+Threshold-Based Recall Regulation        36
+Synthesis of the Study        37
+        
+3. METHODOLOGY        39
+Research Design        39
+Sources of Data        41
+Sampling Data        42
+System Architecture        43
+Research Instrument        61
+Data Generation/Gathering Procedure        64
+Ethical Considerations        68
+Data Analysis (Procedure and Treatment)        68
+Statistical Treatment        70
+4. REFERENCES        74
+5. APPENDICES        80
+Experiment Paper        80
+
+
+
+
+
+
+
+
+
+
+LIST OF TABLES
+Number
+	Title
+	Page
+	1
+	Reported IDS Accuracy and Recall Under AFP Attack-Specific Evaluation (Ennaji et al., 2025)
+	30
+	2
+	Defense-Specific Intensity Parameters
+	51
+	3
+	Threshold-Based Rules of the Recall-Aware Controller
+	54
+	4
+	Common Controller Parameters and Their Roles
+	56
+	5
+	Selected Controller Parameter Configurations for Sensitivity Analysis
+	58
+	6
+	Planned Experiment Outputs
+	58
+	7
+	Batch-Level Experiment Log Fields
+	61
+	8
+	Research Questions and Corresponding Analysis
+	70
+	
+
+
+
+
+
+
+
+
+
+LIST OF FIGURES
+Number
+	Title
+	Page
+	1
+	Theoretical Framework of the Study
+	5
+	2
+	Conceptual Framework of the Study
+	8
+	3
+	Recall-Aware IDS Pipelines
+	44
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 
+
+
+Chapter 1
+THE PROBLEM AND ITS SETTING
+
+
+Introduction
+Machine learning-based intrusion detection systems have become an important part of modern network defense. These systems classify network traffic as benign or malicious by learning patterns from labeled traffic data. Because of their speed and ability to detect complex traffic patterns, machine learning models such as Random Forests, gradient-boosted trees, and neural networks are widely used in intrusion detection research (Vinayakumar et al., 2019; Berguiga et al., 2025).
+Despite their detection capability, machine learning-based intrusion detection systems remain vulnerable to adversarial manipulation. Attackers may craft inputs that exploit the decision boundary of the classifier and cause malicious traffic to be misclassified as benign. Among these threats, black-box probing is especially relevant because it does not require access to the model’s internal parameters. In this setting, the attacker repeatedly submits inputs, observes the system’s outputs or behavior, and gradually infers how the classifier separates benign and malicious samples (Papernot et al., 2017; Brendel et al., 2018; Alotaibi & Rassam, 2023).
+One defense approach relevant to black-box probing is inference-time input perturbation. Instead of retraining the classifier, the defense modifies or transforms the incoming input before it reaches the intrusion detection model. This makes the feedback received by the attacker less stable and less useful for approximating the decision boundary. Adaptive Feature Poisoning is specifically designed for black-box probing defense in intrusion detection systems. Randomized Smoothing and Feature Squeezing are related inference-time input transformation defenses that can be adapted to network-flow feature vectors and evaluated as comparison mechanisms in this study. Although these mechanisms differ in implementation, they share the same architectural role: each can be placed between incoming traffic and the classifier as a pre-classification defense layer (Xu et al., 2018; Cohen et al., 2019; Ennaji et al., 2025).
+However, perturbation-based defenses create a performance trade-off. If the perturbation is too weak, the attacker may still obtain useful feedback from repeated queries. If the perturbation is too strong, the transformation may distort important attack-related features and reduce the ability of the intrusion detection system to detect actual attacks. This trade-off is especially important in intrusion detection because network-flow features have operational meaning and cannot be modified arbitrarily without affecting classification reliability (McCarthy et al., 2022; He et al., 2024; Awad et al., 2025).
+Existing perturbation-based defenses usually control their transformations based on fixed parameters, noise levels, compression strength, or behavior-based indicators. Adaptive Feature Poisoning adjusts perturbation using probing indicators and feature deviation. Randomized Smoothing applies controlled noise before classification. Feature Squeezing reduces or compresses input representations before classification. These mechanisms can affect detection performance, but they do not directly regulate their perturbation intensity based on recent Recall. As a result, the defense layer may continue applying a perturbation setting even when the system’s ability to detect attack samples begins to degrade.
+This study addresses this problem by developing and evaluating a recall-aware controller for perturbation-based intrusion detection defenses under black-box probing attacks. The controller monitors recent Recall and adjusts the perturbation intensity of the active defense mechanism within bounded limits. In this study, the controller is applied to Adaptive Feature Poisoning, Randomized Smoothing, and Feature Squeezing. The purpose is not to replace these defenses, but to evaluate whether a shared recall-aware control layer can significantly change their performance.
+The study evaluates the base and controller-augmented versions of the three defense mechanisms using Precision, Recall, and F1-Score. The comparison will be conducted under selected black-box probing scenarios, specifically silent probing, surrogate transferability, and decision-boundary attacks. Additionally, a sensitivity analysis will be performed across selected controller parameter configurations to observe how varying the sliding window size, recall thresholds, and adjustment factors affects the performance of the controller-augmented defenses . Through this evaluation, the study aims to determine whether Recall-based feedback control can help regulate perturbation intensity while preserving intrusion detection performance under adversarial conditions.
+
+
+Theoretical Framework
+This study is grounded in two related bodies of literature: perturbation-based adversarial defense and adaptive intrusion detection monitoring. Together, these areas provide the theoretical basis for the proposed recall-aware controller. Perturbation-based defense explains why controlled input transformation can disrupt black-box adversarial probing, while adaptive monitoring and feedback control explain why defense parameters should be adjusted when detection performance begins to degrade.
+The first foundation is perturbation-based defense theory. In black-box adversarial probing, the attacker repeatedly queries the intrusion detection system and observes its responses to approximate the model’s decision boundary. Perturbation-based defenses interfere with this process by introducing controlled changes to the input features, making the attacker’s observations less reliable. However, this defense mechanism creates a trade-off. If perturbation is too weak, the attacker may still extract useful feedback from repeated queries. If perturbation is too strong, the transformed input may lose important attack characteristics and reduce the system’s ability to detect malicious traffic. Prior studies on intrusion detection and functionality-preserving perturbation therefore support the need to regulate perturbation strength rather than apply it without performance awareness (McCarthy et al., 2022; He et al., 2024; Awad et al., 2025).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Figure 1. Theoretical Framework of the Study
+  
+
+The second foundation is adaptive intrusion detection and concept drift monitoring. Intrusion detection systems operate in environments where traffic patterns, attack behavior, and feature distributions may change over time. Concept drift literature shows a related principle: fixed configurations can become less reliable when operating conditions or data distributions change. Adaptive intrusion detection research addresses this issue by monitoring recent system behavior and adjusting detection parameters when performance changes are observed (Agrahari & Singh, 2022; Shyaa et al., 2024). This supports the idea that recent detection performance can serve as a useful signal for regulating defense behavior.
+These two foundations create the gap addressed by this study. Perturbation-based defense theory establishes that perturbation intensity must be regulated to avoid hiding attack-related features. Adaptive intrusion detection literature establishes that recent performance signals can guide system adjustment. However, existing perturbation-based defenses usually rely on fixed parameters, noise levels, compression strength, or behavior-based indicators. They do not directly use recent Recall as the feedback signal for regulating perturbation intensity. The gap is therefore the absence of recall-aware performance feedback control in perturbation-based intrusion detection defenses.
+The proposed recall-aware controller addresses this gap by applying a closed-loop feedback principle to perturbation control. In feedback control theory, a system monitors an output variable, compares it with a desired reference value, and adjusts a control variable to reduce undesirable deviation (Åström & Murray, 2008). In this study, Rolling Recall serves as the monitored output. The minimum acceptable Recall threshold serves as the reference value. The perturbation intensity of the active defense mechanism serves as the adjustable control variable.
+The controlled parameter depends on the selected defense mechanism. In Adaptive Feature Poisoning, the controller adjusts the base perturbation value, εbase. In Randomized Smoothing, it adjusts the Gaussian noise strength, σ. In Feature Squeezing, it adjusts the squeezing or quantization intensity. When Rolling Recall falls below the defined threshold, the controller reduces perturbation intensity within bounded limits to help recover attack detection. When Recall remains acceptable, the controller may maintain or gradually restore perturbation intensity to preserve the attacker-feedback disruption effect of the defense.
+Thus, the theoretical framework positions the proposed controller as a synthesis of perturbation-based defense and adaptive intrusion detection feedback regulation. The controller does not replace Adaptive Feature Poisoning, Randomized Smoothing, or Feature Squeezing. Instead, it adds a recall-aware control layer that makes perturbation intensity responsive to the intrusion detection system’s recent attack-detection performance.
+
+
+Conceptual Framework
+Figure 2 presents the conceptual framework of the study. The framework follows an input-process-output structure with a feedback loop that represents the proposed recall-aware controller. The purpose of the framework is to show how the study evaluates whether Recall can be used as a feedback signal for regulating perturbation intensity in intrusion detection perturbation defenses under black-box probing attacks.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Figure 2. Conceptual Framework of the Study
+  
+
+The main input of the study is the CSE-CIC-IDS2018 dataset, which provides labeled network traffic records with benign and attack classes. The selected black-box probing scenarios, defense mechanisms, controller parameters, and evaluation setup are treated as part of the experimental process. This keeps the framework focused on how the dataset is transformed through attack simulation, defense evaluation, controller feedback, metric computation, and statistical analysis. Furthermore, the process includes a parameter sensitivity analysis to examine the performance of the controller-augmented defenses under various parameter configurations.
+The process begins with data preparation. The dataset is cleaned, encoded, scaled, and divided into training and evaluation partitions. The Random Forest classifier is then trained using the training partition and kept fixed throughout the experiment. After training, black-box attack simulation is performed using the evaluation partition. The study evaluates three attack scenarios: silent probing, surrogate transferability, and decision-boundary attack. These scenarios represent different ways an attacker may interact with or approximate the behavior of the classifier without access to its internal parameters.
+The defense evaluation process is divided into two configurations. The first configuration evaluates the base versions of Adaptive Feature Poisoning, Randomized Smoothing, and Feature Squeezing. The second configuration evaluates the same defense mechanisms with the recall-aware controller, where perturbation intensity is adjusted dynamically. This allows the study to compare each defense mechanism before and after applying the controller under the same attack scenarios and evaluation conditions. To explore the impact of controller parameters, the evaluation also tests the defenses under multiple sensitivity configurations by varying the sliding window size, recall thresholds, and adjustment factors.
+The feedback loop in the framework represents the main contribution of the study. The recall-aware controller monitors recent Recall, compares it with the defined threshold, and adjusts the perturbation intensity of the active defense mechanism. When Recall falls below the threshold, the controller reduces perturbation intensity within bounded limits to help recover attack detection. When Recall remains acceptable, the controller may maintain or gradually restore perturbation intensity to preserve the attacker-feedback disruption effect of the defense. The controller does not retrain the classifier or replace the defense mechanism; it only regulates the defense intensity.
+After each evaluation, the study computes Precision, Recall, and F1-Score. Precision measures how many predicted attacks are actual attacks. Recall measures how many actual attack samples are correctly detected. F1-Score summarizes the balance between Precision and  Recall. These metrics are used to describe the performance of the base and controller-augmented defense mechanisms.
+The output of the framework consists of base defense performance results, controller-augmented performance results, paired comparison records, paired t-test results, and the significant difference decision. The descriptive results answer the first and second research questions by showing the performance of the base and controller-augmented defense configurations. The paired t-test results answer the third research question by determining whether there is a significant difference between each base defense mechanism and its controller-augmented version. The output also contains controller parameter sensitivity tables and a summary of the optimal parameter configurations. These sensitivity results answer the fourth research question by describing how the system behaves under different controller configurations.
+
+
+Statement of the Problem
+This study aims to produce and evaluate a recall-aware controller for perturbation-based intrusion detection defenses under black-box probing attacks, specifically silent probing, surrogate transferability, and decision-boundary attacks. It measures the performance of Adaptive Feature Poisoning, Randomized Smoothing, and Feature Squeezing in their base and controller-augmented configurations in terms of Precision, Recall, and F1-Score. It also determines whether there is a significant difference between each base defense mechanism and its controller-augmented version, and describes the performance of the controller-augmented defenses across selected recall-aware controller parameter configurations.
+This study aims to answer the following questions:
+1. What is the performance of the base defense mechanisms, specifically Adaptive Feature Poisoning, Randomized Smoothing, and Feature Squeezing, under black-box probing attacks in terms of:
+1.1. Precision;
+1.2. Recall and;
+1.3. F1-Score?
+2. What is the performance of the controller-augmented defense mechanisms, specifically Adaptive Feature Poisoning, Randomized Smoothing, and Feature Squeezing, under black-box probing attacks in terms of:
+2.1. Precision;
+2.2. Recall and;
+2.3. F1-Score?
+3. Is there a significant difference in the performance of the base defense mechanisms and controller-augmented defense mechanisms, specifically Adaptive Feature Poisoning, Randomized Smoothing, and Feature Squeezing in terms of:
+3.1. Precision;
+3.2. Recall and;
+3.3. F1-Score?
+
+
+4. What is the performance of the controller-augmented defense mechanisms across selected recall-aware controller parameter configurations in terms of:
+4.1. Precision;
+4.2. Recall and;
+4.3. F1-Score?
+
+
+Hypothesis
+Null Hypothesis, (H₀): There is no significant difference between the performance of each base defense mechanism and its controller-augmented version in terms of Precision, Recall, and F1-Score.
+
+
+
+
+Scope and Limitation of the Study
+This study will focus on evaluating a recall-aware controller for perturbation-based defenses in machine learning-based intrusion detection systems. The work will be limited to controlled black-box probing attack simulations in which attackers interact with the system through repeated queries without access to the classifier’s internal parameters. The underlying classifier will be a Random Forest model. The study will not redesign the classifier architecture or evaluate alternative classifier families.
+The controller will be evaluated on three perturbation-based defense mechanisms: Adaptive Feature Poisoning, Randomized Smoothing, and Feature Squeezing. These mechanisms are selected because each applies an input-level transformation before classification and contains a controllable perturbation intensity parameter that can be adjusted by the proposed controller. The evaluation will use one benchmark intrusion detection dataset, specifically CSE-CIC-IDS2018, in a controlled offline experimental setting.
+The study will generate performance results from controlled simulation runs. These results will be used to compare the base defense mechanisms with their controller-augmented versions in terms of Precision, Recall, and F1-Score. 
+        The study will also evaluate selected recall-aware controller parameter configurations to describe how controller settings affect the performance of the controller-augmented defense mechanisms. The selected configurations will vary the sliding window size, Recall threshold pair, and intensity adjustment policy. This analysis will be limited to selected representative configurations and will not perform exhaustive parameter optimization or claim that the tested settings are universally optimal.[a]
+The study will not cover white-box attacks, poisoning during model training, adversarial retraining, or deployment-scale testing in live networks. The black-box probing evaluation will be limited to three selected attack scenarios: silent probing, surrogate transferability, and decision-boundary attacks. Because the controller uses Recall as a feedback signal, the evaluation will be conducted using labeled offline data rather than real-time production traffic. The study will not address operational issues such as delayed labels, real-time ground-truth availability, or adaptive adversaries beyond the selected black-box probing scenarios.
+The results will be limited to the tested dataset, attack scenarios, classifier, and defense mechanisms. The study will not claim universal generalization to all intrusion detection systems, all network environments, or all adversarial strategies.
+
+
+Significance of the Study
+This study is expected to contribute to intrusion detection research by demonstrating how recall-aware feedback control can be integrated into perturbation-based defenses without modifying the core classifier. The study is significant because it examines how defense intensity can be adjusted when attack detection performance begins to decline. This may support the future development of intrusion detection tools that monitor both attack activity and defense behavior in a more understandable way.
+Academic researchers. They may gain a framework for applying feedback control principles to adversarial intrusion detection defenses. The study may also provide a basis for comparing fixed perturbation defenses with controller-augmented versions using Precision, Recall, and F1-Score.
+Business Owners. They may benefit from the study’s direction toward lightweight intrusion detection monitoring that does not depend on a dedicated IDS server. Small businesses may not always have the resources to maintain separate security infrastructure, so a future tool based on this direction could support local monitoring on ordinary computing devices such as laptops. The study may provide design insight for displaying IDS activity, detected attack attempts, active defense status, perturbation intensity, and recent performance indicators in a more understandable way. However, deployment of a business-ready laptop-based monitoring tool is outside the scope of the present study.
+Cybersecurity experts. They may gain insight into how perturbation intensity affects attack detection performance under black-box probing attacks. The findings may help them understand how Recall can be used as a feedback signal for regulating defense behavior during adversarial conditions.
+Network administrators. They may benefit from a clearer understanding of how perturbation-based defenses affect detection performance. The study may help them evaluate whether adaptive defense intensity is useful when defending systems against probing attempts that try to learn classifier behavior.
+System developers and engineers. They may use the proposed controller as a reference for designing performance-aware defense layers for intrusion detection systems. The study may also support the development of monitoring tools that display attack alerts, defense configuration, perturbation intensity, and recent performance indicators without requiring changes to the underlying classifier.
+Future researchers. They may extend the framework to other intrusion detection models, additional perturbation mechanisms, alternative feedback signals, and more realistic deployment settings. Future work may also examine how personal or small-scale IDS monitoring tools can operate when labels are delayed, unavailable, or generated from real-time network activity.
+
+
+Definition of Terms
+Adaptive Feature Poisoning (AFP). A behavior-aware perturbation defense proposed by Ennaji et al. (2025) for mitigating black-box adversarial probing in machine learning-based intrusion detection systems. In its original design, AFP monitors probing-related indicators and feature deviations, then injects controlled perturbations into selected traffic features to disrupt attacker feedback. In this study, AFP is evaluated as one of the perturbation-based defense mechanisms tested with and without the proposed recall-aware controller.
+Base Defense. A defense configuration in which Adaptive Feature Poisoning, Randomized Smoothing, or Feature Squeezing is applied without the recall-aware controller. In this configuration, the defense mechanism uses a fixed perturbation intensity during evaluation.
+Black-Box Adversarial Probing. An attack strategy in which an adversary repeatedly queries a model and observes its outputs or behavior to approximate the model’s decision boundary without access to its internal parameters, training data, or model structure.
+Concept Drift. A condition in which incoming data patterns change over time, potentially reducing the reliability of an intrusion detection system. In this study, concept drift is used only as a supporting basis for adaptive monitoring and not as a tested experimental condition.
+Controller-Augmented Defense. A defense configuration in which a perturbation-based defense mechanism is connected to the proposed recall-aware controller. In this configuration, the defense intensity is adjusted dynamically based on recent Recall.
+Decision Boundary. The learned separation surface or classification rule used by a machine learning model to distinguish between benign and malicious traffic.
+Defense-Specific Intensity Parameter. The controllable parameter used to regulate the strength of a selected perturbation defense. In this study, this refers to εbase for Adaptive Feature Poisoning, σ for Randomized Smoothing, and squeezing_intensity for Feature Squeezing.
+F1-Score. A performance metric that summarizes the balance between Precision and Recall. It is computed as 2 × (Precision × Recall) / (Precision + Recall).
+Feature Squeezing. An inference-time input transformation defense that reduces the precision or granularity of input feature values. In this study, Feature Squeezing is adapted as one of the perturbation-based defenses whose squeezing intensity can be adjusted by the recall-aware controller.
+Feedback Loop. A control process in which system output is monitored and used to adjust a system parameter. In this study, rolling Recall serves as the feedback signal used to regulate the perturbation intensity of the active defense mechanism.
+Intrusion Detection System (IDS). A security system that monitors network traffic and classifies activity as benign or malicious.
+Perturbation Bound. The minimum and maximum allowable values for perturbation intensity. These bounds keep the controller’s adjustments within predefined limits and prevent invalid or excessive perturbation values.
+Perturbation Intensity. The strength of the input transformation applied by a perturbation-based defense mechanism. Higher intensity may disrupt attacker feedback more strongly, but excessive intensity may also reduce the system’s ability to detect attack samples.
+Precision. A performance metric that measures the proportion of samples classified as attacks that are actually attacks. It is computed as TP / (TP + FP).
+Randomized Smoothing. An inference-time perturbation method that applies controlled Gaussian noise to input feature vectors before classification. In this study, it is adapted as a perturbation-based defense with σ as its controllable intensity parameter, representing noise strength.
+Recall. A performance metric that measures the proportion of actual attack samples correctly classified as attacks. In this study, attack traffic is treated as the positive class; therefore, Recall refers specifically to attack-class recall. It is computed as TP / (TP + FN), where TP refers to attack samples correctly classified as attacks and FN refers to attack samples incorrectly classified as benign. This is equivalent to the Attack Recall reported by Ennaji et al. (2025).
+Recall-Aware Controller. The proposed feedback mechanism that monitors rolling Recall over a sliding window and adjusts the perturbation intensity of the active defense mechanism when attack detection performance falls below a defined threshold.
+Recall Monitor. The component of the proposed controller that tracks rolling Recall over a sliding window of recent labeled evaluation batches.
+Rolling Recall. The Recall computed over a recent sliding window rather than over the entire dataset. In this study, it is used as the controller’s feedback signal.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Chapter 2
+REVIEW OF LITERATURE AND STUDIES
+
+
+Machine learning-based intrusion detection depends on two connected conditions: the classifier must detect malicious traffic, and the defense layer must protect the classifier from adversarial feedback. This chapter builds that foundation by linking IDS datasets, Philippine cyber threat patterns, black-box probing behavior, and inference-time perturbation defenses. It also explains why perturbation strength needs regulation. These discussions lead to the study’s main position: Recall should guide the adjustment of Adaptive Feature Poisoning, Randomized Smoothing, and Feature Squeezing when these defenses operate under black-box probing attacks.
+
+
+Machine Learning Based Intrusion Detection Systems
+Intrusion Detection Systems (IDS) are security mechanisms designed to monitor network activity and identify malicious or abnormal behavior. Traditional IDS approaches relied heavily on fixed rules or known attack signatures, which are effective against previously identified threats but less effective against novel or evolving attack patterns. Recent IDS research has therefore increasingly evaluated machine learning and deep learning models because these approaches can learn detection patterns from labeled traffic data and classify network activity based on extracted features (Hafiz et al., 2025).
+Machine learning based IDS have been studied using classifiers such as Decision Trees, Random Forests, Support Vector Machines, gradient boosting models, and neural networks. Comparative IDS studies show that ensemble models remain commonly evaluated and often competitive on structured network-flow datasets because they can handle nonlinear relationships among features while maintaining strong classification performance (Ajagbe et al., 2024; More et al., 2024; Mohale & Obagbuwa, 2025). Dini et al. (2023) also examined machine learning based IDS design using datasets such as KDD99, UNSW-NB15, and CSE-CIC-IDS2018, showing the continued use of benchmark datasets and supervised learning algorithms in IDS research.
+Despite these advantages, machine learning based IDS introduce security concerns that differ from those of traditional signature systems. Because ML classifiers learn decision boundaries from data, attackers may attempt to manipulate input features in ways that cause misclassification. Jmila and Ibn Khedher (2022) emphasized that both shallow and deep learning models used in IDS may be vulnerable to adversarial manipulation. This shows that high clean-data classification performance is not sufficient; IDS models must also be evaluated under adversarial conditions.
+Random Forest is used in this study as the fixed IDS classifier because the focus of the research is the perturbation defense layer and the recall-aware controller, not classifier benchmarking. Random Forest has been widely used in network intrusion detection research because it is suitable for structured tabular data, can model nonlinear relationships among network-flow features, and can provide strong baseline detection performance without requiring the complexity of deep learning models (Zhang et al., 2008; Wu et al., 2022). Recent adversarial IDS research has also used Random Forest as a target classifier when evaluating black-box attacks against intrusion detection systems, which supports its use as a practical and established IDS platform for controlled adversarial evaluation (Alahmed et al., 2022; Ennaji et al., 2026).
+The classifier is kept fixed throughout the study to isolate the effect of the perturbation defenses and the recall-aware controller. If the classifier were retrained, tuned, or replaced during evaluation, changes in Precision, Recall, and F1-Score could be caused by classifier changes rather than by the controller. Therefore, Random Forest is treated as the stable IDS model, while the experimental focus remains on whether recent Recall can regulate the intensity of Adaptive Feature Poisoning, Randomized Smoothing, and Feature Squeezing.[b]
+Because machine learning-based IDS rely on data-driven training and evaluation, the choice of dataset plays a critical role in determining how detection performance and robustness are assessed. As a result, benchmark datasets are widely used to provide standardized environments for evaluating IDS models under both normal and adversarial conditions.
+
+
+Philippine Cyber Threat Landscape and Dataset Relevance
+Cybersecurity incidents in the Philippines show that local organizations continue to face network-based threats such as malware, phishing, server exploitation, brute-force attempts, Denial-of-Service (DoS) attacks, and Distributed Denial-of-Service (DDoS) attacks. The National Computer Emergency Response Team of the Philippines reported that malware and malicious files accounted for around 48.9% of the incidents it handled in 2022, making it the most common incident category in its annual report (CERT-PH, 2022). The same report identified phishing, outdated or misconfigured servers and web applications, brute-force activity, denial-of-service attacks, and distributed denial-of-service attacks as common attack vectors observed in the Philippine cyber threat environment (CERT-PH, 2022).
+These threats are also reflected in national cybersecurity planning. The Department of Information and Communications Technology (DICT), through the National Cybersecurity Plan 2023–2028, reported that the Philippine National Computer Emergency Response Team monitored 57,400 cybersecurity threats and handled 3,470 incidents from 2021 to February 28, 2023. The same plan identified malware or malicious code, data leakage, and compromised websites as the top cybersecurity incidents in the country (DICT, 2023). This supports the need for intrusion detection research that can evaluate how defensive mechanisms perform against network-based attack behavior relevant to Philippine organizations.
+The use of a foreign-generated benchmark dataset is also reasonable because cyber threats and network-based attacks are not strictly limited by national boundaries. The National Cybersecurity Plan 2023–2028 states that cyberspace is not bound by physical or geographical boundaries and that its scope extends to cyberspace assets accessible within the country regardless of source or location (DICT, 2023). Similarly, INTERPOL explains that cybercrime has become a global-scale hazard, that cross-border investigations create law-enforcement challenges, and that cyberattack techniques and tactics are replicated across sectors around the world (INTERPOL, 2021). Therefore, the relevance of an intrusion detection dataset should not depend only on where the dataset was generated, but also on whether its attack behaviors correspond to threats observed in the target environment.
+The attack categories represented in CSE-CIC-IDS2018 align with several of the cyber threats documented in the Philippine context. CSE-CIC-IDS2018 includes attack scenarios such as brute force, denial-of-service, distributed denial-of-service, web attacks, and infiltration. These categories correspond to threats observed in the Philippine cyber threat landscape, especially brute-force attempts, denial-of-service activity, web or server exploitation, and malware-related behavior. For this reason, the dataset is used in this study as a technically relevant benchmark environment for intrusion detection evaluation. It is not treated as an exact replica of Philippine network traffic; rather, it provides controlled attack scenarios that overlap with cyber threats faced by Philippine organizations.
+
+
+
+
+
+
+Adversarial Machine Learning Attacks on IDS
+Despite their effectiveness under standard evaluation conditions, machine learning-based IDS remain vulnerable to adversarial manipulation. Adversarial machine learning attacks exploit weaknesses in trained models by crafting inputs that lead to incorrect predictions. In IDS, this often involves modifying malicious traffic so that it is misclassified as benign.
+Alotaibi and Rassam (2023) categorized adversarial attacks against IDS into evasion attacks, poisoning attacks, model extraction attacks, and inference attacks. Evasion attacks occur during deployment or testing, where the attacker modifies inputs without changing the trained model. Poisoning attacks target the training phase by corrupting the training data. Model extraction and inference attacks attempt to learn information about the model or its training data.
+Recent cybersecurity surveys show that adversarial examples are especially problematic in domains where attackers actively adapt to detection systems. Macas et al. (2024) reviewed adversarial examples in deep learning-enabled cybersecurity systems and emphasized that adversarial attacks remain a risk in environments where real adversaries actively probe and adapt to defenses. McCarthy et al. (2022) further noted that adversarial attacks in cybersecurity must preserve functionality, meaning that modified malicious traffic must still perform its intended malicious behavior while evading detection.
+This functionality-preserving requirement is particularly important for IDS because network traffic features have operational meaning. Features such as packet count, flow duration, and bytes per second cannot be modified arbitrarily without producing unrealistic traffic patterns. Therefore, adversarial IDS research must consider both model vulnerability and feature validity. This motivates defenses that are not only robust against adversarial manipulation but also careful about preserving meaningful traffic structure (McCarthy et al., 2022; Ennaji et al., 2024; ElShehaby & Matrawy, 2026).
+
+
+Black-Box Adversarial Probing
+Black-box adversarial probing occurs when an attacker repeatedly queries a target model and observes its outputs or indirect behavioral signals. The attacker does not know the model architecture, parameters, or training data, but can use repeated observations to estimate how the model separates benign and malicious samples. Papernot et al. (2017) established the substitute-model approach for practical black-box attacks, where labels returned by a target model are used to train a surrogate model and craft adversarial samples.
+In IDS environments, black-box probing is realistic because attackers usually interact with deployed systems externally. They may send traffic, observe whether it is blocked or allowed, and infer information from response behavior. Ennaji et al. (2026) formalized adaptive black-box adversarial attacks against NIDS and showed that attackers may use binary outputs, response behavior, or side-channel indicators to infer system behavior. Ennaji et al. (2025) also identified black-box probing as the threat setting for Adaptive Feature Poisoning, which aims to corrupt the attacker’s feedback loop by perturbing selected traffic features.
+The risk of black-box probing is that the IDS response itself becomes an information source. If repeated queries produce stable and reliable feedback, the attacker can gradually refine evasive inputs. This motivates perturbation-based defenses that intentionally reduce the reliability of feedback available to the attacker (Ennaji et al., 2025; Wang et al., 2023).
+
+
+
+
+Black-Box Attack Scenarios for IDS Evaluation
+Black-box adversarial attacks against IDS take several forms depending on how the attacker interacts with the target system. In a black-box setting, the attacker does not have access to the classifier’s internal parameters, training data, or model structure. Instead, the attacker relies on observable outputs or system behavior to infer how the IDS separates benign and malicious traffic.
+Silent probing involves gradual query-based reconnaissance, where the attacker iteratively nudges feature values to infer the decision boundary while avoiding behavioral indicators that might trigger side-channel detection (Ennaji et al., 2025). This scenario is important because black-box attacks do not always manifest as high-volume bursts, meaning behavior-aware defenses may not detect them without sustained monitoring.
+Surrogate transferability attacks exploit the finding by Papernot et al. (2017) that adversarial examples crafted against a substitute model can transfer to a different target model, allowing the attacker to approximate the target boundary without direct access. In this study, this supports the use of a surrogate Decision Tree to generate adversarial examples tested against the target Random Forest.
+Decision-boundary attacks, formalized by Brendel et al. (2018), rely only on final model decisions rather than gradients or confidence scores, using binary search between attack and benign samples to locate the minimal perturbation needed to flip classification.
+Together, these scenarios represent three established black-box adversarial behaviors relevant to IDS evaluation: query-based probing, transferability-based evasion, and decision-boundary approximation. Prior IDS adversarial literature identifies these as recurring categories of black-box attack methods, alongside other approaches such as randomized or gradient-free attacks (Ennaji et al., 2026). Silent probing is included as the query-based condition because AFP-related IDS defense work treats silent and continuous probing as a realistic black-box threat (Ennaji et al., 2025). Surrogate transferability is included because substitute-model attacks show that adversarial behavior learned from one model may transfer to another target model (Papernot et al., 2017). Decision-boundary attack is included because decision-based attacks can operate using only final model outputs rather than gradients, confidence scores, or internal parameters (Brendel et al., 2018). These scenarios are therefore selected as representative black-box conditions, not as an exhaustive list of all possible adversarial attacks.
+
+
+Inference-Time Perturbation Defenses
+Inference-time perturbation defenses operate after an input is received but before the trained classifier produces its prediction. Unlike adversarial training or model retraining, these defenses do not require changing the internal structure of the classifier. Instead, they modify, smooth, compress, or perturb the input so that adversarial manipulation becomes less reliable. Prior adversarial defense studies describe this approach through input transformation, randomized smoothing, purification, and feature compression methods that alter the input rather than the classifier itself (Xu et al., 2018; Cohen et al., 2019; Nie et al., 2022; Wang et al., 2023).
+This study focuses on inference-time perturbation defenses because the proposed controller regulates the defense layer rather than the classifier itself. Adaptive Feature Poisoning, Randomized Smoothing, and Feature Squeezing differ in implementation, but they share a common architectural position. Each can be placed between incoming traffic and the intrusion detection classifier as a pre-classification transformation layer. AFP applies feature-level perturbation before classification, Randomized Smoothing evaluates inputs under controlled Gaussian noise, and Feature Squeezing reduces the input feature space through compression or quantization (Ennaji et al., 2025; Cohen et al., 2019; Xu et al., 2018).
+Although Randomized Smoothing and Feature Squeezing were not originally designed only for network intrusion detection, their inference-time structure allows them to be adapted to this domain. Network-flow records are represented as feature vectors, so input-level transformations such as noise injection and feature quantization can be applied before the classifier evaluates the traffic record. This adaptation must remain bounded because cybersecurity adversarial examples and defenses must preserve functional and semantic validity, especially when features represent traffic behavior such as packet counts, flow duration, and throughput (McCarthy et al., 2022; Roshan & Zafar, 2024; ElShehaby & Matrawy, 2026).
+Adaptive Feature Poisoning, Randomized Smoothing, and Feature Squeezing are selected because they represent distinct inference-time perturbation styles with a shared controllable structure. Adaptive Feature Poisoning represents deviation-based feature perturbation and is directly aligned with black-box adversarial probing in ML-based IDS (Ennaji et al., 2025). Randomized Smoothing represents noise-based perturbation, where Gaussian noise is applied around the input and predictions are aggregated through a smoothed classifier structure (Cohen et al., 2019). Feature Squeezing represents compression-based perturbation, where input representations are reduced or simplified to limit fine-grained adversarial variation (Xu et al., 2018). Prior NIDS adversarial defense work has also used Feature Squeezing during testing before final NIDS classification, supporting its relevance as a pre-classification defense mechanism in intrusion detection contexts (Roshan & Zafar, 2024). These mechanisms are suitable for the present study because each contains a defense-specific intensity parameter that can be regulated by the proposed controller: εbase for Adaptive Feature Poisoning, σ for Randomized Smoothing, and squeezing_intensity for Feature Squeezing.
+Perturbation Trade-Offs in IDS
+Perturbation-based defense creates a trade-off between attacker disruption and detection preservation. If perturbation is too weak, the attacker may still extract useful feedback from repeated queries. If perturbation is too strong, important attack characteristics may be obscured, causing the IDS to miss malicious traffic. This trade-off is central to adversarial robustness research in IDS because a defense should not improve robustness at the cost of unacceptable detection degradation (McCarthy et al., 2022; Roshan & Zafar, 2024; Awad et al., 2025).
+Roshan and Zafar (2024) proposed a two-phase defense strategy for improving NIDS robustness against adversarial attacks, including feature squeezing as a defense component. Awad et al. (2025) also discussed adversarial attack threats against IDS, including evasion, poisoning, and exploratory attacks, and proposed defense mechanisms to improve robustness. Tafreshian and Zhang (2025) integrated adversarial training, dataset balancing, feature engineering, ensemble learning, and model tuning to improve ML-based NIDS robustness under adversarial conditions.
+Recent work on feature perturbability further supports the need to treat IDS perturbation carefully. ElShehaby & Matrawy (2026) introduced a perturb-ability score for flow-based ML-NIDS, showing that traffic features may differ in how safely they can be perturbed because of problem-space constraints. This supports the idea that perturbation should not be applied blindly; it must be controlled according to both adversarial effectiveness and detection impact.
+
+
+
+
+Adaptive Feature Poisoning as an Inference-Time Perturbation Defense
+Adaptive Feature Poisoning, proposed by Ennaji et al. (2025), is a behavior-aware perturbation defense designed to mitigate black-box adversarial probing in machine learning-based intrusion detection systems. In the original AFP design, AFP monitors behavioral and side-channel indicators such as response time and CPU usage to detect probing activity. Once probing is identified, AFP perturbs selected traffic features to reduce the reliability of feedback available to the attacker. In the present study, AFP is evaluated as an inference-time perturbation layer, while the original side-channel triggering mechanism is treated as part of the source AFP design rather than as the main object of evaluation (Ennaji et al., 2025).
+AFP applies feature-level adaptive perturbation based on deviation from baseline behavior. The perturbation strength for each feature is computed using a base perturbation value, a scaling factor, and the deviation of the feature from its baseline profile. This allows AFP to assign stronger perturbation to features that appear more suspicious or more likely to be exploited during probing (Ennaji et al., 2025).
+AFP is relevant to this study because it operates as an inference-time defense layer and contains a controllable perturbation intensity parameter. However, AFP’s adaptation is driven by probing indicators and feature deviation rather than by recent Recall. It can determine when traffic appears suspicious and how features deviate from expected values, but it does not directly monitor whether attack detection is being preserved after perturbation is applied.
+Reported AFP results also show that performance can vary depending on the evaluation setting. Table 1 summarizes the attack-specific AFP results reported by Ennaji et al. (2025) under silent probing, transferability, and decision-boundary attack scenarios.
+
+
+Table 1.
+Reported IDS Accuracy and Recall Under AFP Attack-Specific Evaluation (Ennaji et al., 2025)
+Attack Type
+	Accuracy Before
+	Accuracy After AFP
+	Recall After AFP
+	Silent Probing
+	0.8522
+	0.8906
+	0.03
+	Surrogate Transferability
+	0.2545
+	0.6154
+	0.42
+	Decision Boundary Attack
+	0.1700
+	0.9000
+	0.01
+	
+
+Note. Ennaji et al. (2025) reported this metric as Attack Recall. In this study, the same metric is referred to as Recall because attack traffic is treated as the positive class. The table reports Recall after AFP from the attack-specific evaluation and does not represent all AFP operating conditions.
+The reported results show that AFP improved aggregate accuracy in the selected attack-specific evaluations, but the reported Recall after AFP remained low in some scenarios. In silent probing, Recall after AFP was 0.03, while in the decision-boundary attack it was 0.01. In the transferability scenario, Recall after AFP was higher at 0.42, but still showed that detection performance varied across attack settings. These results should be interpreted carefully because the same AFP paper also reports high Recall under selectively triggered AFP operation. Therefore, the table is not used to claim that AFP always has low Recall. Instead, it is used to show that perturbation effects can vary across attack and activation conditions, supporting the need to evaluate detection-performance-aware perturbation control.
+These findings support the broader trade-off discussed in perturbation-based defenses. Perturbation can reduce the reliability of attacker feedback, but it may also affect the classifier’s ability to preserve attack detection when the transformation becomes too strong or is applied under specific attack conditions. The limitation addressed in this study is therefore not that AFP lacks adaptation or that AFP always reduces Recall. Rather, AFP adapts perturbation based on probing indicators and feature deviation, while the proposed controller adds a separate performance-aware feedback layer based on recent Recall.
+This framing connects AFP to the broader objective of the study. The proposed controller is not designed only for AFP; it is evaluated across Adaptive Feature Poisoning, Randomized Smoothing, and Feature Squeezing as a shared mechanism for regulating perturbation intensity using recent attack-detection performance.
+
+
+Randomized Smoothing as an Inference-Time Perturbation Defense
+Randomized Smoothing is a perturbation-based defense that applies random noise to inputs before classification. Cohen et al. (2019) formalized Randomized Smoothing as a method for constructing a smoothed classifier from a base classifier. The general idea is that if predictions remain stable under random noise, the resulting smoothed classifier can become more robust to certain adversarial perturbations (Cohen et al., 2019).
+In this study, Randomized Smoothing is treated as an inference-time defense layer that introduces controlled Gaussian noise into network-flow feature vectors before classification. This may reduce the stability of feedback available to a black-box attacker. However, the noise level must be bounded because excessive smoothing may distort attack-related features and reduce detection performance. This concern is consistent with intrusion detection literature that emphasizes the semantic and functional constraints of cybersecurity features (McCarthy et al., 2022; Wang et al., 2023).
+Randomized Smoothing is included as an adapted inference-time noise-based perturbation mechanism. It was not originally developed specifically for NIDS black-box probing, but its use of controlled Gaussian noise provides a clear intensity parameter, σ, that can be regulated by the proposed recall-aware controller. When the controller is applied, it regulates smoothing intensity based on recent Recall rather than leaving the noise level fixed throughout the evaluation. This supports the study’s evaluation of whether recall-aware feedback can regulate a noise-based perturbation mechanism beyond behavior-aware AFP (Cohen et al., 2019; Wang et al., 2023).
+
+
+Feature Squeezing as an Inference-Time Perturbation Defense
+Feature Squeezing reduces the input feature space by compressing or simplifying input values. Xu et al. (2018) introduced Feature Squeezing as an adversarial defense that reduces the degrees of freedom available to an attacker. In image domains, this includes transformations such as bit-depth reduction and smoothing. The same principle can be adapted to structured traffic features by reducing precision, bounding values, or discretizing selected flow attributes (Xu et al., 2018).
+In network intrusion detection, Feature Squeezing can operate as a pre-classification transformation layer. Before the traffic record reaches the classifier, selected feature values may be quantized or compressed. This reduces fine-grained variations that attackers may exploit during adversarial manipulation. Prior NIDS work has also included Feature Squeezing as part of adversarial defense strategies, supporting its relevance as an input-transformation defense mechanism in intrusion detection contexts (Roshan & Zafar, 2024; Le et al., 2026).
+Feature Squeezing is included as an adapted inference-time feature-compression mechanism. It was originally introduced as a general adversarial-example defense, but prior NIDS adversarial defense studies have also used feature squeezing as part of testing-phase defense strategies. Its squeezing strength provides a controllable intensity parameter that can be regulated by the proposed recall-aware controller. If squeezing is too weak, it may not sufficiently reduce adversarial manipulation. If squeezing is too strong, it may remove useful information needed for attack detection. This makes Feature Squeezing suitable for testing whether the proposed recall-aware controller can regulate perturbation intensity across a defense mechanism that is structurally different from AFP and Randomized Smoothing.
+
+
+Attacker Feedback Disruption
+Perturbation-based defenses aim to reduce the reliability of information an attacker can extract from repeated queries. In black-box probing, the attacker uses observed model responses to approximate the classifier’s decision boundary. If the defense layer changes, smooths, compresses, or perturbs the input before classification, the attacker receives less stable feedback, making the probing process less reliable (Papernot et al., 2017; Brendel et al., 2018; Ennaji et al., 2025).
+This principle applies to Adaptive Feature Poisoning, Randomized Smoothing, and Feature Squeezing. Although the mechanisms differ, each changes the input before classification and can therefore affect the feedback available to the attacker. The proposed controller adds a performance-aware regulation layer to this process by adjusting defense intensity according to a recent Recall.
+
+
+Feedback Control as Theoretical Basis
+Feedback control provides the theoretical basis for the proposed recall-aware controller. In a feedback system, an output variable is monitored, compared with a desired reference value, and used to adjust a control variable. Åström and Murray (2008) described feedback as a general mechanism for regulating system behavior under uncertainty and changing conditions.
+This structure maps directly to the proposed controller. The monitored output is the recent Recall. The reference value is the minimum acceptable Recall threshold. The control variable is the perturbation intensity parameter of the active defense mechanism. In Adaptive Feature Poisoning, this corresponds to the base perturbation value. In Randomized Smoothing, it corresponds to the noise strength. In Feature Squeezing, it corresponds to the squeezing intensity.
+This framing is important because the proposed controller is not simply an additional metric calculation. It is a closed-loop feedback mechanism. The intrusion detection system produces predictions, the controller monitors recent Recall, and the perturbation intensity is adjusted based on that feedback. This makes defense strength responsive to detection performance rather than only to fixed settings or behavior-based indicators.
+
+
+Sliding-Window Performance Monitoring
+The proposed controller computes rolling Recall over a sliding window of recently labeled samples. Sliding-window monitoring is common in data-stream and concept-drift research because it emphasizes recent behavior rather than the entire historical record. Agrahari and Singh (2022) reviewed concept drift detection methods and identified adaptive mechanisms, including windowing approaches, as part of data-stream monitoring. Shyaa et al. (2024) discussed concept drift and feature dynamics in ML/DL-based IDS, emphasizing that intrusion detection environments may change over time.
+The foundational implementation of adaptive windowing for performance monitoring is ADWIN, introduced by Bifet and Gavaldà (2007), which monitors a rolling metric over a sliding window and triggers updates when the windowed estimate changes significantly. More recent work by Angbera and Chan (2024) demonstrates this principle in practice, using an adaptive sliding window to monitor classification performance and dynamically adjust model parameters when degradation is detected in non-stationary data streams. These implementations support the use of a sliding window as a practical mechanism for tracking recent detection performance rather than relying on full-run aggregate scores.
+A full-run recall score cannot support adaptive control during an attack stream because it is only available after the evaluation ends. A rolling-window estimate provides a recent view of current detection performance. If Recall begins to degrade within the current window, the controller can respond by adjusting perturbation strength.
+Because Recall requires true labels, this study evaluates rolling Recall in an offline labeled setting. The controller is therefore presented as an experimental feedback mechanism for evaluating recall-aware perturbation regulation, not as a fully deployable real-time production mechanism.
+
+
+Adaptive IDS and Concept Drift Monitoring
+Concept drift occurs when the statistical properties of data change over time. In IDS, this may happen because of new applications, user behavior, network protocols, attack types, or feature distributions. Agrahari and Singh (2022) explained that models may become unreliable when historical training data no longer represents current data. Shyaa et al. (2024) focused specifically on IDS and identified concept drift and feature dynamics as important challenges for ML/DL-based intrusion detection systems.
+Concept drift is not the same as adversarial probing, but it supports a related design principle: fixed configurations may become inappropriate when operating conditions change. Adaptive IDS research therefore supports monitoring recent behavior and adjusting system parameters when performance begins to degrade (Agrahari & Singh, 2022; Shyaa et al., 2024).
+The present study applies this principle to perturbation-based defense. Instead of monitoring distribution shift or general classification error, the proposed controller monitors rolling Recall. This allows perturbation strength to be adjusted when the defense begins to interfere with attack detection.
+
+
+Threshold-Based Recall Regulation
+The proposed controller uses a threshold-based decision rule. In this study, the minimum Recall threshold represents the lowest acceptable level of recent attack detection performance. When recent Recall falls below this threshold, the controller reduces the perturbation intensity of the active defense mechanism to lessen the risk of hiding attack-related features. When Recall remains acceptable, perturbation intensity may be maintained or gradually restored to preserve the attacker-disruption effect of the defense.
+Threshold-based regulation is appropriate for this study because the controller has a clear performance objective: attack detection should not fall below the defined acceptable level. A deterministic threshold rule is also interpretable, which is useful in intrusion detection because security mechanisms should be understandable and auditable. Threshold-based parameter adjustment has also been used in IDS research, where adaptive thresholds can affect detection performance under changing traffic conditions (Al Tobi & Duncan, 2019).
+This design supports the study’s goal of testing whether a simple recall-aware feedback layer can regulate perturbation intensity without redesigning the classifier. The controller does not replace Adaptive Feature Poisoning, Randomized Smoothing, or Feature Squeezing. Instead, it adjusts the intensity of the active defense mechanism based on recent Recall.
+        Because the controller depends on a sliding window, Recall thresholds, and adjustment factors, its behavior may change when these operating settings are changed. Sliding-window research shows that window size affects how recent or stable the monitored estimate becomes, while IDS threshold-adaptation research shows that changing threshold behavior can affect detection performance (Bifet & Gavaldà, 2007; Al Tobi & Duncan, 2019). For this reason, the present study includes a selected controller parameter sensitivity analysis. The analysis does not search exhaustively for optimal values; instead, it evaluates representative settings for window size, Recall threshold strictness, and adjustment strength to observe whether controller-augmented defense performance changes under different operating settings. 
+
+
+Synthesis of the Study
+The reviewed literature establishes the foundation of this study. First, machine learning-based intrusion detection systems remain important in modern network defense because they can classify traffic using patterns learned from benchmark datasets. However, these systems remain vulnerable to adversarial manipulation, including evasion, model extraction, and black-box probing attacks. This shows that intrusion detection systems should be evaluated not only under normal conditions, but also under adversarial conditions (Alotaibi & Rassam, 2023; Jmila & Ibn Khedher, 2022; Macas et al., 2024; Ennaji et al., 2026).
+Second, black-box probing is a relevant threat because the attacker does not need access to the model’s internal parameters. Instead, the attacker can repeatedly query the system and use its responses to infer the classifier’s decision behavior. This makes attacker feedback an important concern in adversarial intrusion detection (Papernot et al., 2017; Brendel et al., 2018; Ennaji et al., 2025).
+Third, inference-time perturbation defenses provide a practical response to this problem because they can be placed before the classifier without redesigning or retraining the model. Adaptive Feature Poisoning, Randomized Smoothing, and Feature Squeezing all fit this structure in the present study. Each transforms or perturbs the input before classification, and each contains an intensity parameter that can affect both attacker disruption and detection performance (Xu et al., 2018; Cohen et al., 2019; Ennaji et al., 2025).
+Fourth, the literature also shows that perturbation-based defenses create a trade-off. Weak perturbation may fail to reduce useful attacker feedback, while excessive perturbation may distort attack-related features and reduce the system’s ability to detect malicious samples. This makes Recall an important metric because it directly measures the proportion of actual attack samples correctly identified by the intrusion detection system (McCarthy et al., 2022; Roshan & Zafar, 2024; Awad et al., 2025).
+The proposed study addresses this trade-off by applying feedback control to perturbation intensity. The controller monitors recent Recall, compares it with a minimum acceptable threshold, and adjusts the active defense mechanism’s perturbation intensity within bounded limits. The contribution of the study is therefore not a replacement for Adaptive Feature Poisoning, Randomized Smoothing, or Feature Squeezing. Instead, it is a shared recall-aware control layer that evaluates whether perturbation intensity can be regulated using recent attack-detection performance. The training partition will be used to train the Random Forest classifier and compute any required training-based reference statistics. The evaluation partition will be used for attack simulation, defense evaluation, and performance measurement. This separation ensures that the classifier is trained only on the training data and evaluated on unseen samples.
+The study will evaluate the base and controller-augmented versions of Adaptive Feature Poisoning, Randomized Smoothing, and Feature Squeezing under silent probing, surrogate transferability, and decision-boundary attack scenarios. Performance will be assessed using Precision, Recall, and F1-Score. This evaluation will determine whether applying the recall-aware controller produces a significant difference in the performance of perturbation-based intrusion detection defenses.
+
+
+
+
+
+
+CHAPTER 3
+METHODOLOGY
+        This chapter presents the methodology that will be used to develop and evaluate the recall-aware controller for perturbation-based intrusion detection defenses. The study will use a fixed Random Forest classifier, the CSE-CIC-IDS2018 dataset, and selected black-box probing scenarios to evaluate Adaptive Feature Poisoning, Randomized Smoothing, and Feature Squeezing. Each defense mechanism will be evaluated in two configurations: base defense and controller-augmented defense. This chapter discusses the research design, data sources, sampling method, system architecture, research instrument, data generation procedure, ethical considerations, data analysis procedure, and statistical treatment.
+
+
+Research Design
+This study will employ an experimental and developmental research design. The experimental component will evaluate the performance of perturbation-based intrusion detection defenses under black-box probing attacks. The developmental component will involve the construction and integration of a recall-aware controller that adjusts the perturbation intensity of an active defense mechanism based on recent Recall.
+The study will evaluate three perturbation-based defense mechanisms: Adaptive Feature Poisoning, Randomized Smoothing, and Feature Squeezing. Each mechanism will be evaluated in two configurations. The first configuration will use the base defense mechanism with fixed perturbation intensity. The second configuration will use the same defense mechanism with the proposed recall-aware controller.
+
+
+The study will be organized according to the four research questions. Research Question 1 will evaluate the performance of the base defense mechanisms in terms of Precision, Recall, and F1-Score. Research Question 2 will evaluate the performance of the controller-augmented defense mechanisms using the same metrics. Research Question 3 will determine whether there is a significant difference between each base defense mechanism and its controller-augmented version.
+In addition, the study will conduct a selected controller parameter sensitivity analysis. This analysis will describe the performance of the controller-augmented defense mechanisms under representative controller settings. The selected settings will include variations in sliding window size, Recall threshold pair, and intensity adjustment policy. The purpose is not to search exhaustively for optimal values, but to describe whether controller-augmented performance differs across selected feedback-control settings.
+The balanced controller setting will serve as the main configuration for Research Questions 2 and 3. Other selected configurations will be used for Research Question 4 to describe the sensitivity of controller-augmented performance to changes in controller parameters.
+The underlying intrusion detection classifier will be a Random Forest model. The classifier will be trained once on the training partition of the dataset and will remain fixed throughout all experimental runs. The controller will not retrain the classifier. Its role will be limited to adjusting the perturbation intensity of the active defense mechanism during evaluation.
+All experiments will be conducted in a controlled offline simulation environment using a labeled benchmark intrusion detection dataset. No live network traffic will be captured, probed, or disrupted. The study will use batch-level experiment records as the basis for descriptive analysis and paired t-test comparison.
+ 
+Sources of Data
+This study will use two categories of data: the benchmark dataset and the generated experimental data.
+Benchmark Dataset
+The primary data source will be the CSE-CIC-IDS2018 dataset. It is a publicly available benchmark intrusion detection dataset produced by the Canadian Institute for Cybersecurity in collaboration with the Communications Security Establishment. The dataset contains labeled network flow records representing benign traffic and different attack types, including brute force, denial-of-service, distributed denial-of-service, web attacks, and infiltration.
+The dataset will serve as the traffic substrate for classifier training, black-box attack simulation, defense evaluation, and performance measurement.
+Generated Experimental Data
+The second category will consist of experimental data generated through controlled simulation runs. These generated records will include batch-level outputs for each defense mechanism, attack scenario, and configuration. The recorded values will include confusion matrix values, Precision, Recall, F1-Score, and supporting controller information when applicable.
+These generated records will be used to answer the research questions and perform the paired t-test.
+
+
+
+
+
+
+Sampling Data
+The study will use stratified random sampling to divide the preprocessed CSE-CIC-IDS2018 records into a strict 70/30 train-evaluation split. Stratification will be based on the binary class labels, where benign traffic will be mapped to 0 and all attack traffic will be aggregated to 1. This will preserve the prepared benign-to-attack class distribution across both partitions. 
+The 70% training split will be used to train the fixed Random Forest classifier. The classifier will be trained only once and will remain unchanged throughout all experimental runs. The 30% evaluation split will be reserved for simulation and performance evaluation.
+The evaluation split will be organized into batches and processed under both the base defense and controller-augmented defense configurations. The same evaluation batches will be used for both configurations so that each base-defense result will have a matching controller-augmented result for paired comparison and paired t-test analysis.
+The stratified split will be performed before any adversarial transformation. During evaluation, known attack records will either be evaluated in their original form for silent probing or dynamically transformed to simulate surrogate transferability and decision-boundary attacks. This will ensure that the data split is based on the verified benign and attack labels, while the black-box probing scenarios are introduced only during simulation.
+This sampling design will separate classifier training from simulation-based evaluation. It will help prevent data leakage by ensuring that final performance results are measured on records not used to train or update the Random Forest classifier.
+
+
+
+
+
+
+
+
+System Architecture
+Figure 3 shows the flow of the proposed system. The architecture is organized into seven operational components: dataset preparation, classifier training, black-box attack simulation, perturbation defense processing, IDS classification, metric computation, and recall-aware feedback control. The Statement of the Problem block in the figure is not a separate processing component. It shows that the recorded metrics will later be used to answer the research questions during data analysis.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Figure 3. Recall-Aware IDS Pipeline
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Step 1. Dataset Preparation
+The pipeline begins with the CSE-CIC-IDS2018 dataset. The dataset will be preprocessed by cleaning invalid records, encoding labels into benign and attack classes, scaling numerical features, and dividing the data into training and evaluation partitions. The training partition will be used for classifier training. The evaluation partition will be used for black-box attack simulation, defense evaluation, and performance measurement.
+
+
+Step 2. Classifier Training
+The training partition will be used to train the Random Forest intrusion detection classifier. The classifier will be trained once and kept fixed across all experimental configurations. This ensures that performance differences can be attributed to the defense mechanism and the recall-aware controller rather than changes in the classifier.
+The classifier will produce a binary prediction for each evaluated sample. Benign traffic will be labeled as 0, while attack traffic will be labeled as 1.
+
+
+Step 3. Black-Box Attack Simulation
+The black-box attack simulation component represents the adversarial input source. The attacker is assumed to have no access to the internal parameters, training data, or structure of the classifier. The study uses three black-box probing scenarios: silent probing, surrogate transferability, and decision-boundary attack.
+3.1. Silent Probing
+Silent probing represents repeated query-based attempts to observe classifier behavior. In this scenario, evaluation samples are submitted in batches to simulate gradual probing behavior. The purpose is to test whether the defense can preserve attack detection while the attacker attempts to collect feedback from repeated interactions.
+Pseudocode: Silent Probing
+	function SimulateSilentProbing(evaluation_batches): probed_batches
+
+
+1. Select evaluation batches from the held-out evaluation partition.
+2. Submit each batch to the defended classifier pipeline.
+3. Record the classifier output for each batch.
+4. Preserve the same batch order for base and controller-augmented evaluation.
+5. Return the probed evaluation batches.
+	
+
+3.2. Surrogate Transferability
+Surrogate transferability represents attacks crafted using a substitute model and then transferred to the target Random Forest classifier. In this scenario, a surrogate model approximates the target classifier’s decision behavior. Modified samples produced from the surrogate model are then evaluated against the defended Random Forest classifier.
+Pseudocode: Surrogate Transferability 
+	function SimulateSurrogateTransferability(evaluation_data, surrogate_model): transferred_samples
+
+
+1. Train or use a surrogate model to approximate the target classifier behavior.
+2. Select attack samples from the evaluation partition.
+3. Modify the selected samples using the surrogate model decision behavior.
+4. Transfer the modified samples to the defended Random Forest pipeline.
+5. Return the transferred adversarial samples.
+	
+
+3.3. Decision-Boundary Attack
+Decision-boundary attack represents attempts to move attack samples toward benign regions of the feature space. In this scenario, attack samples are modified toward boundary regions to test whether the defended classifier can still identify them as malicious.
+Pseudocode: Decision-Boundary Attack
+	function SimulateDecisionBoundaryAttack(attack_samples, benign_reference_samples): boundary_samples
+
+
+1. Select attack samples from the evaluation partition.
+2. Select benign reference samples from the evaluation partition.
+3. Move each attack sample toward a benign reference sample in feature space.
+4. Submit the modified sample to the defended classifier pipeline.
+5. Return the boundary-modified attack samples.
+	
+
+The three attack scenarios generate or select evaluation samples that are later processed through the perturbation defense layer. The same attack scenario and evaluation batches are used when comparing the base defense configuration with the controller-augmented configuration.
+
+
+Step 4. Perturbation Defense Processing
+After attack simulation, the evaluation samples pass through the perturbation defense layer. This layer contains the three defense mechanisms evaluated in the study: Adaptive Feature Poisoning, Randomized Smoothing, and Feature Squeezing. Each mechanism operates as an inference-time input transformation before classification.
+Each defense mechanism is evaluated in two configurations. In the base configuration, the defense mechanism operates without the recall-aware controller and uses a predefined defense-specific intensity setting throughout the evaluation run. In the controller-augmented configuration, the recall-aware controller adjusts the defense-specific intensity parameter based on recent Recall.
+4.1. Adaptive Feature Poisoning
+Adaptive Feature Poisoning applies feature-level perturbation to the input before classification. The controller-adjustable parameter for AFP is εbase, which represents the base perturbation strength. In the base configuration, εbase remains fixed throughout the evaluation run. In the controller-augmented configuration, εbase is adjusted based on recent Recall.
+The AFP transformation follows three main steps. First, the system measures how far each feature value is from its reference profile. Second, the feature deviation is used to compute the perturbation strength for that feature. Third, bounded noise is added to produce the transformed feature value.
+Equation 1 shows the feature deviation computation for feature i.
+δᵢ = |xᵢ − μᵢ| / σᵢ
+Equation 2 shows the feature-specific perturbation strength for Adaptive Feature Poisoning.
+εᵢ = εbase × (1 + α × δᵢ)
+        Equation 3 shows the transformation applied to each feature value under AFP.
+x′ᵢ = xᵢ + noiseᵢ
+where δᵢ is the feature deviation, xᵢ is the observed feature value, μᵢ is the reference mean, σᵢ is the reference standard deviation, εᵢ is the feature-specific perturbation strength, εbase is the base perturbation value, α is the scaling factor, and x′ᵢ is the transformed feature value.
+The reference mean and standard deviation are derived only from benign records in the training split and are kept fixed during evaluation. These values form the benign traffic reference profile used by AFP to measure how far an evaluated feature value deviates from expected benign behavior. The evaluation split is not used to compute these reference values, which prevents the final evaluation data from influencing the perturbation process.
+
+
+
+
+Pseudocode: Adaptive Feature Poisoning
+	function ApplyAFP(x, εbase, α, reference_profile): transformed_x
+
+
+     1. Copy the input feature vector x.
+     2. For each feature xᵢ:
+          a. Compute feature deviation: δᵢ = |xᵢ − μᵢ| / σᵢ
+          b. Compute feature-specific perturbation strength: εᵢ = εbase × (1 + α × δᵢ)
+          c. Generate bounded perturbation noise using εᵢ.
+          d. Add the perturbation noise to xᵢ.
+     3. Return the transformed feature vector.
+	
+
+4.2. Randomized Smoothing
+Randomized Smoothing applies controlled Gaussian noise to input feature vectors before classification. The controller-adjustable parameter for Randomized Smoothing is σ, which represents the noise strength. In the base configuration, σ remains fixed throughout the evaluation run. In the controller-augmented configuration, σ is adjusted based on recent Recall.
+The Randomized Smoothing process follows two main steps. First, the system generates multiple noisy copies of the same input by adding Gaussian noise. Second, each noisy copy is classified by the fixed Random Forest classifier, and the final prediction is selected through majority voting.
+Equation 4 shows the noisy copy generation step of Randomized Smoothing.
+x′ⱼ = x + ηⱼ, where ηⱼ ∼ N(0, σ²)
+        Equation 5 shows the majority-voting step to produce the final prediction.
+ŷ = mode(f(x′₁), f(x′₂), ..., f(x′ₘ))
+where x is the original input, x′ⱼ is the j-th noisy copy, ηⱼ is Gaussian noise, σ is the noise strength, f is the fixed Random Forest classifier, m is the number of noisy copies, and ŷ is the majority-voted prediction.
+A higher σ applies stronger noise to the input copies, while a lower σ applies weaker noise. In the controller-augmented configuration, σ is adjusted so that the defense can reduce excessive perturbation when recent Recall drops.
+Pseudocode: Randomized Smoothing
+	function ApplyRandomizedSmoothing(x, σ, classifier, ensemble_size): prediction
+
+
+      1. Create an empty prediction list.
+      2. For j from 1 to ensemble_size:
+          a. Generate Gaussian noise: ηⱼ ∼ N(0, σ²)
+          b. Create a noisy copy of the input: x′ⱼ = x + ηⱼ
+          c. Send x′ⱼ to the fixed Random Forest classifier.
+          d. Store the predicted label.
+     3. Select the majority label from the prediction list.
+     4. Return the majority-voted prediction.
+	
+
+4.3. Feature Squeezing
+        Feature Squeezing reduces the precision or granularity of numerical feature values before classification. The controller-adjustable parameter for Feature Squeezing is squeezing_intensity, which represents the strength of the squeezing transformation. In the base configuration, squeezing_intensity remains fixed throughout the evaluation run. In the controller-augmented configuration, squeezing_intensity is adjusted based on recent Recall.
+The Feature Squeezing transformation follows two main steps. First, the system determines how many decimal places will be retained based on the squeezing intensity. Second, the numerical feature values are rounded using the computed number of decimal places. A higher squeezing intensity results in fewer retained decimal places, which produces stronger feature squeezing.
+Equation 6 shows the computation of the number of decimal places retained.
+d = max(0, 6 − int(squeezing_intensity))
+Equation 7 shows the computation of the squeezed feature vector using the retained decimal places.
+x′ = round(x, d)
+where d is the number of decimal places retained, x is the original input feature vector, x′ is the squeezed feature vector, and squeezing_intensity is the controllable intensity parameter of Feature Squeezing.
+The use of max(0, ...) ensures that the number of retained decimal places does not become negative. This allows stronger squeezing values to reduce feature precision without producing invalid rounding behavior.
+Pseudocode: Feature Squeezing
+	function ApplyFeatureSqueezing(x, squeezing_intensity): transformed_x
+
+
+    1. Compute the number of decimal places to retain:
+                   d = max(0, 6 − int(squeezing_intensity))
+        2. Copy the input feature vector x.
+        3. For each numerical feature xᵢ:
+                   a. Round xᵢ to d decimal places.
+       4. Return the squeezed feature vector.
+	
+
+Table 2 summarizes the defense-specific intensity parameters used by each perturbation-based defense mechanism. These parameters remain fixed in the base configuration and are adjusted by the recall-aware controller in the controller-augmented configuration.
+Table 2.
+Defense-Specific Intensity Parameters
+Defense Mechanism
+	Controlled Parameter
+	Meaning
+	Role
+	Adaptive Feature Poisoning
+	εbase 
+	Base perturbation value 
+	Controls the base strength of AFP feature perturbation. 
+	Continuation of Table 2.
+Defense Mechanism
+	Controlled Parameter
+	Meaning
+	Role
+	Randomized Smoothing
+	σ 
+	Gaussian noise strength 
+	Controls the amount of noise added before classification. 
+	Feature Squeezing
+	squeezing_intensity 
+	Squeezing or quantization strength 
+	Controls the strength of feature precision reduction. 
+	
+
+Step 5. Classification
+        The transformed input is passed to the fixed Random Forest classifier. The classifier produces predicted labels for each evaluated sample. Benign traffic is labeled as 0, while attack traffic is labeled as 1.
+The predicted labels are then compared with the ground-truth labels from the evaluation data. This comparison produces the confusion matrix values TP, FP, TN, and FN.
+Where TP refers to attack samples correctly classified as attacks, FP refers to benign samples incorrectly classified as attacks, TN refers to benign samples correctly classified as benign, and FN refers to attack samples incorrectly classified as benign.
+
+
+Step 6. Metric Computation
+        After classification, the system computes batch-level Precision, Recall, and F1-Score using the confusion matrix values generated in Step 5. These metrics are recorded for each evaluation batch.
+        Equation 8 shows the computation of Precision, which determines how many predicted attack samples are actual attacks.
+Precision = TP / (TP + FP)
+Equation 9 shows the computation of Recall, which determines how many actual attack samples are correctly detected.
+Recall = TP / (TP + FN)
+Equation 10 shows the computation of F1-Score, which summarizes the balance between Precision and Recall.
+F1-Score = 2 × (Precision × Recall) / (Precision + Recall)
+Recall serves as the feedback signal for the recall-aware controller because it directly reflects how many actual attack samples are still being detected. Precision and F1-Score are not used to adjust perturbation intensity, but they are recorded for performance evaluation and statistical comparison.
+This step produces batch-level metric records only. Final summary values and paired t-test results are generated later during data analysis.
+
+
+Step 7. Recall-Aware Feedback Control
+The recall-aware controller forms the feedback component of the architecture. It monitors recent Recall over a selected sliding window and compares it with predefined threshold levels. The controller uses this value as a feedback signal to determine whether the active perturbation defense is preserving attack detection.
+When Recall falls below the defined threshold, the controller reduces perturbation intensity within bounded limits to help recover attack detection. When Recall remains within the acceptable range, the controller gradually restores perturbation intensity to preserve the attacker-feedback disruption effect of the defense. The updated intensity value is returned to the perturbation defense layer before the next evaluation batch is processed.
+
+
+
+
+Threshold-Based Controller Rules
+The recall-aware controller uses Rolling Recall as its feedback signal. Rolling Recall is computed from the TP and FN values stored in the selected sliding window:
+Rₜ = window TP / (window TP + window FN)
+A lower Rₜ means that more attack samples are being missed in the recent evaluation batches. A higher Rₜ means that the active defense mechanism is still preserving attack detection.
+Table 3 shows the threshold-based rule structure used by the controller to update perturbation intensity before the next evaluation batch is processed.
+Table 3. 
+Threshold-Based Rules of the Recall-Aware Controller
+Controller State
+	Rolling Recall (Rₜ)
+	Adjustment Rule
+	Description
+	Red / Critical
+	Rₜ < 0.85
+	intensity × fast_decay
+	Aggressively reduces perturbation intensity when Recall is dangerously low
+
+
+	Yellow / Warning
+	0.85 ≤ Rₜ < 0.95
+	intensity × slow_decay
+	Gradually reduces perturbation intensity when Recall falls below the acceptable level
+
+
+	Green / Healthy
+	Rₜ ≥ 0.95
+	intensity × growth_factor
+	Gradually restores perturbation intensity when Recall remains acceptable
+	The threshold values in Table 3 are internally justified initial experimental settings for the controller. The value of 0.95 is used as the minimum acceptable Recall because it means that at least 95% of attack samples in the recent window are still being detected. When Recall falls below 0.95 but remains at or above 0.85, the controller treats the condition as a warning state and reduces perturbation intensity gradually.
+The value of 0.85 is used as the critical threshold because it indicates that more than 15% of recent attack samples are being missed. When Recall falls below 0.85, the controller treats the condition as critical and reduces perturbation intensity more aggressively.
+The gap between 0.95 and 0.85 creates a warning zone where the controller can respond before detection performance reaches a critical level. The adjustment factors are asymmetric because the controller prioritizes recovering Recall faster than restoring perturbation strength. These values are not claimed to be universally optimal. They are used to define a consistent and interpretable starting rule set for comparing base and controller-augmented defense configurations.
+Note. In the table, intensity refers to the active controllable parameter of the selected defense mechanism. 
+
+
+Control Parameters
+The recall-aware controller will use a common set of parameters across the three defense mechanisms. These parameters define the controller’s monitoring window, recall thresholds, and intensity adjustment rules. Although each defense mechanism uses a different perturbation method, the controller treats each defense as having a controllable intensity value.
+The controller parameters in Table 4 define the structure of the recall-aware feedback mechanism. The sliding window size determines how many recent batches are used to compute Rolling Recall. The threshold parameters define the controller’s warning and critical zones. The decay and growth factors determine how strongly the controller reduces or restores perturbation intensity. The intensity bounds prevent the controller from applying invalid or excessive perturbation values.
+
+
+
+
+
+
+Table 4.
+Common Controller Parameters and Their Roles
+Parameter
+	Meaning
+	Role
+	W
+	Sliding window size
+	Number of recent batches used to compute rolling Recall
+	Rcritical
+	Critical Recall threshold
+	Triggers aggressive reduction of perturbation intensity
+	Rmin
+	Minimum acceptable Recall threshold
+	Triggers gradual reduction of perturbation intensity
+	fast_decay
+	Aggressive reduction factor
+	Reduces intensity when Recall is critically low
+	slow_decay
+	Gentle reduction factor
+	Reduces intensity when Recall is below minimum threshold
+	growth_factor
+	Growth factor
+	Gradually restores intensity when Recall is acceptable
+	intensity_min
+	Minimum allowed intensity
+	Prevents the defense from being fully disabled
+	intensity_max
+	Maximum allowed intensity
+	Prevents excessive perturbation
+	intensity
+	General controlled defense intensity
+	Shared control variable adjusted by the recall-aware controller
+	
+
+Note. Table 4 defines the controller parameters and their roles. The proposed initial threshold and adjustment settings are shown in Table 3. Final numerical settings will be fixed before final evaluation and applied consistently across all experimental runs.
+The following pseudocode shows how the sliding window, threshold rules, and controller parameters are applied together to update the active defense mechanism’s perturbation intensity.
+Selected Controller Parameter Sensitivity Analysis
+        To extend the evaluation of the recall-aware controller, the study will conduct a selected controller parameter sensitivity analysis. This analysis will evaluate the controller-augmented defense mechanisms under seven representative controller configurations. These configurations are selected to examine the effect of recent-recall memory length, Recall threshold strictness, and perturbation adjustment strength.
+The balanced default configuration will be used as the main controller setting for the base-versus-controller comparison. The remaining configurations will vary one controller parameter group at a time while keeping the other parameters fixed. This allows the study to observe how controller behavior changes when the sliding window size, Recall threshold pair, or adjustment policy is modified.
+The analysis is not intended to perform exhaustive parameter optimization. It will not test every possible threshold, decay factor, growth factor, or intensity value. Instead, it will test selected representative settings that are interpretable and suitable for controlled comparison.
+
+
+
+
+
+
+
+
+Table 5.
+Selected Controller Parameter Configurations for Sensitivity Analysis
+Configuration
+	Sensitivity Focus
+	W
+	Rcritical
+	Rmin
+	fast_
+decay
+	slow_
+decay
+	growth_factor
+	C1 Balanced Default
+	Reference setting
+	5
+	0.85
+	0.95
+	0.40
+	0.90
+	1.05
+	C2 Very Short Window
+	Window size
+	3
+	0.85
+	0.95
+	0.40
+	0.90
+	1.05
+	C3 Long Window
+	Window size
+	20
+	0.85
+	0.95
+	0.40
+	0.90
+	1.05
+	C4 Lenient Threshold
+	Threshold pair
+	5
+	0.80
+	0.90
+	0.40
+	0.90
+	1.05
+	C5 Strict Threshold
+	Threshold pair
+	5
+	0.90
+	0.97
+	0.40
+	0.90
+	1.05
+	C6 Conservative Adjustment
+	Adjustment policy
+	5
+	0.85
+	0.95
+	0.60
+	0.95
+	1.02
+	C7 Aggressive Adjustment
+	Adjustment policy
+	5
+	0.85
+	0.95
+	0.25
+	0.80
+	1.10
+	
+
+        The balanced default configuration represents the initial controller setting of the study. The very short-window and long-window configurations test whether controller behavior changes when Rolling Recall is computed from fewer or more recent batches. The lenient-threshold and strict-threshold configurations test whether less strict or more strict Recall thresholds affect controller-augmented performance. The conservative and aggressive configurations test whether weaker or stronger intensity updates affect Precision, Recall, and F1-Score.
+The perturbation intensity bounds will remain fixed across all selected configurations. This ensures that the controller can reduce or restore perturbation intensity without fully disabling the defense mechanism or applying excessive perturbation. Therefore, the selected configurations modify the rate and condition of intensity adjustment, but they do not turn off Adaptive Feature Poisoning, Randomized Smoothing, or Feature Squeezing.
+Pseudocode: Recall-Aware Controller Update
+	function RecallAwareControllerUpdate(window_TP, window_FN, current_intensity, Rcritical, Rmin, fast_decay, slow_decay, growth_factor, intensity_min, intensity_max): updated_intensity, controller_state
+
+
+Input:
+     TP and FN values from the current sliding window
+     current defense intensity
+     recall threshold values
+     intensity adjustment factors
+     minimum and maximum intensity limits
+
+
+Output:
+     updated defense intensity
+     controller state
+
+
+1. Compute Rolling Recall:
+       Rₜ = window_TP / (window_TP + window_FN)
+
+
+2. If Rₜ < Rcritical:
+       set controller state to Red / Critical.
+       updated_intensity = current_intensity × fast_decay
+
+
+3. Else if Rₜ < Rmin:
+       set controller state to Yellow / Warning.
+       updated_intensity = current_intensity × slow_decay
+
+
+4. Else:
+       set controller state to Green / Healthy.
+       updated_intensity = current_intensity × growth_factor
+
+
+5. Limit the updated intensity within the minimum and maximum bounds:
+       updated_intensity = max(intensity_min, min(updated_intensity, intensity_max))
+
+
+6. Return the updated intensity and controller state.
+	
+
+Experiment Output Recording[c]
+The recorded metrics are mapped to the study’s research questions. The base defense performance results answer Research Question 1, while the controller-augmented performance results answer Research Question 2. The paired comparison table and paired t-test result table answer Research Question 3 by determining whether there is a significant difference between each base defense mechanism and its controller-augmented version.
+The controller parameter sensitivity table and controller configuration summary table answer Research Question 4 by describing the performance of the controller-augmented defenses under selected controller parameter configurations. All outputs are systematically organized to ensure clear traceability between experimental results and the corresponding analytical objectives.
+
+
+Table 6. 
+Planned Experiment Outputs
+Output
+	Purpose
+	Base defense performance table
+	Reports Precision, Recall, and F1-Score for the base defense configurations.
+	Controller-augmented performance table
+	Reports Precision, Recall, and F1-Score for the controller-augmented defense configurations.
+	Paired comparison table
+	Organizes matching base and controller-augmented metric values for paired t-test analysis.
+	Paired t-test result table
+	Reports t-statistics, p-values, and null hypothesis decisions.
+	
+
+Continuation of Table 6.
+Output
+	Purpose
+	Controller parameter sensitivity table
+	
+
+Reports Precision, Recall, and F1-Score under selected recall-aware controller parameter configurations
+	
+
+	Controller configuration summary table 
+	Summarizes which selected controller settings produced stronger or more stable controller-augmented performance 
+	
+
+Research Instrument
+The primary research instrument will be a structured batch-level experiment record generated from the simulation pipeline. The experiment log will serve as the tangible output of the system and will provide the data needed to answer the four research questions.
+Each record in the experiment log will correspond to one evaluation batch under a specific dataset, attack scenario, defense mechanism, evaluation configuration, and controller parameter configuration when applicable.
+
+
+Table 7.
+Batch-Level Experiment Log Fields
+Field
+	Description
+	Attack scenario
+	Silent probing, surrogate transferability, or decision-boundary attack
+	Defense mechanism
+	Adaptive Feature Poisoning, Randomized Smoothing, or Feature Squeezing
+	Configuration
+	Base defense or controller-augmented defense
+	Batch ID
+	Identifier of the evaluation batch
+	Sample count
+	Number of samples in the batch
+	
+
+Continuation of Table 7.
+Field
+	Description
+	TP
+	Attack samples correctly classified as attack
+	FP
+	Benign samples incorrectly classified as attack
+	TN
+	Benign samples correctly classified as benign
+	FN
+	Attack samples incorrectly classified as benign
+	Precision
+	Proportion of predicted attacks that are actual attacks
+	Recall
+	Proportion of actual attacks correctly detected
+	F1-Score
+	Harmonic mean of Precision and Recall
+	Controller state
+	Controller decision when the controller is active, when applicable
+	Perturbation intensity
+	Current intensity value of the active defense mechanism, when applicable
+	Controller configuration ID
+	Identifier of the selected controller setting used in the run 
+	Sliding window size
+	Number of recent batches used to compute Rolling Recall 
+	Rcritical
+	Critical Recall threshold used by the controller 
+	Rmin
+	Minimum acceptable Recall threshold used by the controller 
+	Adjustment Policy
+	Balanced default, very short window, long window, lenient threshold, strict threshold, conservative adjustment, or aggressive adjustment 
+	fast_decay
+	Aggressive intensity reduction factor used when Recall is critically low 
+	Slow_decay
+	Gradual intensity reduction factor used when Recall is below the acceptable threshold 
+	growth_factor
+	Intensity restoration factor used when Recall remains acceptable 
+	
+
+The batch-level experiment log will be used to generate the descriptive summary tables for Research Questions 1 and 2. The same log will also provide paired batch-level observations for the paired t-test used in Research Question 3.
+The batch-level experiment log will be generated using a set of Python-based software tools. These tools will be used to preprocess the dataset, train the fixed Random Forest classifier, simulate black-box probing attacks, apply perturbation-based defenses, operate the recall-aware controller, compute performance metrics, and conduct statistical testing. The following software tools and libraries supported the implementation of the experimental pipeline.
+Python 
+The primary programming language for the entire implementation. All preprocessing scripts, model training, attack simulations, defense mechanisms, controller logic, and metric computation are written in Python.
+Pandas 
+A data manipulation library used for loading the CSE-CIC-IDS2018 CSV files, filtering invalid rows, binarizing labels, preparing tabular records, and exporting batch-level experiment logs as structured CSV files.
+NumPy 
+A numerical computing library used for array-level operations across the simulation pipeline. NumPy handles noise generation for the AFP and Randomized Smoothing defenses, per-feature deviation computation, semantic clipping of perturbed values, feature-space interpolation for the decision-boundary attack scenario, and batch-level computation of confusion matrix values and derived metrics.
+Scikit-learn
+A machine learning library that provides the Random Forest classifier used as the base IDS model, the Decision Tree classifier used as the surrogate model for the transferability attack scenario, StandardScaler for feature normalization, stratified train-evaluation splitting for dataset partitioning, and the confusion matrix function for extracting TP, TN, FP, and FN from classification outputs.
+SciPy
+A scientific computing library whose stats module provides the paired t-test function used in the statistical treatment to determine whether there is a significant difference between the base and controller-augmented defense configurations.
+Joblib
+A serialization library used for persisting and loading the trained Random Forest model. The classifier is trained once and serialized, then loaded across all simulation and evaluation scripts without retraining.
+
+
+Data Generation/Gathering Procedure
+The data generation and gathering procedure will be conducted in three phases: pre-experimentation, during experimentation, and post-experimentation. These phases will describe how the dataset will be prepared, how the simulation will be conducted, and how the generated results will be organized for analysis.
+Pre-experimentation
+1. Dataset acquisition
+The CSE-CIC-IDS2018 dataset will be obtained from its official public source. The dataset will be checked for completeness and prepared for offline simulation. No live network traffic will be captured or processed.
+2. Preprocessing and validation
+The dataset will be cleaned by removing records with missing, infinite, or invalid numerical values. Categorical values, if present, will be encoded into numerical form. Class labels will be converted into binary form, where benign traffic will be labeled as 0 and attack traffic will be labeled as 1.
+3. Feature scaling
+The numerical features will be scaled using a feature scaler fitted only on the training partition. This will prevent information from the evaluation partition from being used during training preparation.
+4. Dataset partitioning
+The preprocessed dataset will be divided using a stratified 70/30 train-evaluation split. Stratification will preserve the prepared benign-to-attack class distribution across both partitions. The 70% training split will be used for classifier training, while the 30% evaluation split will be reserved for simulation and performance evaluation.
+5. Classifier preparation
+A Random Forest classifier will be trained using the training split. After training, the classifier will be kept fixed throughout all experimental runs. The classifier will not be retrained or modified during the defense evaluation process.
+6. Evaluation batch preparation
+The evaluation split will be organized into batches. The same evaluation batches will be used for both the base defense configurations and the controller-augmented configurations to support paired comparison.
+During experimentation
+7. Black-box attack simulation
+The selected black-box probing scenarios will be generated during the simulation phase. The study will use silent probing, surrogate transferability, and decision-boundary attack. Silent probing will evaluate records in their original batch form, while surrogate transferability and decision-boundary attack will apply adversarial transformations to selected attack records from the evaluation partition.
+8. Base defense evaluation
+Adaptive Feature Poisoning, Randomized Smoothing, and Feature Squeezing will first be evaluated in their base defense configurations. In this configuration, each defense mechanism will use a fixed defense-specific perturbation intensity throughout the evaluation run.
+9. Controller-augmented defense evaluation
+The same defense mechanisms will then be evaluated in their controller-augmented configurations. In this configuration, the recall-aware controller will monitor recent Recall and adjust the perturbation intensity of the active defense mechanism before the next evaluation batch is processed.
+10. Batch-level metric recording
+For each evaluation batch, the system will record TP, FP, TN, FN, Precision, Recall, and F1-Score. When the controller is active, the system will also record supporting controller information, such as controller state and perturbation intensity.
+11. Paired batch matching
+        Each base defense batch result will be paired with the matching controller-augmented batch result using the same dataset partition, attack scenario, defense mechanism, and batch identifier. This will ensure that the paired t-test uses directly related observations.
+12. Selected Controller Parameter Configurations
+        The controller-augmented defense mechanisms will also be evaluated under selected controller parameter configurations. For each selected configuration, the study will record the controller configuration ID, sliding window size, Recall thresholds, adjustment factors, controller state, perturbation intensity, Precision, Recall, and F1-Score. The same dataset split, classifier, attack scenarios, defense mechanisms, and evaluation batches will be used to keep the parameter sensitivity comparison controlled. [d]
+Post-experimentation
+13. Experiment log organization
+After all simulation runs, the batch-level records will be organized into experiment logs. These logs will contain the defense mechanism, attack scenario, configuration, batch identifier, confusion matrix values, computed metrics, and controller-related fields when applicable.
+14. Summary table generation
+The batch-level logs will be summarized to produce descriptive performance tables for the base and controller-augmented configurations. The summary tables will report Precision, Recall, and F1-Score for each defense mechanism.
+15. Statistical preparation
+The paired batch-level records will be prepared for statistical testing. Precision, Recall, and F1-Score values from each base defense configuration will be matched with the corresponding controller-augmented values.
+16. Data analysis preparation
+The finalized experiment logs and summary tables will serve as the basis for answering the research questions. The base defense results will be used for Research Question 1, the controller-augmented results will be used for Research Question 2, and the paired comparison records will be used for Research Question 3.
+17. Selected Controller Parameter Sensitivity Analysis Result
+        The controller parameter sensitivity results will be organized into summary tables. The study will compare the mean and standard deviation of Precision, Recall, and F1-Score across the selected controller configurations. These results will be used to answer Research Question 4 by describing how controller-augmented defense performance changes under different selected recall-aware controller settings. [e]
+
+
+Ethical Considerations
+This study will not involve human participants. It will not collect personal data, private communications, or individually identifiable information. The dataset used in the study will be a publicly available benchmark intrusion detection dataset generated for research purposes.
+All experiments will be conducted in a controlled offline environment using static labeled data. No live network infrastructure will be probed, attacked, or disrupted. The black-box probing scenarios will be simulated only to evaluate the behavior of the selected defense mechanisms and the proposed controller.
+The dataset, algorithms, and published works used in the study will be properly cited. The simulation framework and analysis procedure will be documented to support transparency and reproducibility.
+
+
+Data Analysis (Procedure and Treatment)
+The data analysis will be conducted according to the four research questions of the study.
+For Research Question 1, the study will analyze the performance of the base defense mechanisms. Adaptive Feature Poisoning, Randomized Smoothing, and Feature Squeezing will be evaluated under silent probing, surrogate transferability, and decision-boundary attack scenarios. For each defense mechanism and attack scenario, Precision, Recall, and F1-Score will be computed at the batch level. The study will report the mean and standard deviation of each metric.
+For Research Question 2, the study will analyze the performance of the controller-augmented defense mechanisms. The same dataset, classifier, attack scenarios, defense mechanisms, and evaluation batches will be used. The controller-augmented configuration will be compared descriptively against the base configuration using Precision, Recall, and F1-Score. The controller’s behavior may also be described using perturbation intensity traces and rolling Recall values.
+For Research Question 3, the study will determine whether there is a significant difference between each base defense mechanism and its controller-augmented version. The paired comparison will use batch-level metric values. Each batch in the base defense configuration will be paired with the same batch in the controller-augmented configuration. This will allow the study to compare the two configurations while controlling for batch-level variation.
+For Research Question 4, the study will use selected controller parameter sensitivity analysis. The analysis will compare the performance of the controller-augmented defense mechanisms under the selected controller configurations. The study will compute the mean and standard deviation of Precision, Recall, and F1-Score for each configuration.
+The sensitivity analysis will focus on descriptive comparison rather than hypothesis testing. The purpose is to describe whether controller-augmented performance changes under different sliding window sizes, Recall threshold pairs, and intensity adjustment policies. The results will be interpreted based on the direction, magnitude, and stability of the recorded Precision, Recall, and F1-Score values.[f]
+The attack scenarios will remain recorded in the batch-level experiment log as part of the evaluation condition. However, the main analysis will summarize performance by defense mechanism and configuration because the research questions focus on the overall performance of each defense mechanism under black-box probing attacks.
+
+
+Table 8.
+Research Questions and Corresponding Analysis
+Research Question
+	Type of Analysis
+	Output
+	RQ1
+	Descriptive statistics
+	Base defense Precision, Recall, and F1-Score
+	RQ2 
+	Descriptive statistics
+	Controller-augmented Precision, Recall, and F1-Score
+	RQ3
+	Paired t-test
+	Significant difference decision for each metric
+	RQ4
+	Descriptive controller parameter sensitivity analysis
+	Precision, Recall, and F1-Score across selected controller parameter configurations
+[g]	
+
+
+Statistical Treatment
+The study will use descriptive statistics and a two-tailed paired t-test to analyze the generated experiment results.
+Descriptive Statistics
+For Research Questions 1, 2, and 4, descriptive statistics will be used to summarize the performance of each defense configuration. The study will compute the mean and standard deviation of Precision, Recall, and F1-Score across evaluation batches. 
+For Research Question 4, descriptive statistics will allow the study to describe whether controller-augmented performance changes under different sliding window sizes, Recall threshold pairs, and intensity adjustment policies without claiming exhaustive parameter optimization.[h]
+1. Mean (x̄) is defined as the average value of the observations and is computed using the formula:
+  
+
+Where:
+x̄ = mean score
+∑x = sum of all observations
+n = number of observations
+2. Standard Deviation (s) refers to the measure of how spread out the values are from the mean and will be computed using the formula:
+  
+
+Where:
+s = sample standard deviation
+x = individual observation
+x̄ = mean of the observations
+n = number of observations
+Paired t-Test
+For Research Question 3, a paired t-test will be used to determine whether there is a significant difference between the performance of each base defense mechanism and its controller-augmented version. The paired t-test is appropriate because the same evaluation batches will be processed under both configurations, making the observations directly related. The only planned difference between paired observations will be whether the recall-aware controller is active.
+The paired t-test compares the mean difference between two related sets of observations and determines whether the observed difference is statistically significant. In this study, the test will evaluate whether activating the recall-aware controller produces a significant change in Precision, Recall, and F1-Score across the same evaluation batches.
+The paired comparisons will include:
+* Adaptive Feature Poisoning versus Adaptive Feature Poisoning with controller
+* Randomized Smoothing versus Randomized Smoothing with controller
+* Feature Squeezing versus Feature Squeezing with controller
+H0: There is no significant difference between the performance of each base defense mechanism and its controller-augmented version in terms of Precision, Recall, and F1-Score.
+The Paired t-test Statistic (t) will be computed using the formula:
+  
+
+Where:
+        d̄ = mean of the paired differences
+s = standard deviation of the paired differences
+n = number of paired observations
+The significance level is set at α = 0.05. If the computed p-value is less than or equal to 0.05, the null hypothesis is rejected, indicating a statistically significant difference between the base defense mechanism and its controller-augmented version. If the p-value exceeds 0.05, the null hypothesis is not rejected, indicating insufficient evidence of a significant difference.
+Type I and Type II Errors
+The study acknowledges the possibility of Type I and Type II errors in interpreting the paired t-test results. A Type I error may occur when the null hypothesis is rejected even though there is no true significant difference between a base defense mechanism and its controller-augmented version. A Type II error may occur when the null hypothesis is not rejected even though a true significant difference exists.
+The use of paired batch-level observations helps reduce uncontrolled variation because each base defense result is compared with its matching controller-augmented result using the same evaluation batch. Statistical significance will not be interpreted as proof of universal improvement. A rejected null hypothesis will indicate only that a statistically significant difference exists. The direction and practical meaning of the difference will be interpreted together with the descriptive results.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+References
+
+
+Agrahari, S., & Singh, A. K. (2022). Concept Drift Detection in Data Stream Mining : A literature review. Journal of King Saud University - Computer and Information Sciences. https://doi.org/10.1016/j.jksuci.2021.11.006
+Ajagbe, S. A., Awotunde, J. B., & Florez, H. (2024). Intrusion Detection: A Comparison Study of Machine Learning Models Using Unbalanced Dataset. SN Computer Science, 5(8). https://doi.org/10.1007/s42979-024-03369-0
+Al Tobi, A. & Duncan, I. (2019). Improving Intrusion Detection Model Prediction by Threshold Adaptation. Information, 10(5), 159. https://doi.org/10.3390/info10050159
+Alahmed, S., Alasad, Q., Hammood, M. M., Yuan, J.-S., & Alawad, M. (2022). Mitigation of black-box attacks on intrusion detection systems-based ML. Computers, 11(7), Article 115. https://doi.org/10.3390/computers11070115 
+Alotaibi, A., & Rassam, M. A. (2023). Adversarial Machine Learning Attacks against Intrusion Detection Systems: A Survey on Strategies and Defense. Future Internet, 15(2), 62. https://doi.org/10.3390/fi15020062
+Åström, K. J., & Murray, R. (2008). Feedback Systems: An Introduction for Scientists and Engineers. https://www.cds.caltech.edu/~murray/books/AM08/pdf/am08-complete_28Sep12.pdf
+Ature Angbera, & Huah Yong Chan. (2024). An adaptive XGBoost-based optimized sliding window for concept drift handling in non-stationary spatiotemporal data streams classifications. The Journal of Supercomputing, 80(6), 7781–7811. https://doi.org/10.1007/s11227-023-05729-8
+Awad, Z., Zakaria, M., & Hassan, R. (2025). An enhanced ensemble defense framework for boosting adversarial robustness of intrusion detection systems. Scientific Reports, 15(1). https://doi.org/10.1038/s41598-025-94023-z
+Berguiga, A., Harchay, A., & Massaoudi, A. (2025). HIDS-IoMT: A Deep Learning-Based Intelligent Intrusion Detection System for the Internet of Medical Things. IEEE Access, 13, 32863–32882. https://doi.org/10.1109/access.2025.3543127
+Bifet, A., & Ricard Gavaldà. (2007). Learning from time-changing data with adaptive windowing (pp. 443–448). https://doi.org/10.1137/1.9781611972771.42
+Brendel, W., Rauber, J., & Bethge, M. (2018). Decision-Based Adversarial Attacks: Reliable Attacks Against Black-Box Machine Learning Models. ArXiv.org. https://arxiv.org/abs/1712.04248
+CERT-PH. (2022). CERT-PH Annual Report 2022. https://www.ncert.gov.ph/wp-content/uploads/2023/07/PART-1-OF-2_CERT-PH-ANNUAL-REPORT.pdf
+Cohen, J., Rosenfeld, E., & Kolter, Z. (2019). Certified Adversarial Robustness via Randomized Smoothing. PMLR, 1310–1320. https://proceedings.mlr.press/v97/cohen19c.html
+Department of Information and Communications Technology. (2023). National Cybersecurity Plan 2023–2028. https://cms-cdn.e.gov.ph/DICT/pdf/NCSP-2023-2028-FINAL-DICT.pdf
+Dini, P., Elhanashi, A., Begni, A., Saponara, S., Zheng, Q., & Gasmi, K. (2023). Overview on Intrusion Detection Systems Design Exploiting Machine Learning for Networking Cybersecurity. Applied Sciences, 13(13), 7507. https://www.mdpi.com/2076-3417/13/13/7507
+ElShehaby, M., & Matrawy, A. (2026). A novel perturb-ability score to mitigate evasion adversarial attacks on flow-based ML-NIDS. Journal of Information Security and Applications, 99, 104409. https://doi.org/10.1016/j.jisa.2026.104409
+Ennaji, S., Benkhelifa, E., & Mancini, L. V. (2025). Behavior-Aware and Generalizable Defense Against Black-Box Adversarial Attacks for ML-Based IDS. ArXiv.org. https://arxiv.org/abs/2512.13501
+Ennaji, S., Benkhelifa, E., & Mancini, L. V. (2026). Vulnerability disclosure through adaptive black-box adversarial attacks in network intrusion detection systems. Complex & Intelligent Systems, 12(1). https://doi.org/10.1007/s40747-025-02115-0
+Ennaji, S., Gaspari, D., Hitaj, D., Kbidi, A., & Mancini, L. V. (2024). Adversarial Challenges in Network Intrusion Detection Systems: Research Insights and Future Prospects. ArXiv.org. https://arxiv.org/abs/2409.18736
+Hafiz, S., Gul, M. J., Jhandir, M., Gavilanes, D., Vergara, M. M., & Ashraf, I. (2025). A systematic literature study of machine learning techniques based intrusion detection: datasets, models, challenges, and future directions. Journal of Big Data, 12(1). https://doi.org/10.1186/s40537-025-01323-2
+He, K., Kim, D. D., & Asghar, M. R. (2024). NIDS-Vis: Improving the generalized adversarial robustness of network intrusion detection system. Computers & Security, 145, 104028. https://doi.org/10.1016/j.cose.2024.104028
+INTERPOL. (2021). National Cybercrime Strategy Guidebook. https://www.interpol.int/content/download/16455/file/Cyber_Strategy_Guidebook.pdf
+Jmila, H., & Khedher, M. I. (2022). Adversarial machine learning for network intrusion detection: A comparative study. Computer Networks, 109073. https://doi.org/10.1016/j.comnet.2022.109073
+Le, T.-T.-H., Cho, J., Shin, D., & Kim, H. (2026). Toward Adversarial Robustness Network Intrusion Detection Based on Multi-Model Ensemble Approach. Sensors, 26(8), 2478. https://doi.org/10.3390/s26082478
+Macas, M., Wu, C., & Fuertes, W. (2024). Adversarial examples: A survey of attacks and defenses in deep learning-enabled cybersecurity systems. Expert Systems with Applications, 238, 122223–122223. https://doi.org/10.1016/j.eswa.2023.122223
+McCarthy, A., Ghadafi, E., Andriotis, P., & Legg, P. (2022). Functionality-Preserving Adversarial Machine Learning for Robust Classification in Cybersecurity and Intrusion Detection Domains: A Survey. Journal of Cybersecurity and Privacy, 2(1), 154–190. https://doi.org/10.3390/jcp2010010
+Mohale, V. Z., & Obagbuwa I. (2025). Evaluating machine learning-based intrusion detection systems with explainable AI: enhancing transparency and interpretability. Frontiers in Computer Science, 7. https://doi.org/10.3389/fcomp.2025.1520741
+More, S., Idrissi M., Mahmoud, H., & Asyhari A. (2024). Enhanced Intrusion Detection Systems Performance with UNSW-NB15 Data Analysis. Algorithms, 17(2), 64–64. https://doi.org/10.3390/a17020064
+Khushnaseeb Roshan, & Zafar, A. (2024). Boosting robustness of network intrusion detection systems: A novel two phase defense strategy against untargeted white-box optimization adversarial attack. Expert Systems with Applications, 123567–123567. https://doi.org/10.1016/j.eswa.2024.123567
+Nie, W., Guo, B., Huang, Y., Xiao, C., Vahdat, A., & Anandkumar, A. (2022). Diffusion models for adversarial purification (K. Chaudhuri, S. Jegelka, L. Song, C. Szepesvari, G. Niu, & S. Sabato, Eds.; Vol. 162, pp. 16805–16827). PMLR. https://proceedings.mlr.press/v162/nie22a.html
+Papernot, N., McDaniel, P., Goodfellow, I., Jha, S., Celik, Z. B., & Swami, A. (2017). Practical Black-Box Attacks against Machine Learning. Proceedings of the 2017 ACM on Asia Conference on Computer and Communications Security - ASIA CCS ’17. https://doi.org/10.1145/3052973.3053009
+Shyaa, M. A., Ibrahim, N. F., Zainol Z., Abdullah, R., Anbar, M., & Alzubaidi L. (2024). Evolving cybersecurity frontiers: A comprehensive survey on concept drift and feature dynamics aware machine and deep learning in intrusion detection systems. Engineering Applications of Artificial Intelligence, 137, 109143–109143. https://doi.org/10.1016/j.engappai.2024.109143
+Tafreshian, B., & Zhang, S. (2025). A Defensive Framework Against Adversarial Attacks on Machine Learning-Based Network Intrusion Detection Systems. ArXiv.org. https://arxiv.org/abs/2502.15561
+Vinayakumar, R., Alazab, M., Soman, K. P., Poornachandran, P., Al-Nemrat, A., & Venkatraman, S. (2019). Deep Learning Approach for Intelligent Intrusion Detection System. IEEE Access, 7, 41525–41550. https://doi.org/10.1109/access.2019.2895334
+Wang, Y., Sun, T., Li, S., Yuan, X., Ni, W., Hossain, E., & Poor, H. V. (2023). Adversarial Attacks and Defenses in Machine Learning-Empowered Communication Systems and Networks: A Contemporary Survey. IEEE Communications Surveys and Tutorials, 25(4), 2245–2298. https://doi.org/10.1109/comst.2023.3319492
+Wu, T., Fan, H., Zhu, H., You, C., Zhou, H., & Huang, X. (2022). Intrusion detection system combined enhanced random forest with SMOTE algorithm. EURASIP Journal on Advances in Signal Processing, 2022(1), 33. https://doi.org/10.1186/s13634-022-00871-6 
+Xu, W., Evans, D., & Qi, Y. (2018). Feature Squeezing: Detecting Adversarial Examples in Deep Neural Networks. Proceedings 2018 Network and Distributed System Security Symposium. https://doi.org/10.14722/ndss.2018.23198
+Zhang, J., Zulkernine, M., & Haque, A. (2008). Random-forests-based network intrusion detection systems. IEEE Transactions on Systems, Man, and Cybernetics, Part C (Applications and Reviews), 38(5), 649–659. https://doi.org/10.1109/TSMCC.2008.923876 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+APPENDICES
+
+
+
+
+
+
+Appendix 1
+Experiment Paper
+This experiment paper serves as the structured documentation instrument for evaluating the base and controller-augmented versions of Adaptive Feature Poisoning, Randomized Smoothing, and Feature Squeezing. The experiment uses the CSE-CIC-IDS2018 dataset, a fixed Random Forest classifier, and three black-box probing scenarios: silent probing, surrogate transferability, and decision-boundary attack.
+The experiment is conducted to answer the three research questions of the study. The base defense configurations answer Research Question 1. The controller-augmented configurations answer Research Question 2. The paired comparison between the base and controller-augmented configurations answers Research Question 3. The selected controller parameter configuration results answer Research Question 4 by describing the performance of controller-augmented defenses under different recall-aware controller settings.[i]
+Experiment Procedure:
+Pre-experimentation
+1. Load the CSE-CIC-IDS2018 dataset.
+2. Check the dataset for missing, infinite, or invalid numerical values.
+3. Remove invalid records and prepare the dataset for offline simulation.
+4. Convert class labels into binary form, where benign traffic is labeled as 0 and attack traffic is labeled as 1.
+5. Apply stratified random sampling to divide the dataset into a 70% training split and a 30% evaluation split.
+6. Fit feature scaling on the training split only.
+7. Train the Random Forest classifier using the training split.
+8. Keep the trained Random Forest classifier fixed for all evaluation runs.
+9. Organize the evaluation split into batches.
+During experimentation
+10. Select one black-box probing scenario from the following:
+* Silent Probing
+* Surrogate Transferability
+* Decision-Boundary Attack
+11. Select one perturbation-based defense mechanism from the following:
+* Adaptive Feature Poisoning
+* Randomized Smoothing
+* Feature Squeezing
+12. Evaluate the selected defense mechanism in its base configuration using fixed perturbation intensity.
+13. Evaluate the same defense mechanism in its controller-augmented configuration using the same evaluation batches.
+14. For each evaluation batch, record TP, FP, TN, FN, Precision, Recall, and F1-Score.
+15. When the controller is active, record the controller state and perturbation intensity.
+16. Repeat the process for all selected defense mechanisms and black-box probing scenarios.
+17. Generate the controller parameter sensitivity summary table for Research Question 4 by summarizing Precision, Recall, and F1-Score across the selected controller configurations.
+Post-experimentation
+18. Pair each base defense batch result with the matching controller-augmented batch result using the same defense mechanism, attack scenario, and batch identifier.
+19. Generate the batch-level experiment log.
+20. Generate the descriptive summary table for the base defense configurations.
+21. Generate the descriptive summary table for the controller-augmented configurations.
+22. Apply a two-tailed paired t-test for Precision, Recall, and F1-Score.
+23. Use α = 0.05 as the significance level.
+24. Reject the null hypothesis if p ≤ 0.05.
+25. Do not reject the null hypothesis if p > 0.05.
+Table B1.
+Experiment Summary Table for Base and Controller-Augmented Defenses
+Defense 
+Mechanism
+	Attack Scenario
+	Prec.
+	Rec.
+	F1
+	Base Mean
+	Controller
+Augmented Mean
+	Computed T-value
+	p-value
+	Decision
+	1. Adaptive Feature Poisoning vs Adaptive Feature Poisoning with Recall-Aware Controller
+	Base
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	Controller
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	2. Randomized Smoothing vs Randomized Smoothing with Recall-Aware Controller
+	Base
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	Controller
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	3. Feature Squeezing vs Feature Squeezing with Recall-Aware Controller
+	Base
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	Controller
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+Table B2.1.
+Batch-Level Experiment Log — Configuration
+
+
+	
+
+	
+
+	
+
+	Controller
+	
+
+	Batch ID
+	Controller Configuration ID
+	Attack Scenario
+	Defense Mechanism
+	Status
+	Parameter
+	State
+	Perturbation Intensity
+	Batch 1
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	Batch 2
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	Batch 3
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	…
+	
+
+	…
+	…
+	…
+	…
+	…
+	…
+	Batch n
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+Table B2.2.
+Batch-Level Experiment Log — Results
+Batch ID
+	Sample Count
+	TP
+	FP
+	TN
+	FN
+	Precision
+	Recall
+	F1-Score
+	Batch 1
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	Batch 2
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	Batch 3
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	…
+	…
+	…
+	…
+	…
+	…
+	…
+	…
+	…
+	Batch n
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+
+
+
+
+
+
+
+
+Table B3.
+Paired t-Test Summary Table
+Defense Mechanism
+	Metric
+	Base Mean
+	Controller-Augmented Mean
+	Computed T-value
+	p-value
+	Decision
+	Adaptive Feature Poisoning
+	Precision
+	
+
+	
+
+	
+
+	
+
+	
+
+	Adaptive Feature Poisoning
+	Recall
+	
+
+	
+
+	
+
+	
+
+	
+
+	Adaptive Feature Poisoning
+	F1-Score
+	
+
+	
+
+	
+
+	
+
+	
+
+	Randomized Smoothing
+	Precision
+	
+
+	
+
+	
+
+	
+
+	
+
+	Randomized Smoothing
+	Recall
+	
+
+	
+
+	
+
+	
+
+	
+
+	Randomized Smoothing
+	F1-Score
+	
+
+	
+
+	
+
+	
+
+	
+
+	Feature Squeezing
+	Precision
+	
+
+	
+
+	
+
+	
+
+	
+
+	Feature Squeezing
+	Recall
+	
+
+	
+
+	
+
+	
+
+	
+
+	Feature Squeezing
+	F1-Score
+	
+
+	
+
+	
+
+	
+
+	
+
+	
+
+Table B4.
+Controller Parameter Sensitivity Summary Table[j]
+Controller Configuration
+	Sensitivity Focus
+	Defense Mechanism
+	Mean Precision
+	SD Precision
+	Mean Recall
+	SD Recall
+	Mean F1-Score
+	SD F1-Score
+	Interpretation
+	C1
+	…
+	…
+	…
+	…
+	…
+	…
+	….
+	…
+	…
+	
+
+
+
+Declaration on the use of Artificial Intelligence
+We, Eujin Rod Sagun, John Gavin Deposoy, John Ferry Lagman, and Redd Lawrence Reyes, student of the Polytechnic University of the Philippines here declare that WE HAVE used Artificial Intelligence to complete this research project/thesis/dissertation titled “Performance Of Recall-Aware Control for Perturbation Defenses in Intrusion Detection Systems Against Black-Box Probing Attacks”.
+
+
+The use of Artificial Intelligence in the following manner:
+AI Tool Used
+	Detailed Prompts and AI Outputs
+	How the output was incorporated in the project
+	Claude: Sonnet 4.6
+	Input: "What is the importance of measuring Recall, Precision, F1-Score, and Accuracy in the context of our research paper?"
+Output: Explained the role of each metric, emphasizing Recall as the primary indicator and how others support the evaluation.
+	Used to define and justify the selection of specific performance metrics within the methodology and problem context.
+	ChatGPT: 4o-mini
+	Input: "Convert the following references into APA 7th edition citation style."
+Output: Reformatted the provided source list into a standardized bibliography.
+	Used to standardize all citations and the final reference list to ensure compliance with APA 7th edition formatting.
+	Claude: Sonnet 4.6
+	Input: "Explain how a sliding window works for calculating averages."
+Output: Described the logic of adding new data points and removing the oldest ones to maintain a fixed window size.
+	Used to implement the Sliding Window (Component A) in the controller to track rolling Recall. 
+	Claude: Sonnet 4.6
+	Input: "Please revise the Methodology section (Research Design, System Architecture, etc.) to use the past tense and active voice, adhering to the 'Rules of Thumb for Writing Research Articles' provided."
+Output: Rephrased segments of the methodology to align with academic writing standards and the provided guidelines.
+	Ensured the Methodology section maintained a consistent, professional academic tone using the past tense and active voice.
+	Claude: Sonnet 4.6
+	Input: "Summarize the concept of 'Concept Drift' for an IDS."
+Output: Explained how detection accuracy drops when network traffic patterns change over time.
+
+
+	Integrated into the Theoretical Framework to explain why adaptive controllers are necessary for stable defense. 
+	Gemini 3: Thinking
+	Input: "What are the differences between the CIC-IDS2018 and UNSW-NB15 datasets?"
+Output: Listed the attack categories and the environment where each dataset was captured. Collected by different organizations.
+	Used to draft the Sources of Data section in Chapter 3 to justify using both for generalizability. 
+	Claude: Sonnet 4.6
+	Input: "What are the ethical issues when using public network datasets?"
+Output: Discussed data anonymization and the importance of using data within the original research terms.
+	Incorporated into the Ethical Considerations section to address privacy and attribution standards. 
+	Claude: Sonnet 4.6
+	Input: "Explain the Random Forest algorithm in simple terms."
+Output: Described as an ensemble of multiple decision trees that vote on the final classification.
+
+
+	Used to provide a technical overview of the base IDS Classifier in the Methodology and Review of Literature. 
+	
+
+
+
+Dated and Signed:
+
+
+______________________________
+Signature Above Printed Name / Date
+
+
+Dated and Signed:
+
+
+______________________________
+Signature Above Printed Name / Date
+
+
+Dated and Signed:
+
+
+______________________________
+Signature Above Printed Name / Date
+
+
+Dated and Signed:
+
+
+______________________________
+Signature Above Printed Name / Date
+                                                ii.                                                
+[a]new
+[b]New
+[c]updated
+[d]Add: under during experimentation
+[e]Added: under post-experimentation
+[f]Add: Data Analysis
+[g]new
+[h]Add: Statistical Treament
+[i]New
+[j]new
