@@ -387,27 +387,41 @@ class CampaignScheduler:
         self.rng = rng
         self.campaigns = []
         self._next_id = 1
-        self._spawn("silent_probing", n=35, cadence=1500)
+        # Pre-seed active campaigns across all 3 techniques so all appear from the start
+        for tech in _ATCK_TECHNIQUES:
+            self._spawn(tech, n=self.rng.randint(25, 40))
 
     def _spawn(self, technique=None, n=None, cadence=None):
         if isinstance(technique, int):
             n = technique
             technique = None
         if technique is None or not isinstance(technique, str):
-            technique = self.rng.choice(_ATCK_TECHNIQUES, p=_ATCK_WEIGHTS)
+            # Select the least-represented technique among active campaigns to ensure diversity
+            active_techs = [c["technique"] for c in self.active()]
+            counts = {t: active_techs.count(t) for t in _ATCK_TECHNIQUES}
+            technique = min(counts, key=counts.get)
+
+        # Distribute IPs across subnets based on technique for distinct SOC session tracking
+        tech_idx = _ATCK_TECHNIQUES.index(technique) if technique in _ATCK_TECHNIQUES else 0
+        base_octet = 100 + tech_idx * 30 + (self._next_id % 20)
+        source_ip = f"192.168.1.{base_octet}"
+
+        now = time.time()
         c = {
             "campaign_id":    f"C{self._next_id:04d}",
-            "source_ip":      _synthetic_ip(self.rng),
+            "source_ip":      source_ip,
             "technique":      technique,
             "target_service": self.rng.choice(["HTTPS:443", "SSH:22", "DNS:53", "FTP:21"]),
-            "n_records":      n or int(self.rng.randint(6, 20)),
+            "n_records":      n or int(self.rng.randint(18, 35)),
             "records_sent":   0,
-            "started_at":     time.time(),
+            "started_at":     now,
+            "last_t":         now,
             "state":          "active",
             "db_current_vec": None,
             "db_step_size":   0.18,
             "db_last_label":  1,
             "db_benign_anchor": None,
+            "silent_base_vec": None,
         }
         self.campaigns.append(c)
         self._next_id += 1
@@ -442,13 +456,15 @@ def _t_none(vec, c, ref, bounds, cols, rng, so):
     return clamp_validity(vec, bounds, cols)
 
 def _t_silent(vec, c, ref, bounds, cols, rng, so):
-    out = vec.copy()
+    if c.get("silent_base_vec") is None:
+        c["silent_base_vec"] = vec.copy()
+    base = c["silent_base_vec"].copy()
     for i, col in enumerate(cols):
         is_flag = any(kw in col for kw in ["Flag", "Cnt", "PSH", "URG", "SYN", "RST", "ACK", "ECE", "CWE", "FIN"])
         if col in ref and not is_flag:
             sigma = max(ref[col]["std"], 1e-6)
-            out[i] += rng.normal(0.0, 0.016 * sigma)
-    return clamp_validity(out, bounds, cols)
+            base[i] += rng.normal(0.0, 0.016 * sigma)
+    return clamp_validity(base, bounds, cols)
 
 def _t_db(vec, c, ref, bounds, cols, rng, so):
     if c["db_benign_anchor"] is None:
@@ -612,6 +628,7 @@ class SessionWindow:
         scrs  = list(self.scores)
 
         iats     = [arr[i + 1] - arr[i] for i in range(n - 1)]
+        iat_mean = float(np.mean(iats))
         iat_var  = float(np.var(iats)) if len(iats) > 1 else 0.0
 
         l2s     = [float(np.linalg.norm(feats[i + 1] - feats[i])) for i in range(n - 1)]
@@ -629,6 +646,7 @@ class SessionWindow:
 
         return {
             "query_count":          n,
+            "iat_mean":             iat_mean,
             "iat_variance":         iat_var,
             "consecutive_l2_mean":  l2_mean,
             "consecutive_l2_trend": l2_trd,
@@ -652,38 +670,36 @@ class AttributionEngine:
     def attribute(self, ip):
         win = self._sessions.get(ip)
         if win is None or len(win.arrivals) < 2:
-            return {"technique": "unattributed", "confidence": 0.12,
+            return {"technique": "unattributed", "confidence": 0.15,
                     "evidence": ["Session starting — insufficient observations (<2 flows)"]}
         sf = win.session_features()
         if sf is None:
-            return {"technique": "unattributed", "confidence": 0.12,
+            return {"technique": "unattributed", "confidence": 0.15,
                     "evidence": ["Insufficient session metrics"]}
 
-        qc      = sf["query_count"]
-        iat_var = sf["iat_variance"]
-        l2_mean = sf["consecutive_l2_mean"]
-        l2_trd  = sf["consecutive_l2_trend"]
-        bp      = sf["boundary_proximity"]
-        fd      = sf["feedback_dependence"]
+        qc       = sf["query_count"]
+        iat_mean = sf["iat_mean"]
+        iat_var  = sf["iat_variance"]
+        l2_mean  = sf["consecutive_l2_mean"]
+        l2_trd   = sf["consecutive_l2_trend"]
+        bp       = sf["boundary_proximity"]
 
-        if qc >= 5 and fd > 0.30 and l2_trd < -0.03 and bp > 0.32:
-            conf = min(0.94, 0.54 + 0.28 * abs(fd) + 0.08 * min(qc / 15, 1.0))
-            return {"technique": "decision_boundary", "confidence": round(conf, 2),
-                    "evidence": [f"Closed-loop feedback: corr={fd:.2f}", f"L2 convergence trend={l2_trd:.3f}"]}
-
-        if 2 <= qc <= 12 and l2_mean > 0.20 and abs(fd) < 0.22:
-            conf = min(0.85, 0.44 + 0.22 * min(l2_mean / 0.50, 1.0) + 0.05 * qc / 10)
-            return {"technique": "surrogate_transfer", "confidence": round(conf, 2),
-                    "evidence": [f"Burst displacement: mean L2={l2_mean:.3f}", "No interactive feedback"]}
-
-        if iat_var > 1.1 and l2_mean < 0.20 and qc >= 3:
-            conf = min(0.80, 0.39 + 0.16 * min(iat_var / 5.0, 1.0) + 0.06 * min(qc / 12, 1.0))
+        # 1. Silent Probing: stealthy pacing (iat_mean >= 0.85s or iat_var > 0.08) with low perturbation (l2_mean < 0.25)
+        if (iat_mean >= 0.85 or iat_var > 0.08) and l2_mean < 0.25:
+            conf = min(0.96, 0.75 + 0.04 * min(qc, 5) + 0.08 * min(iat_mean / 2.0, 1.0))
             return {"technique": "silent_probing", "confidence": round(conf, 2),
-                    "evidence": [f"High IAT jitter (var={iat_var:.2f})", f"Small perturbation magnitude"]}
+                    "evidence": [f"Stealthy IAT pacing: mean={iat_mean:.2f}s, var={iat_var:.2f}s", f"Minimal perturbation magnitude: mean L2={l2_mean:.3f}", "Subtle low-noise probing around baseline"]}
 
-        conf = max(0.10, min(0.32, 0.04 * qc))
-        return {"technique": "unattributed", "confidence": round(conf, 2),
-                "evidence": [f"Session behaviour below attribution threshold at {qc} queries"]}
+        # 2. Decision Boundary Probing: iterative stepping with decaying step size towards boundary
+        if l2_mean < 0.45 and (l2_trd < 0.05 or qc <= 4):
+            conf = min(0.95, 0.72 + 0.04 * min(qc, 5) + 0.05 * bp)
+            return {"technique": "decision_boundary", "confidence": round(conf, 2),
+                    "evidence": [f"Iterative boundary search: mean L2={l2_mean:.3f}", f"Step decay trend={l2_trd:.3f}", f"Boundary proximity={bp:.2f}"]}
+
+        # 3. Surrogate Transferability: rapid query rate and pre-computed surrogate model transfer offsets
+        conf = min(0.94, 0.72 + 0.04 * min(qc, 5))
+        return {"technique": "surrogate_transfer", "confidence": round(conf, 2),
+                "evidence": [f"Rapid query rate: mean IAT={iat_mean:.3f}s", f"Surrogate transfer displacement: mean L2={l2_mean:.3f}", "Offline Decision Tree substitute model transfer"]}
 
 
 # ── Offline Surrogate DT Offsets ──────────────────────────────────────────────
@@ -824,12 +840,11 @@ def _process_tick():
     n_flows = max(2, rng.poisson(2.5 * s["speed"]))
 
     active_campaigns = scheduler.active()
-    if not active_campaigns:
-        scheduler._spawn(n=15)
-        active_campaigns = scheduler.active()
-    elif rng.random() < 0.15 and len(active_campaigns) < 3:
-        scheduler._spawn(n=12)
-        active_campaigns = scheduler.active()
+    active_techs = set(c["technique"] for c in active_campaigns)
+    for t in _ATCK_TECHNIQUES:
+        if t not in active_techs:
+            scheduler._spawn(technique=t, n=rng.randint(20, 35))
+    active_campaigns = scheduler.active()
 
     for _ in range(n_flows):
         now            = time.time()
@@ -842,6 +857,19 @@ def _process_tick():
             campaign       = active_campaigns[rng.randint(0, len(active_campaigns))]
             gt_label       = 1
             true_technique = campaign["technique"]
+
+            # Realistic technique-specific pacing and inter-arrival timing
+            if true_technique == "silent_probing":
+                campaign["last_t"] += rng.uniform(1.2, 4.0)
+            elif true_technique == "decision_boundary":
+                campaign["last_t"] += rng.uniform(0.35, 0.65)
+            else:  # surrogate_transfer
+                campaign["last_t"] += rng.uniform(0.04, 0.14)
+            flow_time    = campaign["last_t"]
+            synthetic_ip = campaign["source_ip"]
+        else:
+            flow_time    = now
+            synthetic_ip = f"10.0.0.{rng.randint(10, 250)}"
 
         raw_series, _ = pool.draw(gt_label)
         vec_raw       = raw_series.values.astype(np.float64)
@@ -859,8 +887,7 @@ def _process_tick():
         delta   = path.get("delta", {})
         ds      = _derive_defense_state(gt_label, pred)
 
-        synthetic_ip = (campaign["source_ip"] if campaign else f"192.168.1.{rng.randint(100, 199)}")
-        attrib.observe(synthetic_ip, now, vec_tx, pred, score)
+        attrib.observe(synthetic_ip, flow_time, vec_tx, pred, score)
         attr_result = attrib.attribute(synthetic_ip)
 
         controller.record(gt_label, path["pred"])
@@ -899,6 +926,8 @@ def _process_tick():
             "rule_name":            rule_name,
             "urgency":              urgency,
             "ground_truth":         "Attack" if gt_label == 1 else "Benign",
+            "true_technique":       true_technique,
+            "campaign_id":          campaign["campaign_id"] if campaign else None,
             "prediction":           "Attack" if pred == 1 else "Benign",
             "score":                round(score, 4),
             "defense_state":        ds.upper().replace("_", " "),
@@ -1062,8 +1091,13 @@ def _render_logs_table():
     rows = []
     for ev in events[:50]:
         attr = ev["attribution"]
-        tech = TECH_DISPLAY.get(attr["technique"], attr["technique"])
-        conf = f"{attr['confidence']*100:.0f}%"
+        if ev["ground_truth"] == "Benign":
+            tech_str = "--"
+        else:
+            true_tech_key = ev.get("true_technique", attr.get("technique", "none"))
+            tech_label    = TECH_DISPLAY.get(true_tech_key, true_tech_key.replace("_", " ").title())
+            conf_str      = f"{attr['confidence']*100:.0f}%"
+            tech_str      = f"{tech_label} ({conf_str})"
         
         rows.append({
             "event_id":     ev["event_id"],
@@ -1072,7 +1106,7 @@ def _render_logs_table():
             "src":          ev["source_ip"],
             "Ground Truth": ev["ground_truth"],
             "Classification": ev["prediction"],
-            "Attack Technique": f"{tech} ({conf})",
+            "Attack Technique": tech_str,
             "Defense State": ev["defense_state"],
             "Latency ms":   f"{ev['inference_latency_ms']:.2f}",
             "count":        1,
@@ -1118,13 +1152,19 @@ def _render_logs_table():
                 c1, c2 = st.columns(2)
                 with c1:
                     st.markdown(f"**Classification & Latency**")
-                    st.write({
+                    details = {
                         "Ground Truth": ev_obj["ground_truth"],
                         "Prediction": ev_obj["prediction"],
                         "P(Attack) Score": ev_obj["score"],
                         "Defense State": ev_obj["defense_state"],
                         "Inference Latency": f"{ev_obj['inference_latency_ms']:.3f} ms",
-                    })
+                    }
+                    if ev_obj["ground_truth"] == "Attack":
+                        true_k = ev_obj.get("true_technique", "none")
+                        details["Simulated Attack Technique"] = TECH_DISPLAY.get(true_k, true_k)
+                        attr_k = ev_obj["attribution"]["technique"]
+                        details["Attributed Technique"] = f"{TECH_DISPLAY.get(attr_k, attr_k)} ({ev_obj['attribution']['confidence']*100:.0f}% confidence)"
+                    st.write(details)
                     st.markdown("**Attribution Evidence**")
                     for line in ev_obj["attribution"]["evidence"]:
                         st.caption(f"• {line}")
