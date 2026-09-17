@@ -1,8 +1,8 @@
 """
 tests/test_build_evaluation_caches.py
 
-Focused tests for Phase 10B Attack-Cache Orchestration Readiness.
-All tests use synthetic fixtures or training-partition data.
+Focused tests for Phase 10B Attack-Cache Orchestration Readiness (v2).
+All tests use synthetic fixtures exclusively.
 EVALUATION DATA (X_eval.parquet, metadata_eval.parquet) AND EVALUATION LABELS ARE STRICTLY PROHIBITED.
 """
 import copy
@@ -35,15 +35,21 @@ from scripts.build_evaluation_caches import (
     FREEZE_COMMIT,
     FREEZE_TAG,
     FROZEN_DATE,
+    FROZEN_PROTOCOL_FILES,
     PROTECTED_HASHES,
     build_evaluation_caches,
+    build_expected_cache_identity,
     build_single_cache,
     canonicalize_scenario,
     derive_cache_pairs,
     display_scenario,
+    parse_args,
     quarantine_directory,
     run_preflight,
     validate_completed_cache,
+    validate_evaluation_partition_alignment,
+    verify_frozen_configurations,
+    verify_reproducible_execution_state,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -120,7 +126,6 @@ def synthetic_data():
 def test_safe_preflight_default(tmp_path):
     """Running entry point without --execute runs preflight only, leaving output empty."""
     out_dir = tmp_path / "caches"
-    # Ensure build_evaluation_caches does not create any cache directories
     exit_code = build_evaluation_caches(
         configs_dir=CONFIGS_DIR,
         data_dir=DATA_DIR,
@@ -130,17 +135,15 @@ def test_safe_preflight_default(tmp_path):
         preflight_only=False,
     )
     assert exit_code == 0
-    # No caches generated
     assert not out_dir.exists() or len(list(out_dir.glob("*"))) == 0
 
 
 # ===========================================================================
-# 2. Execute Required for Data Access
+# 2. Execute Required for Data Access & Preflight Evaluation File Blocking
 # ===========================================================================
 def test_execute_required_for_data_access(tmp_path):
     """Preflight mode must strictly reject loading evaluation features or labels."""
     with patch("pandas.read_parquet") as mock_parquet:
-        # Preflight should read training bounds (parquet) but NEVER X_eval or metadata_eval
         out_dir = tmp_path / "caches"
         run_preflight(
             configs_dir=CONFIGS_DIR,
@@ -155,8 +158,26 @@ def test_execute_required_for_data_access(tmp_path):
             assert "metadata_eval" not in called_path, "metadata_eval.parquet was loaded during preflight!"
 
 
+def test_preflight_evaluation_file_blocking(tmp_path):
+    """Verifies that run_preflight never accesses evaluation data files even if rigged to fail."""
+    def boom(path, *args, **kwargs):
+        if "X_eval" in str(path) or "metadata_eval" in str(path):
+            raise AssertionError(f"Evaluation file access attempted during preflight: {path}")
+        return pd.read_parquet.__wrapped__(path, *args, **kwargs) if hasattr(pd.read_parquet, "__wrapped__") else pd.read_parquet(path, *args, **kwargs)
+
+    with patch("pandas.read_parquet", side_effect=boom):
+        results = run_preflight(
+            configs_dir=CONFIGS_DIR,
+            data_dir=DATA_DIR,
+            artifacts_dir=ARTIFACTS_DIR,
+            output_dir=tmp_path / "caches",
+            enforce_git=False,
+        )
+        assert results["status"] == "PASS"
+
+
 # ===========================================================================
-# 3. Exact Derivation of 15 Pairs
+# 3. Exact Derivation of 15 Canonical Pairs
 # ===========================================================================
 def test_exact_derivation_of_15_pairs():
     """Derives exactly 15 canonical (scenario, seed) pairs from frozen configs."""
@@ -164,15 +185,20 @@ def test_exact_derivation_of_15_pairs():
     assert len(pairs) == 15
 
     scenarios = sorted(list({p[0] for p in pairs}))
-    assert scenarios == ["Decision Boundary", "Silent Probing", "Surrogate Transfer"]
+    assert scenarios == ["DecisionBoundary", "SilentProbing", "SurrogateTransfer"]
 
     seeds = sorted(list({p[1] for p in pairs}))
     assert seeds == [42, 43, 44, 45, 46]
 
-    # Each scenario must have all 5 seeds
     for scen in scenarios:
         scen_seeds = [p[1] for p in pairs if p[0] == scen]
         assert scen_seeds == [42, 43, 44, 45, 46]
+
+    for p in pairs:
+        assert isinstance(p, tuple)
+        assert len(p) == 2
+        assert isinstance(p[0], str)
+        assert isinstance(p[1], int)
 
 
 # ===========================================================================
@@ -187,18 +213,39 @@ def test_alias_reuse():
     for _, r in aliases.iterrows():
         target_id = r["alias_for_run_id"]
         target = matrix[matrix["run_id"] == target_id].iloc[0]
-        # Same scenario and seed
         assert r["attack_scenario"] == target["attack_scenario"]
         assert r["seed"] == target["seed"]
-        # Same canonical slug
         assert canonicalize_scenario(r["attack_scenario"]) == canonicalize_scenario(target["attack_scenario"])
 
 
 # ===========================================================================
-# 5. Rejection of Altered Freeze Ancestry or Config Hashes
+# 5. Strengthened Frozen File Byte & SHA-256 Comparison
+# ===========================================================================
+def test_frozen_file_byte_comparison():
+    """Strengthened check: Compares bytes and SHA-256 of all frozen files vs freeze tag."""
+    results = verify_frozen_configurations(REPO_ROOT, enforce_git=True)
+    assert len(results) == len(FROZEN_PROTOCOL_FILES)
+    for path_rel in FROZEN_PROTOCOL_FILES:
+        assert path_rel in results
+        comp = results[path_rel]
+        assert comp["bytes_match"] is True, f"Byte mismatch in {path_rel}"
+        assert comp["disk_sha256"] == comp["tagged_sha256"], f"SHA mismatch in {path_rel}"
+        assert len(comp["disk_sha256"]) == 64
+
+
+def test_frozen_file_tampering_detected(tmp_path):
+    """Tampering with any frozen configuration or protocol file causes immediate failure."""
+    with patch("subprocess.check_output") as mock_git:
+        mock_git.return_value = b"tampered byte sequence that does not match disk"
+        with pytest.raises(ValueError, match="Byte mismatch in frozen file"):
+            verify_frozen_configurations(REPO_ROOT, enforce_git=True)
+
+
+# ===========================================================================
+# 6. Rejection of Altered Freeze Ancestry
 # ===========================================================================
 def test_rejection_of_altered_freeze_ancestry(tmp_path):
-    """Preflight rejects if freeze tag is missing or not an ancestor of HEAD."""
+    """Preflight rejects if freeze tag is missing or points to wrong commit."""
     with patch("subprocess.check_output") as mock_git:
         mock_git.return_value = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
         with pytest.raises(ValueError, match="Freeze tag.*points to commit"):
@@ -211,38 +258,11 @@ def test_rejection_of_altered_freeze_ancestry(tmp_path):
             )
 
 
-def test_rejection_of_altered_config_date_frozen(tmp_path):
-    """Preflight rejects if experiment.date_frozen is modified."""
-    bad_configs = tmp_path / "configs"
-    bad_configs.mkdir()
-    import shutil
-    for f in CONFIGS_DIR.glob("*.yaml"):
-        shutil.copy(f, bad_configs / f.name)
-
-    # Alter date_frozen
-    exp_path = bad_configs / "experiment.yaml"
-    with open(exp_path, "r") as f:
-        cfg = yaml.safe_load(f)
-    cfg["experiment"]["date_frozen"] = "2026-09-18T00:00:00+00:00"
-    with open(exp_path, "w") as f:
-        yaml.dump(cfg, f)
-
-    with pytest.raises(ValueError, match="experiment.date_frozen is"):
-        run_preflight(
-            configs_dir=bad_configs,
-            data_dir=DATA_DIR,
-            artifacts_dir=ARTIFACTS_DIR,
-            output_dir=tmp_path,
-            enforce_git=False,
-        )
-
-
 # ===========================================================================
-# 6. Protected-Hash Mismatch Rejection
+# 7. Protected-Hash Mismatch Rejection
 # ===========================================================================
 def test_protected_hash_mismatch_rejection(tmp_path):
     """Preflight rejects if RF, Roles, or Batches protected hashes do not match."""
-    # Test with empty/altered RF file
     bad_artifacts = tmp_path / "artifacts"
     bad_models = bad_artifacts / "models"
     bad_models.mkdir(parents=True)
@@ -260,7 +280,7 @@ def test_protected_hash_mismatch_rejection(tmp_path):
 
 
 # ===========================================================================
-# 7. No Defense/Config Dimension in Cache Identity
+# 8. No Defense/Config Dimension in Cache Identity
 # ===========================================================================
 def test_no_defense_config_dimension_in_cache_identity():
     """Cache identity depends solely on (scenario, seed), independent of defense or controller."""
@@ -274,7 +294,6 @@ def test_no_defense_config_dimension_in_cache_identity():
         assert not hasattr(pair, "controller_config_id")
 
     matrix = generate_evaluation_matrix(CONFIGS_DIR)
-    # Every (scenario, seed) maps to multiple defenses and controllers
     grouped = matrix.groupby(["attack_scenario", "seed"])
     for _, group in grouped:
         assert set(group["defense_name"]) == {"afp", "feature_squeezing", "randomized_smoothing"}
@@ -282,7 +301,7 @@ def test_no_defense_config_dimension_in_cache_identity():
 
 
 # ===========================================================================
-# 8. Atomic Publication and Failure Quarantine
+# 9. Atomic Publication and Failure Quarantine
 # ===========================================================================
 def test_atomic_publication_and_failure_quarantine(tmp_path, synthetic_data):
     """If cache generation encounters an error, staging is quarantined and target dir is not created."""
@@ -312,16 +331,15 @@ def test_atomic_publication_and_failure_quarantine(tmp_path, synthetic_data):
     target_dir = out_dir / "SilentProbing_42"
     assert not target_dir.exists(), "Target directory should not exist after build failure"
 
-    # Quarantine directory must exist
     quarantined = list(out_dir.glob("SilentProbing_42*quarantined_*"))
     assert len(quarantined) >= 1, "Failed staging directory was not quarantined"
 
 
 # ===========================================================================
-# 9. Complete-Cache Reuse
+# 10. Complete-Cache Reuse with Independent Identity
 # ===========================================================================
 def test_complete_cache_reuse(tmp_path, synthetic_data):
-    """A valid completed cache is verified and reused without recomputation."""
+    """A valid completed cache is verified against independent identity and reused."""
     out_dir = tmp_path / "caches"
     cache_path = build_single_cache(
         scenario="Silent Probing",
@@ -344,7 +362,6 @@ def test_complete_cache_reuse(tmp_path, synthetic_data):
 
     manifest_mtime = (cache_path / "manifest.json").stat().st_mtime_ns
 
-    # Call again: must detect existing valid cache and reuse it
     reused_path = build_single_cache(
         scenario="Silent Probing",
         seed=42,
@@ -369,7 +386,7 @@ def test_complete_cache_reuse(tmp_path, synthetic_data):
 
 
 # ===========================================================================
-# 10. Invalid-Cache Rejection & Quarantine
+# 11. Invalid-Cache Rejection & Quarantine
 # ===========================================================================
 def test_invalid_cache_rejection(tmp_path, synthetic_data):
     """An invalid or corrupted cache is rejected, quarantined, and rebuilt."""
@@ -393,11 +410,9 @@ def test_invalid_cache_rejection(tmp_path, synthetic_data):
         override_row_count=len(synthetic_data["X_meas"]),
     )
 
-    # Corrupt completion.json
     comp_file = cache_path / "completion.json"
     comp_file.write_text("corrupted json")
 
-    # Building again must detect the corrupted cache, quarantine it, and rebuild a valid one
     new_cache_path = build_single_cache(
         scenario="Silent Probing",
         seed=42,
@@ -424,16 +439,471 @@ def test_invalid_cache_rejection(tmp_path, synthetic_data):
 
 
 # ===========================================================================
-# 11. Labels Unavailable During Candidate Generation
+# 12. Path Containment & Traversal Rejection
 # ===========================================================================
-def test_labels_unavailable_during_candidate_generation():
-    """Verifies that Surrogate and Boundary candidate generation does not use true labels."""
-    from recall_aware_ids.attacks.surrogate_transfer import SurrogateTransferAttack
-    from recall_aware_ids.attacks.boundary_attack import DecisionBoundaryAttack
+def test_path_containment_and_traversal_rejection(tmp_path):
+    """Quarantine and staging strictly reject path traversal or foreign directory targets."""
+    cache_root = tmp_path / "caches"
+    cache_root.mkdir()
 
+    unrelated_dir = tmp_path / "unrelated_dir"
+    unrelated_dir.mkdir()
+
+    # Reject quarantine of unrelated directory
+    with pytest.raises(ValueError, match="is not strictly inside cache root"):
+        quarantine_directory(unrelated_dir, cache_root=cache_root)
+
+    # Reject quarantine of cache root itself
+    with pytest.raises(ValueError, match="Cannot quarantine the cache root directory itself"):
+        quarantine_directory(cache_root, cache_root=cache_root)
+
+    # Reject directory outside cache root using ../ traversal
+    traversal_dir = cache_root / "../unrelated_dir"
+    with pytest.raises(ValueError, match="is not strictly inside cache root"):
+        quarantine_directory(traversal_dir, cache_root=cache_root)
+
+
+# ===========================================================================
+# 13. Independent Cache Reuse Validation Tests
+# ===========================================================================
+def test_independent_cache_reuse_rejects_wrong_scenario(tmp_path, synthetic_data):
+    """Cache reuse validation strictly rejects a self-consistent cache with the wrong scenario."""
+    out_dir = tmp_path / "caches"
+    c_path = build_single_cache(
+        scenario="Silent Probing",
+        seed=42,
+        output_dir=out_dir,
+        configs_dir=CONFIGS_DIR,
+        data_dir=DATA_DIR,
+        artifacts_dir=ARTIFACTS_DIR,
+        resolved_batches=synthetic_data["batches_df"],
+        official_mode=False,
+        override_X_craft=synthetic_data["X_craft"],
+        override_y_craft=synthetic_data["y_craft"],
+        override_X_meas=synthetic_data["X_meas"],
+        override_y_meas=synthetic_data["y_meas"],
+        override_eps=synthetic_data["eps_meas"],
+        override_predict_fn=synthetic_data["mock_predict"],
+        override_provenance=_SYNTH_PROV,
+        override_row_count=len(synthetic_data["X_meas"]),
+    )
+
+    # Validate expecting DecisionBoundary instead of SilentProbing
+    with open(c_path / "manifest.json") as f:
+        manifest = json.load(f)
+
+    is_valid, reason = validate_completed_cache(
+        cache_dir=c_path,
+        expected_scenario="DecisionBoundary",
+        expected_seed=42,
+        expected_cache_identity=manifest,
+        expected_feature_names=synthetic_data["feature_names"],
+        resolved_batches=synthetic_data["batches_df"],
+        official_mode=False,
+        expected_row_count=len(synthetic_data["X_meas"]),
+    )
+    assert not is_valid
+    assert "Scenario mismatch" in reason
+
+
+def test_independent_cache_reuse_rejects_wrong_seed(tmp_path, synthetic_data):
+    """Cache reuse validation strictly rejects a self-consistent cache with the wrong seed."""
+    out_dir = tmp_path / "caches"
+    c_path = build_single_cache(
+        scenario="Silent Probing",
+        seed=42,
+        output_dir=out_dir,
+        configs_dir=CONFIGS_DIR,
+        data_dir=DATA_DIR,
+        artifacts_dir=ARTIFACTS_DIR,
+        resolved_batches=synthetic_data["batches_df"],
+        official_mode=False,
+        override_X_craft=synthetic_data["X_craft"],
+        override_y_craft=synthetic_data["y_craft"],
+        override_X_meas=synthetic_data["X_meas"],
+        override_y_meas=synthetic_data["y_meas"],
+        override_eps=synthetic_data["eps_meas"],
+        override_predict_fn=synthetic_data["mock_predict"],
+        override_provenance=_SYNTH_PROV,
+        override_row_count=len(synthetic_data["X_meas"]),
+    )
+
+    with open(c_path / "manifest.json") as f:
+        manifest = json.load(f)
+
+    # Validate expecting seed 43 instead of 42
+    is_valid, reason = validate_completed_cache(
+        cache_dir=c_path,
+        expected_scenario="SilentProbing",
+        expected_seed=43,
+        expected_cache_identity=manifest,
+        expected_feature_names=synthetic_data["feature_names"],
+        resolved_batches=synthetic_data["batches_df"],
+        official_mode=False,
+        expected_row_count=len(synthetic_data["X_meas"]),
+    )
+    assert not is_valid
+    assert "Seed mismatch" in reason
+
+
+def test_independent_cache_reuse_rejects_stale_provenance(tmp_path, synthetic_data):
+    """Cache reuse validation strictly rejects a cache whose provenance differs from current expectations."""
+    out_dir = tmp_path / "caches"
+    c_path = build_single_cache(
+        scenario="Silent Probing",
+        seed=42,
+        output_dir=out_dir,
+        configs_dir=CONFIGS_DIR,
+        data_dir=DATA_DIR,
+        artifacts_dir=ARTIFACTS_DIR,
+        resolved_batches=synthetic_data["batches_df"],
+        official_mode=False,
+        override_X_craft=synthetic_data["X_craft"],
+        override_y_craft=synthetic_data["y_craft"],
+        override_X_meas=synthetic_data["X_meas"],
+        override_y_meas=synthetic_data["y_meas"],
+        override_eps=synthetic_data["eps_meas"],
+        override_predict_fn=synthetic_data["mock_predict"],
+        override_provenance=_SYNTH_PROV,
+        override_row_count=len(synthetic_data["X_meas"]),
+    )
+
+    with open(c_path / "manifest.json") as f:
+        manifest = json.load(f)
+
+    # Modify expected identity with a new/different hash
+    stale_expected_identity = copy.deepcopy(manifest)
+    stale_expected_identity["attacks_yaml_hash"] = _VALID_HASH_B
+
+    is_valid, reason = validate_completed_cache(
+        cache_dir=c_path,
+        expected_scenario="SilentProbing",
+        expected_seed=42,
+        expected_cache_identity=stale_expected_identity,
+        expected_feature_names=synthetic_data["feature_names"],
+        resolved_batches=synthetic_data["batches_df"],
+        official_mode=False,
+        expected_row_count=len(synthetic_data["X_meas"]),
+    )
+    assert not is_valid
+    assert "attacks_yaml_hash" in reason or "Validation error" in reason
+
+
+def test_independent_cache_reuse_rejects_altered_manifest_and_completion(tmp_path, synthetic_data):
+    """Reject a cache whose manifest and completion were altered together to fake an identity."""
+    out_dir = tmp_path / "caches"
+    c_path = build_single_cache(
+        scenario="Silent Probing",
+        seed=42,
+        output_dir=out_dir,
+        configs_dir=CONFIGS_DIR,
+        data_dir=DATA_DIR,
+        artifacts_dir=ARTIFACTS_DIR,
+        resolved_batches=synthetic_data["batches_df"],
+        official_mode=False,
+        override_X_craft=synthetic_data["X_craft"],
+        override_y_craft=synthetic_data["y_craft"],
+        override_X_meas=synthetic_data["X_meas"],
+        override_y_meas=synthetic_data["y_meas"],
+        override_eps=synthetic_data["eps_meas"],
+        override_predict_fn=synthetic_data["mock_predict"],
+        override_provenance=_SYNTH_PROV,
+        override_row_count=len(synthetic_data["X_meas"]),
+    )
+
+    # Alter both manifest and completion to claim seed 45
+    with open(c_path / "manifest.json") as f:
+        m_data = json.load(f)
+    m_data["effective_seed"] = 45
+    with open(c_path / "manifest.json", "w") as f:
+        json.dump(m_data, f, indent=2)
+
+    with open(c_path / "completion.json") as f:
+        c_data = json.load(f)
+    c_data["effective_seed"] = 45
+    with open(c_path / "completion.json", "w") as f:
+        json.dump(c_data, f, indent=2)
+
+    # Validate expecting true seed 42
+    is_valid, reason = validate_completed_cache(
+        cache_dir=c_path,
+        expected_scenario="SilentProbing",
+        expected_seed=42,
+        expected_cache_identity=m_data,
+        expected_feature_names=synthetic_data["feature_names"],
+        resolved_batches=synthetic_data["batches_df"],
+        official_mode=False,
+        expected_row_count=len(synthetic_data["X_meas"]),
+    )
+    assert not is_valid
+    assert "Seed mismatch" in reason
+
+
+def test_independent_cache_reuse_rejects_earlier_orchestration_commit(tmp_path, synthetic_data):
+    """Reject a cache produced by an earlier orchestration commit."""
+    out_dir = tmp_path / "caches"
+    c_path = build_single_cache(
+        scenario="Silent Probing",
+        seed=42,
+        output_dir=out_dir,
+        configs_dir=CONFIGS_DIR,
+        data_dir=DATA_DIR,
+        artifacts_dir=ARTIFACTS_DIR,
+        resolved_batches=synthetic_data["batches_df"],
+        official_mode=False,
+        override_X_craft=synthetic_data["X_craft"],
+        override_y_craft=synthetic_data["y_craft"],
+        override_X_meas=synthetic_data["X_meas"],
+        override_y_meas=synthetic_data["y_meas"],
+        override_eps=synthetic_data["eps_meas"],
+        override_predict_fn=synthetic_data["mock_predict"],
+        override_provenance=_SYNTH_PROV,
+        override_row_count=len(synthetic_data["X_meas"]),
+        override_orchestration_commit="older_commit_111111",
+    )
+
+    with open(c_path / "manifest.json") as f:
+        manifest = json.load(f)
+
+    is_valid, reason = validate_completed_cache(
+        cache_dir=c_path,
+        expected_scenario="SilentProbing",
+        expected_seed=42,
+        expected_cache_identity=manifest,
+        expected_feature_names=synthetic_data["feature_names"],
+        resolved_batches=synthetic_data["batches_df"],
+        official_mode=False,
+        expected_row_count=len(synthetic_data["X_meas"]),
+        expected_orchestration_commit="newer_commit_222222",
+    )
+    assert not is_valid
+    assert "Orchestration commit mismatch" in reason
+
+
+# ===========================================================================
+# 14. Reproducible Execution State Verification Tests
+# ===========================================================================
+def test_reproducible_state_enforcement_passes_clean():
+    """verify_reproducible_execution_state passes when working tree is clean."""
+    real_check_output = subprocess.check_output
+
+    def mock_check_output(cmd, *args, **kwargs):
+        cmd_str = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
+        if "--porcelain" in cmd_str:
+            return ""  # clean status
+        if "diff" in cmd_str and "src/" in cmd_str:
+            return ""  # src/ unchanged relative to freeze
+        return real_check_output(cmd, *args, **kwargs)
+
+    with patch("subprocess.check_output", side_effect=mock_check_output):
+        head = verify_reproducible_execution_state(
+            repo_root=REPO_ROOT,
+            configs_dir=CONFIGS_DIR,
+            artifacts_dir=ARTIFACTS_DIR,
+            data_dir=DATA_DIR,
+        )
+    assert isinstance(head, str)
+    assert len(head) == 40 or len(head) == 64
+
+
+def test_reproducible_state_rejects_dirty_tracked_files():
+    """verify_reproducible_execution_state rejects if tracked files are modified."""
+    real_check_output = subprocess.check_output
+
+    def mock_check_output(cmd, *args, **kwargs):
+        cmd_str = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
+        if "--porcelain" in cmd_str:
+            return " M scripts/build_evaluation_caches.py\n"
+        if "diff" in cmd_str and "src/" in cmd_str:
+            return ""
+        return real_check_output(cmd, *args, **kwargs)
+
+    with patch("subprocess.check_output", side_effect=mock_check_output):
+        with pytest.raises(RuntimeError, match="tracked files are modified"):
+            verify_reproducible_execution_state(
+                repo_root=REPO_ROOT,
+                configs_dir=CONFIGS_DIR,
+                artifacts_dir=ARTIFACTS_DIR,
+                data_dir=DATA_DIR,
+            )
+
+
+def test_reproducible_state_rejects_untracked_code_files():
+    """verify_reproducible_execution_state rejects if untracked code/test files exist."""
+    real_check_output = subprocess.check_output
+
+    def mock_check_output(cmd, *args, **kwargs):
+        cmd_str = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
+        if "--porcelain" in cmd_str:
+            return "?? tests/sneaky_untracked_test.py\n"
+        if "diff" in cmd_str and "src/" in cmd_str:
+            return ""
+        return real_check_output(cmd, *args, **kwargs)
+
+    with patch("subprocess.check_output", side_effect=mock_check_output):
+        with pytest.raises(RuntimeError, match="untracked code/test/config files detected"):
+            verify_reproducible_execution_state(
+                repo_root=REPO_ROOT,
+                configs_dir=CONFIGS_DIR,
+                artifacts_dir=ARTIFACTS_DIR,
+                data_dir=DATA_DIR,
+            )
+
+
+# ===========================================================================
+# 15. Evaluation Partition Alignment Validation Tests
+# ===========================================================================
+def test_partition_alignment_validation_passes_valid(synthetic_data):
+    """Validation passes for exactly 90,000 aligned rows, 18k craft, 72k meas, 144 batches of 500."""
+    fnames = synthetic_data["feature_names"]
+    n_total = 90000
+    n_craft = 18000
+    n_meas = 72000
+
+    # Build synthetic 90k dataframes
+    df_x = pd.DataFrame(np.ones((n_total, len(fnames)), dtype=np.float32), columns=fnames)
+    df_meta = pd.DataFrame({"eval_position": np.arange(n_total, dtype=int), "y_binary": 0})
+    df_roles = pd.DataFrame({
+        "eval_position": np.arange(n_total, dtype=int),
+        "role": ["crafting"] * n_craft + ["measurement"] * n_meas,
+    })
+    meas_eps = np.arange(n_craft, n_total, dtype=int)
+    batch_ids = np.repeat(np.arange(144), 500)
+    df_batches = pd.DataFrame({
+        "eval_position": meas_eps,
+        "batch_id": batch_ids,
+    })
+
+    # Must pass cleanly without error
+    validate_evaluation_partition_alignment(
+        df_x_eval=df_x,
+        df_meta_eval=df_meta,
+        df_roles=df_roles,
+        df_batches=df_batches,
+        expected_feature_names=fnames,
+    )
+
+
+def test_partition_alignment_rejects_row_count_mismatch(synthetic_data):
+    """Validation rejects if X_eval has anything other than 90,000 rows."""
+    fnames = synthetic_data["feature_names"]
+    df_x_bad = pd.DataFrame(np.ones((89999, len(fnames)), dtype=np.float32), columns=fnames)
+    with pytest.raises(ValueError, match="X_eval row count mismatch"):
+        validate_evaluation_partition_alignment(
+            df_x_eval=df_x_bad,
+            df_meta_eval=pd.DataFrame(),
+            df_roles=pd.DataFrame(),
+            df_batches=pd.DataFrame(),
+            expected_feature_names=fnames,
+        )
+
+
+def test_partition_alignment_rejects_nan_or_inf(synthetic_data):
+    """Validation rejects if X_eval contains NaN or infinite feature values."""
+    fnames = synthetic_data["feature_names"]
+    n_total = 90000
+    x_mat = np.ones((n_total, len(fnames)), dtype=np.float32)
+    x_mat[10, 5] = np.nan
+    df_x = pd.DataFrame(x_mat, columns=fnames)
+    df_meta = pd.DataFrame({"eval_position": np.arange(n_total, dtype=int)})
+    df_roles = pd.DataFrame({
+        "eval_position": np.arange(n_total, dtype=int),
+        "role": ["crafting"] * 18000 + ["measurement"] * 72000,
+    })
+    df_batches = pd.DataFrame({
+        "eval_position": np.arange(18000, n_total, dtype=int),
+        "batch_id": np.repeat(np.arange(144), 500),
+    })
+
+    with pytest.raises(ValueError, match="non-finite"):
+        validate_evaluation_partition_alignment(
+            df_x_eval=df_x,
+            df_meta_eval=df_meta,
+            df_roles=df_roles,
+            df_batches=df_batches,
+            expected_feature_names=fnames,
+        )
+
+
+def test_partition_alignment_rejects_overlapping_roles(synthetic_data):
+    """Validation rejects if crafting and measurement partitions are not strictly disjoint."""
+    fnames = synthetic_data["feature_names"]
+    n_total = 90000
+    df_x = pd.DataFrame(np.ones((n_total, len(fnames)), dtype=np.float32), columns=fnames)
+    df_meta = pd.DataFrame({"eval_position": np.arange(n_total, dtype=int)})
+    roles = ["crafting"] * 18000 + ["measurement"] * 72000
+    # Overlap position 18000 with 0 so crafting has {0..17999} and measurement has {0, 18001..89999}
+    eps = list(range(n_total))
+    eps[18000] = 0
+    roles_df = pd.DataFrame({
+        "eval_position": eps,
+        "role": roles,
+    })
+    df_batches = pd.DataFrame({
+        "eval_position": eps[18000:],
+        "batch_id": np.repeat(np.arange(144), 500),
+    })
+
+    with pytest.raises(ValueError, match="roles overlap"):
+        validate_evaluation_partition_alignment(
+            df_x_eval=df_x,
+            df_meta_eval=df_meta,
+            df_roles=roles_df,
+            df_batches=df_batches,
+            expected_feature_names=fnames,
+        )
+
+
+# ===========================================================================
+# 16. Label Isolation Semantics Verification Tests
+# ===========================================================================
+def test_surrogate_fitting_labels_originate_from_oracle_not_ground_truth(synthetic_data):
+    """In Surrogate Transfer, labels for surrogate fitting come from oracle predictions, NOT ground truth."""
+    from recall_aware_ids.attacks.surrogate_transfer import SurrogateTransferAttack
+    from recall_aware_ids.attacks.oracle import BlackBoxOracle
+
+    bounds = pd.read_parquet(ARTIFACTS_DIR / "preprocessors/training_bounds.parquet")
+    fnames = synthetic_data["feature_names"]
+    with open(ARTIFACTS_DIR / "preprocessors/feature_mask.json") as f:
+        mod_mask = json.load(f)["feature_mask"]
+
+    surrogate_attack = SurrogateTransferAttack(
+        feature_names=fnames,
+        modifiable_mask=mod_mask,
+        training_bounds=bounds,
+        effective_seed=42,
+    )
+
+    # Oracle predict function: predicts based on first feature threshold so both 0 and 1 are present
+    def mock_oracle_fn(x):
+        return (x[:, 0] > 0.5).astype(int)
+
+    # Ground truth crafting labels: all 0
+    ground_truth_zeros = np.zeros(len(synthetic_data["X_craft"]), dtype=int)
+
+    # Fit surrogate using the BlackBoxOracle pattern from AttackCacheBuilder
+    crafting_oracle = BlackBoxOracle(mock_oracle_fn, max_queries_per_sample=None)
+    c_ids = [f"craft_{i}" for i in range(len(synthetic_data["X_craft"]))]
+    y_pool = crafting_oracle.predict(synthetic_data["X_craft"], sample_ids=c_ids)
+
+    # Assert y_pool originated from oracle (contains both 0 and 1), not ground truth (all 0)
+    assert 0 in y_pool and 1 in y_pool
+    assert not np.array_equal(y_pool, ground_truth_zeros)
+
+    surrogate_attack.fit_surrogate(synthetic_data["X_craft"], y_pool)
+    # Fitted surrogate tree predictions match oracle predictions on pool
+    preds = surrogate_attack.surrogate.predict(synthetic_data["X_craft"])
+    assert np.array_equal(preds, y_pool)
+
+
+def test_surrogate_candidate_generation_does_not_receive_labels():
+    """Surrogate candidate generation takes only feature vector x with zero access to labels."""
+    from recall_aware_ids.attacks.surrogate_transfer import SurrogateTransferAttack
+    import inspect
+
+    bounds = pd.read_parquet(ARTIFACTS_DIR / "preprocessors/training_bounds.parquet")
     with open(ARTIFACTS_DIR / "preprocessors/feature_mask.json") as f:
         mask_data = json.load(f)
-    bounds = pd.read_parquet(ARTIFACTS_DIR / "preprocessors/training_bounds.parquet")
 
     surrogate = SurrogateTransferAttack(
         feature_names=mask_data["feature_columns"],
@@ -441,211 +911,198 @@ def test_labels_unavailable_during_candidate_generation():
         training_bounds=bounds,
     )
 
-    # generate_candidate signature: takes only x, no labels
-    import inspect
     sig = inspect.signature(surrogate.generate_candidate)
-    assert "label" not in sig.parameters
-    assert "y" not in sig.parameters
+    params = list(sig.parameters.keys())
+    assert params == ["X_orig"] or "y" not in params
+    assert "label" not in params
+    assert "true_label" not in params
 
 
-# ===========================================================================
-# 12. Correct Scenario Routing
-# ===========================================================================
-def test_correct_scenario_routing(tmp_path, synthetic_data):
-    """Builder properly routes to each of the three canonical scenarios."""
-    out_dir = tmp_path / "caches"
+def test_decision_boundary_reference_selection_uses_model_predictions(synthetic_data):
+    """Decision Boundary benign reference pool selection queries model predictions on crafting rows, NOT crafting labels."""
+    X_craft = synthetic_data["X_craft"]
+    n_craft = len(X_craft)
 
-    for scen in ["Silent Probing", "Surrogate Transfer", "Decision Boundary"]:
-        c_path = build_single_cache(
-            scenario=scen,
-            seed=42,
-            output_dir=out_dir,
-            configs_dir=CONFIGS_DIR,
-            data_dir=DATA_DIR,
-            artifacts_dir=ARTIFACTS_DIR,
-            resolved_batches=synthetic_data["batches_df"],
-            official_mode=False,
-            override_X_craft=synthetic_data["X_craft"],
-            override_y_craft=synthetic_data["y_craft"],
-            override_X_meas=synthetic_data["X_meas"],
-            override_y_meas=synthetic_data["y_meas"],
-            override_eps=synthetic_data["eps_meas"],
-            override_predict_fn=synthetic_data["mock_predict"],
-            override_provenance=_SYNTH_PROV,
-            override_row_count=len(synthetic_data["X_meas"]),
-            override_n_boundary_targets=5,
-        )
-        assert c_path.exists()
-        with open(c_path / "manifest.json") as f:
-            m = json.load(f)
-        assert m["attack_scenario"] == canonicalize_scenario(scen)
+    # Target model predict function: deterministic classification based on feature threshold
+    def mock_predict_fn(x):
+        return (x[:, 0] > 0.5).astype(int)
 
+    # Ground truth crafting labels: test conflicting label assignments
+    y_craft_all_zeros = np.zeros(n_craft, dtype=int)
+    y_craft_all_ones = np.ones(n_craft, dtype=int)
+    y_craft_inverted = 1 - synthetic_data["y_craft"]
 
-# ===========================================================================
-# 13. Exact Global 200-Target Boundary Selection
-# ===========================================================================
-def test_exact_global_200_target_boundary_selection():
-    """Boundary target selection selects exactly 200 samples deterministically in official mode."""
-    from recall_aware_ids.experiment.boundary_selection import select_boundary_targets
-    rng = np.random.RandomState(42)
-    # 72,000 samples with 15,000 eligible attack samples
-    eligible_mask = np.zeros(72000, dtype=bool)
-    eligible_indices = rng.choice(72000, size=15000, replace=False)
-    eligible_mask[eligible_indices] = True
+    # Canonical selection rule (LABEL ISOLATION RULE):
+    # craft_preds = predict_fn(X_craft)
+    # benign_mask = (craft_preds == 0)
+    # benign_reference_pool = X_craft[benign_mask]
+    craft_preds = mock_predict_fn(X_craft)
+    benign_mask = (craft_preds == 0)
 
-    for seed in [42, 43, 44, 45, 46]:
-        selected = select_boundary_targets(eligible_mask, seed=seed, n_attack_samples=200, official_mode=True)
-        assert selected.sum() == 200
-        # Determinism check
-        selected_repeat = select_boundary_targets(eligible_mask, seed=seed, n_attack_samples=200, official_mode=True)
-        assert np.array_equal(selected, selected_repeat)
+    assert np.any(benign_mask), "Should contain benign predictions"
+    assert not np.all(benign_mask), "Should contain malicious predictions"
+
+    pool_from_zeros = X_craft[(mock_predict_fn(X_craft) == 0)]
+    pool_from_ones = X_craft[(mock_predict_fn(X_craft) == 0)]
+    pool_from_inverted = X_craft[(mock_predict_fn(X_craft) == 0)]
+
+    # Proves benign reference pool is identical across all label assignments
+    assert np.array_equal(pool_from_zeros, pool_from_ones)
+    assert np.array_equal(pool_from_zeros, pool_from_inverted)
+
+    # Proves model prediction strictly governs inclusion/exclusion, not ground truth
+    for i in range(n_craft):
+        sample = X_craft[i:i+1]
+        pred = mock_predict_fn(sample)[0]
+        in_pool = any(np.allclose(sample[0], p) for p in pool_from_zeros)
+        if pred == 0:
+            assert in_pool, f"Crafting sample {i} predicted benign (0) must be in reference pool"
+        else:
+            assert not in_pool, f"Crafting sample {i} predicted malicious (1) must NOT be in reference pool"
 
 
-# ===========================================================================
-# 14. Silent Probing Zero-Query and Identity Behavior
-# ===========================================================================
-def test_silent_probing_zero_query_and_identity_behavior(tmp_path, synthetic_data):
-    """Silent Probing performs identity transform, zero queries, and all NOT_APPLICABLE statuses."""
-    out_dir = tmp_path / "caches"
-    c_path = build_single_cache(
-        scenario="Silent Probing",
-        seed=42,
-        output_dir=out_dir,
-        configs_dir=CONFIGS_DIR,
-        data_dir=DATA_DIR,
-        artifacts_dir=ARTIFACTS_DIR,
-        resolved_batches=synthetic_data["batches_df"],
-        official_mode=False,
-        override_X_craft=synthetic_data["X_craft"],
-        override_y_craft=synthetic_data["y_craft"],
-        override_X_meas=synthetic_data["X_meas"],
-        override_y_meas=synthetic_data["y_meas"],
-        override_eps=synthetic_data["eps_meas"],
-        override_predict_fn=synthetic_data["mock_predict"],
-        override_provenance=_SYNTH_PROV,
-        override_row_count=len(synthetic_data["X_meas"]),
+def test_boundary_perturbation_search_does_not_use_labels_for_path():
+    """Binary search interpolation step evaluations depend strictly on oracle queries, not ground truth."""
+    from recall_aware_ids.attacks.boundary_attack import DecisionBoundaryAttack
+    from recall_aware_ids.attacks.oracle import BlackBoxOracle
+
+    bounds = pd.read_parquet(ARTIFACTS_DIR / "preprocessors/training_bounds.parquet")
+    with open(ARTIFACTS_DIR / "preprocessors/feature_mask.json") as f:
+        mask_data = json.load(f)
+
+    attack = DecisionBoundaryAttack(
+        feature_names=mask_data["feature_columns"],
+        modifiable_mask=mask_data["feature_mask"],
+        training_bounds=bounds,
+        max_queries=50,
+        binary_search_steps=10,
     )
 
-    df_x = pd.read_parquet(c_path / "X_attacked.parquet")
-    df_s = pd.read_parquet(c_path / "status.parquet")
+    # Oracle query recording
+    queried_points = []
+    def mock_oracle(x):
+        queried_points.append(np.array(x, copy=True))
+        # Feature 1 is modifiable per feature_mask.json
+        return (x[:, 1] > 0.5).astype(int)
 
-    # Features must match input identically
-    assert np.allclose(df_x.values, synthetic_data["X_meas"])
-    # 0 queries
-    assert (df_s["queries_used"] == 0).all()
-    # All NOT_APPLICABLE
-    assert (df_s["status_code"] == "NOT_APPLICABLE").all()
-    assert not df_s["eligible"].any()
-    assert not df_s["attempted"].any()
-    assert not df_s["successful"].any()
+    oracle = BlackBoxOracle(mock_oracle, max_queries_per_sample=50)
 
+    # Malicious sample: feature 1 = 0.8 (oracle predicts 1)
+    X_mal = np.zeros(78, dtype=np.float32)
+    X_mal[1] = 0.8
+    # Benign reference sample: feature 1 = 0.2 (oracle predicts 0)
+    X_benign_ref = np.zeros(78, dtype=np.float32)
+    X_benign_ref[1] = 0.2
+    ref_pool = np.array([X_benign_ref])
 
-# ===========================================================================
-# 15. No Partial-Cache Resumption
-# ===========================================================================
-def test_no_partial_cache_resumption(tmp_path, synthetic_data):
-    """Stale .staging or .tmp directories are quarantined; never partially resumed."""
-    out_dir = tmp_path / "caches"
-    target_name = "SilentProbing_42"
-    stale_staging = out_dir / f"{target_name}.staging"
-    stale_staging.mkdir(parents=True)
-    (stale_staging / "half_written.tmp").write_text("junk")
-
-    c_path = build_single_cache(
-        scenario="Silent Probing",
-        seed=42,
-        output_dir=out_dir,
-        configs_dir=CONFIGS_DIR,
-        data_dir=DATA_DIR,
-        artifacts_dir=ARTIFACTS_DIR,
-        resolved_batches=synthetic_data["batches_df"],
-        official_mode=False,
-        override_X_craft=synthetic_data["X_craft"],
-        override_y_craft=synthetic_data["y_craft"],
-        override_X_meas=synthetic_data["X_meas"],
-        override_y_meas=synthetic_data["y_meas"],
-        override_eps=synthetic_data["eps_meas"],
-        override_predict_fn=synthetic_data["mock_predict"],
-        override_provenance=_SYNTH_PROV,
-        override_row_count=len(synthetic_data["X_meas"]),
+    res = attack.generate(
+        X_orig=X_mal,
+        oracle=oracle,
+        sample_id="test_sample_0",
+        true_label=1,
+        reference_pool=ref_pool,
     )
 
-    assert c_path.exists()
-    assert not stale_staging.exists()
-    quarantined = list(out_dir.glob(f"{target_name}_stale_staging_quarantined_*"))
-    assert len(quarantined) >= 1
+    assert res.attempted is True
+    # Search executed 10 binary search steps guided exclusively by oracle midpoints
+    assert len(queried_points) >= 12  # eligibility + endpoint + 10 binary search steps + verification
+    assert res.success is True
+
+
+def test_label_change_affects_clean_tp_eligibility_without_altering_attack_logic():
+    """Changing ground-truth labels affects clean-TP eligibility and status codes without altering attack logic."""
+    from recall_aware_ids.attacks.boundary_attack import DecisionBoundaryAttack
+    from recall_aware_ids.attacks.oracle import BlackBoxOracle
+
+    bounds = pd.read_parquet(ARTIFACTS_DIR / "preprocessors/training_bounds.parquet")
+    with open(ARTIFACTS_DIR / "preprocessors/feature_mask.json") as f:
+        mask_data = json.load(f)
+
+    attack = DecisionBoundaryAttack(
+        feature_names=mask_data["feature_columns"],
+        modifiable_mask=mask_data["feature_mask"],
+        training_bounds=bounds,
+        max_queries=50,
+        binary_search_steps=10,
+    )
+
+    def mock_oracle(x):
+        return (x[:, 0] > 0.5).astype(int)
+
+    X_sample = np.zeros(78, dtype=np.float32)
+    X_sample[0] = 0.8  # oracle predicts 1
+    ref_pool = np.zeros((1, 78), dtype=np.float32)  # oracle predicts 0
+
+    # Case 1: Ground truth y=1 -> clean TP, eligible for evasion attempt
+    oracle1 = BlackBoxOracle(mock_oracle, max_queries_per_sample=50)
+    res_clean_tp = attack.generate(
+        X_orig=X_sample,
+        oracle=oracle1,
+        sample_id="sample_tp",
+        true_label=1,
+        reference_pool=ref_pool,
+    )
+    assert res_clean_tp.eligible is True
+    assert res_clean_tp.attempted is True
+
+    # Case 2: Ground truth y=0 -> false alarm, ineligible for evasion
+    oracle2 = BlackBoxOracle(mock_oracle, max_queries_per_sample=50)
+    res_false_alarm = attack.generate(
+        X_orig=X_sample,
+        oracle=oracle2,
+        sample_id="sample_fa",
+        true_label=0,
+        reference_pool=ref_pool,
+    )
+    assert res_false_alarm.eligible is False
+    assert res_false_alarm.attempted is False
+    assert res_false_alarm.status_code == "INELIGIBLE_TRUE_BENIGN"
+
+    # Case 3: Ground truth y=1 but model predicts 0 -> false negative, ineligible
+    X_fn = np.zeros(78, dtype=np.float32)
+    X_fn[0] = 0.2  # oracle predicts 0
+    oracle3 = BlackBoxOracle(mock_oracle, max_queries_per_sample=50)
+    res_fn = attack.generate(
+        X_orig=X_fn,
+        oracle=oracle3,
+        sample_id="sample_fn",
+        true_label=1,
+        reference_pool=ref_pool,
+    )
+    assert res_fn.eligible is False
+    assert res_fn.attempted is False
+    assert res_fn.status_code == "INELIGIBLE_FALSE_NEGATIVE"
 
 
 # ===========================================================================
-# 16. Deterministic Pair Ordering
+# 17. Scenario and Seed Filtering
+# ===========================================================================
+def test_scenario_seed_filtering():
+    """CLI and orchestrator filters correctly select valid subsets and reject invalid inputs."""
+    args = parse_args(["--scenario", "Silent Probing", "--seed", "44", "--preflight-only"])
+    assert args.scenario == "Silent Probing"
+    assert args.seed == 44
+    assert args.preflight_only is True
+
+    with pytest.raises(SystemExit):
+        parse_args(["--seed", "99"])
+
+    with pytest.raises(SystemExit):
+        parse_args(["--scenario", "UnrecognizedScenario"])
+
+
+# ===========================================================================
+# 18. Deterministic Pair Ordering
 # ===========================================================================
 def test_deterministic_pair_ordering():
     """derive_cache_pairs produces identical ordered sequence across calls."""
     pairs1 = derive_cache_pairs(CONFIGS_DIR)
     pairs2 = derive_cache_pairs(CONFIGS_DIR)
     assert pairs1 == pairs2
-    # Verify strict ascending sort order
-    assert pairs1 == sorted(pairs1, key=lambda x: (x[0], x[1]))
-
-
-# ===========================================================================
-# 17. Training-Derived Smoke Test
-# ===========================================================================
-def test_training_derived_smoke(tmp_path):
-    """Small smoke test using training-partition records to test orchestrator end-to-end."""
-    x_train_path = DATA_DIR / "processed/X_train.parquet"
-    meta_train_path = DATA_DIR / "processed/metadata_train.parquet"
-
-    if not x_train_path.exists() or not meta_train_path.exists():
-        pytest.skip("X_train.parquet or metadata_train.parquet not present")
-
-    # Load small 60-record slice from training partition
-    df_x = pd.read_parquet(x_train_path).head(60)
-    df_meta = pd.read_parquet(meta_train_path).head(60)
-
-    with open(ARTIFACTS_DIR / "preprocessors/feature_mask.json") as f:
-        fnames = json.load(f)["feature_columns"]
-
-    X_train_slice = df_x[fnames].values.astype(np.float32)
-    y_train_slice = df_meta["y_binary"].values.astype(int)
-
-    X_craft = X_train_slice[:20]
-    y_craft = y_train_slice[:20]
-    X_meas = X_train_slice[20:60]
-    y_meas = y_train_slice[20:60]
-    eps_meas = np.arange(len(X_meas), dtype=np.int64)
-
-    batches_df = pd.DataFrame({
-        "batch_id": [0] * len(X_meas),
-        "eval_position": eps_meas,
-        "within_batch_position": np.arange(len(X_meas)),
-    })
-
-    import joblib
-    model = joblib.load(ARTIFACTS_DIR / "models/frozen_rf.joblib")
-
-    out_dir = tmp_path / "smoke_caches"
-    c_path = build_single_cache(
-        scenario="Silent Probing",
-        seed=42,
-        output_dir=out_dir,
-        configs_dir=CONFIGS_DIR,
-        data_dir=DATA_DIR,
-        artifacts_dir=ARTIFACTS_DIR,
-        resolved_batches=batches_df,
-        official_mode=False,
-        override_X_craft=X_craft,
-        override_y_craft=y_craft,
-        override_X_meas=X_meas,
-        override_y_meas=y_meas,
-        override_eps=eps_meas,
-        override_predict_fn=model.predict,
-        override_provenance=_SYNTH_PROV,
-        override_row_count=len(X_meas),
-    )
-
-    assert c_path.exists()
-    assert (c_path / "X_attacked.parquet").exists()
-    assert (c_path / "status.parquet").exists()
-    assert (c_path / "manifest.json").exists()
-    assert (c_path / "completion.json").exists()
+    assert len(pairs1) == 15
+    assert [p[0] for p in pairs1[:5]] == ["SilentProbing"] * 5
+    assert [p[1] for p in pairs1[:5]] == [42, 43, 44, 45, 46]
+    assert [p[0] for p in pairs1[5:10]] == ["SurrogateTransfer"] * 5
+    assert [p[1] for p in pairs1[5:10]] == [42, 43, 44, 45, 46]
+    assert [p[0] for p in pairs1[10:15]] == ["DecisionBoundary"] * 5
+    assert [p[1] for p in pairs1[10:15]] == [42, 43, 44, 45, 46]

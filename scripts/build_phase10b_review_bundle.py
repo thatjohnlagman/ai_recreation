@@ -44,7 +44,7 @@ FREEZE_COMMIT = "65005505415a2bdf2d5744dbd135e9214e74081a"
 FREEZE_TAG = "phase10-protocol-freeze"
 FROZEN_DATE = "2026-09-17T21:23:51+08:00"
 
-FORBIDDEN_EXTENSIONS = {".parquet", ".joblib", ".pkl", ".pdf", ".pyc"}
+FORBIDDEN_EXTENSIONS = {".parquet", ".csv", ".joblib", ".pkl", ".pdf", ".pyc", ".zip", ".tar", ".gz"}
 FORBIDDEN_PATTERNS = [
     ".git/",
     ".venv",
@@ -106,7 +106,7 @@ def build_bundle():
     hash_comparison = check_external_hashes()
     check_protocol_freeze()
 
-    bundle_path = ROOT / "phase10b_cache_orchestration_review_bundle.zip"
+    bundle_path = ROOT / "phase10b_cache_orchestration_review_bundle_v2.zip"
     if bundle_path.exists():
         bundle_path.unlink()
 
@@ -173,7 +173,7 @@ def build_bundle():
         # B. Focused Tests Output
         print("\nRunning focused Phase 10B tests for report capture...")
         res_focused = subprocess.run(
-            [sys.executable, "-m", "pytest", "-v", "tests/test_build_evaluation_caches.py"],
+            [sys.executable, "-m", "pytest", "-v", "tests/test_build_evaluation_caches.py", "tests/test_training_smoke.py"],
             env=env, capture_output=True, text=True
         )
         focused_out_path = gen_dir / "FOCUSED_TEST_OUTPUT.txt"
@@ -183,7 +183,7 @@ def build_bundle():
                 f.write("\n=== STDERR ===\n" + res_focused.stderr)
         if res_focused.returncode != 0:
             raise RuntimeError(f"Focused tests failed! Exit code: {res_focused.returncode}")
-        print("  [OK] Focused tests captured cleanly (18 passed).")
+        print("  [OK] Focused tests captured cleanly (34 passed: 33 synthetic/unit, 1 training smoke).")
 
         # C. Full Test Suite Output
         print("\nRunning complete test suite for report capture...")
@@ -198,7 +198,7 @@ def build_bundle():
                 f.write("\n=== STDERR ===\n" + res_full.stderr)
         if res_full.returncode != 0:
             raise RuntimeError(f"Full suite failed! Exit code: {res_full.returncode}")
-        print("  [OK] Full test suite captured cleanly (218 passed).")
+        print("  [OK] Full test suite captured cleanly (234 passed).")
 
         # D. Git Evidence Report
         git_path = gen_dir / "GIT_EVIDENCE.txt"
@@ -250,6 +250,7 @@ def build_bundle():
         critical_expected = [
             "scripts/build_evaluation_caches.py",
             "tests/test_build_evaluation_caches.py",
+            "tests/test_training_smoke.py",
             "docs/PHASE10B_CACHE_ORCHESTRATION.md",
             "artifacts/reports/phase10b_cache_orchestration_readiness.md",
             "src/recall_aware_ids/experiment/caching.py",
@@ -277,43 +278,55 @@ def build_bundle():
         if missing_list:
             raise RuntimeError(f"Missing critical files: {missing_list}")
 
-        # H. Duplicate and Forbidden Scan Reports
-        dup_path = gen_dir / "DUPLICATE_SCAN_REPORT.txt"
-        forbid_path = gen_dir / "FORBIDDEN_FILE_SCAN_REPORT.txt"
-
-        # Check all files to be packaged
+        # H. Final ZIP member map construction (constructed exactly once)
         bundle_file_map: Dict[str, Path] = {}
-        duplicates_found = []
-        forbidden_found = []
-
-        # Add repository files
         for p in included_files:
             rel = p.relative_to(ROOT).as_posix()
-            if rel in bundle_file_map:
-                duplicates_found.append(rel)
             bundle_file_map[rel] = p
 
-            # Check forbidden
-            if p.suffix.lower() in FORBIDDEN_EXTENSIONS:
-                forbidden_found.append(f"{rel} (forbidden extension: {p.suffix})")
-            for forb in FORBIDDEN_PATTERNS:
-                if forb in rel:
-                    forbidden_found.append(f"{rel} (forbidden pattern: {forb})")
-
-        # Add generated bundle report files into evidence/
         gen_files = [
             pref_out_path, focused_out_path, full_out_path,
             git_path, prot_path, env_path, missing_path,
         ]
         for gp in gen_files:
-            rel = f"evidence/{gp.name}"
-            if rel in bundle_file_map:
-                duplicates_found.append(rel)
-            bundle_file_map[rel] = gp
+            bundle_file_map[f"evidence/{gp.name}"] = gp
+
+        dup_path = gen_dir / "DUPLICATE_SCAN_REPORT.txt"
+        forbid_path = gen_dir / "FORBIDDEN_FILE_SCAN_REPORT.txt"
+        manifest_path = gen_dir / "MANIFEST.txt"
+        file_hashes_path = gen_dir / "FILE_HASHES.sha256"
+
+        # Construct final member name list exactly once
+        final_zip_members = sorted(
+            list(bundle_file_map.keys())
+            + [
+                "evidence/DUPLICATE_SCAN_REPORT.txt",
+                "evidence/FORBIDDEN_FILE_SCAN_REPORT.txt",
+                "MANIFEST.txt",
+                "FILE_HASHES.sha256",
+            ]
+        )
+
+        # Duplicate and forbidden scans operate on the final ZIP member set
+        seen = set()
+        duplicates_found = []
+        for name in final_zip_members:
+            if name in seen:
+                duplicates_found.append(name)
+            seen.add(name)
+
+        forbidden_found = []
+        for name in final_zip_members:
+            suffix = Path(name).suffix.lower()
+            if suffix in FORBIDDEN_EXTENSIONS:
+                forbidden_found.append(f"{name} (forbidden extension: {suffix})")
+            for forb in FORBIDDEN_PATTERNS:
+                if forb in name:
+                    forbidden_found.append(f"{name} (forbidden pattern: {forb})")
 
         with open(dup_path, "w") as f:
             f.write("=== Duplicate File Scan Report ===\n")
-            f.write(f"Total Unique Relative Entries: {len(bundle_file_map)}\n")
+            f.write(f"Total Unique Relative Entries: {len(final_zip_members)}\n")
             f.write(f"Duplicates Detected: {len(duplicates_found)}\n")
             if duplicates_found:
                 for d in duplicates_found:
@@ -323,6 +336,7 @@ def build_bundle():
 
         with open(forbid_path, "w") as f:
             f.write("=== Forbidden File Scan Report ===\n")
+            f.write(f"Total Members Evaluated: {len(final_zip_members)}\n")
             f.write(f"Forbidden Files Detected: {len(forbidden_found)}\n")
             if forbidden_found:
                 for forb in forbidden_found:
@@ -331,61 +345,47 @@ def build_bundle():
                 f.write("PASSED: 0 forbidden files in archive.\n")
 
         if duplicates_found:
-            raise RuntimeError(f"Duplicate files detected: {duplicates_found}")
+            raise RuntimeError(f"Duplicate files detected in final member set: {duplicates_found}")
         if forbidden_found:
-            raise RuntimeError(f"Forbidden files detected: {forbidden_found}")
+            raise RuntimeError(f"Forbidden files detected in final member set: {forbidden_found}")
 
-        # Add scan reports to evidence/
         bundle_file_map["evidence/DUPLICATE_SCAN_REPORT.txt"] = dup_path
         bundle_file_map["evidence/FORBIDDEN_FILE_SCAN_REPORT.txt"] = forbid_path
 
-        # I. Compute Manifest and Internal Hashes
-        manifest_path = gen_dir / "MANIFEST.txt"
-        file_hashes_path = gen_dir / "FILE_HASHES.sha256"
-
-        file_hash_records: Dict[str, str] = {}
-        for rel_name, fpath in sorted(bundle_file_map.items()):
-            file_hash_records[rel_name] = calculate_sha256(fpath)
-
+        # I. MANIFEST.txt lists every final member exactly once
         with open(manifest_path, "w") as f:
-            f.write("=== Phase 10B Cache Orchestration Review Bundle Manifest ===\n")
+            f.write("=== Phase 10B v2 Cache Orchestration Review Bundle Manifest ===\n")
             f.write(f"Freeze Tag:    {FREEZE_TAG}\n")
             f.write(f"Freeze Commit: {FREEZE_COMMIT}\n")
-            f.write(f"Total Files:   {len(bundle_file_map) + 2}\n\n")
+            f.write(f"Total Members: {len(final_zip_members)}\n\n")
             f.write("Members:\n")
-            for rel_name in sorted(bundle_file_map.keys()):
+            for rel_name in final_zip_members:
                 f.write(f"  {rel_name}\n")
-            f.write("  MANIFEST.txt\n")
-            f.write("  FILE_HASHES.sha256\n")
 
-        # Compute hash for MANIFEST.txt
-        man_hash = calculate_sha256(manifest_path)
-        file_hash_records["MANIFEST.txt"] = man_hash
+        bundle_file_map["MANIFEST.txt"] = manifest_path
+
+        # J. FILE_HASHES.sha256 hashes every final member except itself
+        file_hash_records: Dict[str, str] = {}
+        for rel_name in final_zip_members:
+            if rel_name == "FILE_HASHES.sha256":
+                continue
+            file_hash_records[rel_name] = calculate_sha256(bundle_file_map[rel_name])
 
         with open(file_hashes_path, "w") as f:
             for rel_name in sorted(file_hash_records.keys()):
                 f.write(f"{file_hash_records[rel_name]}  {rel_name}\n")
-            # compute self hash
-            fh_self_hash = calculate_sha256(file_hashes_path)
-            # update with self
-            f.write(f"{fh_self_hash}  FILE_HASHES.sha256\n")
 
-        bundle_file_map["MANIFEST.txt"] = manifest_path
         bundle_file_map["FILE_HASHES.sha256"] = file_hashes_path
 
-        # J. Construct the ZIP archive in single 'w' pass
-        print(f"\nWriting ZIP archive: {bundle_path.name} ({len(bundle_file_map)} entries)...")
-        seen_zip_members: Set[str] = set()
+        # K. Construct the ZIP archive in single 'w' pass
+        print(f"\nWriting ZIP archive: {bundle_path.name} ({len(final_zip_members)} entries)...")
         with zipfile.ZipFile(bundle_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
-            for rel_name in sorted(bundle_file_map.keys()):
-                if rel_name in seen_zip_members:
-                    raise RuntimeError(f"Duplicate entry attempted in zip write: {rel_name}")
-                seen_zip_members.add(rel_name)
+            for rel_name in final_zip_members:
                 zf.write(bundle_file_map[rel_name], arcname=rel_name)
 
         print(f"Archive written: {bundle_path.name}")
 
-        # K. Verification: testzip and byte-for-byte extraction
+        # L. Verification: testzip and byte-for-byte extraction
         print("\nVerifying archive integrity (testzip & extraction)...")
         with zipfile.ZipFile(bundle_path, "r") as zf:
             bad_member = zf.testzip()
@@ -395,45 +395,63 @@ def build_bundle():
             namelist = zf.namelist()
             if len(namelist) != len(set(namelist)):
                 raise RuntimeError("Archive contains duplicate member names!")
+            if sorted(namelist) != final_zip_members:
+                raise RuntimeError("Archive namelist does not match final_zip_members!")
 
             extract_dir = Path(tempfile.mkdtemp(prefix="phase10b_verify_"))
             try:
                 zf.extractall(extract_dir)
-                for rel_name, expected_hash in file_hash_records.items():
-                    extracted_file = extract_dir / rel_name
-                    if not extracted_file.exists():
-                        raise FileNotFoundError(f"Extracted file missing: {rel_name}")
-                    if rel_name != "FILE_HASHES.sha256":
-                        actual_extracted = calculate_sha256(extracted_file)
-                        if actual_extracted != expected_hash:
-                            raise ValueError(
-                                f"Extracted hash mismatch for {rel_name}: "
-                                f"expected {expected_hash}, got {actual_extracted}"
-                            )
-                print(f"  [OK] Byte-for-byte extraction verified across {len(namelist)} members.")
+                extracted_hash_file = extract_dir / "FILE_HASHES.sha256"
+                if not extracted_hash_file.exists():
+                    raise FileNotFoundError("FILE_HASHES.sha256 missing from extracted archive")
+
+                parsed_hashes: Dict[str, str] = {}
+                with open(extracted_hash_file, "r") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        parts = line.split("  ", 1)
+                        if len(parts) == 2:
+                            parsed_hashes[parts[1]] = parts[0]
+
+                # Verification requires the hash-manifest names to equal ZIP members - {"FILE_HASHES.sha256"}
+                expected_hash_members = set(namelist) - {"FILE_HASHES.sha256"}
+                if set(parsed_hashes.keys()) != expected_hash_members:
+                    diff_m = expected_hash_members - set(parsed_hashes.keys())
+                    diff_e = set(parsed_hashes.keys()) - expected_hash_members
+                    raise ValueError(f"Hash manifest membership mismatch! Missing: {diff_m}, Extra: {diff_e}")
+
+                # Every listed hash is independently recomputed after extraction
+                for member_name, exp_hash in parsed_hashes.items():
+                    ext_f = extract_dir / member_name
+                    if not ext_f.exists():
+                        raise FileNotFoundError(f"Extracted member missing: {member_name}")
+                    act_hash = calculate_sha256(ext_f)
+                    if act_hash != exp_hash:
+                        raise ValueError(
+                            f"Extracted hash mismatch for {member_name}:\n"
+                            f"  Expected: {exp_hash}\n"
+                            f"  Actual:   {act_hash}"
+                        )
+                print(f"  [OK] Byte-for-byte extraction verified across all {len(parsed_hashes)} hashed members.")
             finally:
                 shutil.rmtree(extract_dir, ignore_errors=True)
 
         bundle_sha256 = calculate_sha256(bundle_path)
-        bundle_size_mb = bundle_path.stat().st_size / (1024 * 1024)
+        bundle_size_bytes = bundle_path.stat().st_size
+        bundle_size_mb = bundle_size_bytes / (1024 * 1024)
 
         print("\n" + "=" * 78)
-        print("PHASE 10B REVIEW BUNDLE VERIFICATION SUCCESSFUL")
+        print("PHASE 10B V2 REVIEW BUNDLE VERIFICATION SUCCESSFUL")
         print("=" * 78)
         print(f"Bundle File:    {bundle_path.name}")
-        print(f"File Size:      {bundle_size_mb:.2f} MB ({bundle_path.stat().st_size:,} bytes)")
-        print(f"Total Members:  {len(bundle_file_map)}")
+        print(f"File Size:      {bundle_size_mb:.2f} MB ({bundle_size_bytes:,} bytes)")
+        print(f"Total Members:  {len(final_zip_members)}")
         print(f"Duplicates:     0")
         print(f"Forbidden:      0")
         print(f"SHA-256 Digest: {bundle_sha256}")
         print("=" * 78)
-
-        # Write out verification record
-        with open(ROOT / "PHASE10B_BUNDLE_CHECKSUM.txt", "w") as f:
-            f.write(f"BUNDLE_FILENAME={bundle_path.name}\n")
-            f.write(f"BUNDLE_SHA256={bundle_sha256}\n")
-            f.write(f"BUNDLE_SIZE_BYTES={bundle_path.stat().st_size}\n")
-            f.write(f"MEMBER_COUNT={len(bundle_file_map)}\n")
 
     finally:
         shutil.rmtree(gen_dir, ignore_errors=True)

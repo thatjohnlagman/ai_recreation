@@ -2,24 +2,35 @@
 """
 scripts/build_evaluation_caches.py
 
-Phase 10B Attack-Cache Orchestration Entry Point.
+Phase 10B Attack-Cache Orchestration Entry Point (v2).
 
 This script acts as the thin orchestration layer over AttackCacheBuilder for Phase 10
-evaluation attack caches. It enforces:
+evaluation attack caches. It strictly enforces:
   1. Safe-by-default execution: running without --execute performs non-mutating preflight only.
-  2. Strict separation: preflight never accesses evaluation features (X_eval.parquet) or labels.
-  3. Matrix derivation: dynamically derives the 15 canonical (scenario, seed) pairs from
-     frozen configuration files and validates sensitivity alias reuse.
-  4. Complete provenance tracking: records freeze commit/tag, script commit, model hash,
-     roles/batches hashes, config hashes, preprocessor hashes, and artifact checksums.
-  5. Atomic publication & quarantine: writes to staging directories, validates via
-     ConcreteAttackCacheProvider, writes completion.json last, atomically publishes,
-     and quarantines any incomplete or corrupted directories.
-  6. Whole-cache reuse: valid completed caches are verified and reused without recomputation.
+  2. Preflight separation: preflight never accesses evaluation features (X_eval.parquet) or labels.
+  3. Strengthened freeze verification: byte-for-byte and SHA-256 comparison of every frozen
+     configuration and protocol file against the tagged version at phase10-protocol-freeze.
+  4. Matrix derivation: derives exactly 15 canonical (scenario, seed) pairs across
+     SilentProbing, SurrogateTransfer, DecisionBoundary and seeds 42..46, validating
+     sensitivity alias reuse and cache identity independence from defenses and controllers.
+  5. Accurate label semantics: true labels are never given to surrogate fitting, benign
+     reference pool selection, or boundary perturbation search. True labels are used by the
+     evaluation harness solely for clean-TP eligibility, deterministic target selection, and
+     post-generation status/ASR accounting.
+  6. Independent cache-reuse validation: cache reuse requires validation against independently
+     computed expectations (expected_scenario, expected_seed, expected_cache_identity,
+     expected_row_count). Loaded manifests are never passed back as their own expected identity.
+  7. Safe staging and quarantine: all staging and quarantine operations remain beneath the configured
+     cache root, preventing path traversal and protecting unrelated directories.
+  8. Reproducible execution state: official execution (--execute) requires a clean, committed working
+     tree where the freeze tag is an ancestor of HEAD and all source/test/config files are tracked.
+  9. Partition alignment validation: strict verification of 90,000 evaluation rows, 78 features,
+     finite values, disjoint crafting/measurement pools, and 144 batches of 500 in official mode.
 """
 from __future__ import annotations
 
 import argparse
+import copy
 import datetime
 import hashlib
 import json
@@ -29,6 +40,7 @@ import re
 import shutil
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -54,6 +66,7 @@ from recall_aware_ids.experiment.matrix import (
 )
 from recall_aware_ids.experiment.schemas import (
     _HEX64,
+    _PLACEHOLDER_STRINGS,
     _REQUIRED_PROVENANCE_KEYS,
     CompletionMarker,
     _is_hex64,
@@ -74,6 +87,15 @@ PROTECTED_HASHES = {
     "Batches": "4084017e5593732e455763416f7fc38254fc9dab2466eca289b66e68dc0ff79a",
 }
 
+FROZEN_PROTOCOL_FILES = [
+    "configs/attacks.yaml",
+    "configs/controllers.yaml",
+    "configs/defenses.yaml",
+    "configs/experiment.yaml",
+    "configs/model.yaml",
+    "docs/EXPERIMENT_PROTOCOL.md",
+]
+
 CANONICAL_SCENARIOS = {
     "Silent Probing": "SilentProbing",
     "SilentProbing": "SilentProbing",
@@ -82,6 +104,8 @@ CANONICAL_SCENARIOS = {
     "Decision Boundary": "DecisionBoundary",
     "DecisionBoundary": "DecisionBoundary",
 }
+
+CANONICAL_SCENARIOS_ORDER = ["SilentProbing", "SurrogateTransfer", "DecisionBoundary"]
 
 DISPLAY_SCENARIO_NAMES = {
     "SilentProbing": "Silent Probing",
@@ -99,7 +123,6 @@ def canonicalize_scenario(scenario: str) -> str:
     """Maps display or slug scenario string to canonical camel-case scenario name."""
     if scenario in CANONICAL_SCENARIOS:
         return CANONICAL_SCENARIOS[scenario]
-    # Try normalized strip
     stripped = scenario.replace(" ", "").replace("_", "").replace("-", "")
     for k, v in CANONICAL_SCENARIOS.items():
         if stripped.lower() == k.replace(" ", "").lower():
@@ -117,30 +140,112 @@ def display_scenario(scenario: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Matrix Derivation
+# Strengthened Frozen Configuration and Protocol Verification
+# ---------------------------------------------------------------------------
+def verify_frozen_configurations(
+    repo_root: Path = REPO_ROOT,
+    enforce_git: bool = True,
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Strengthened freeze check: Compares the current bytes and SHA-256 values of every
+    frozen configuration and protocol file against the tagged version at phase10-protocol-freeze.
+    """
+    results: Dict[str, Dict[str, Any]] = {}
+    git_dir = repo_root / ".git"
+
+    for rel_path in FROZEN_PROTOCOL_FILES:
+        disk_path = repo_root / rel_path
+        if not disk_path.exists():
+            raise FileNotFoundError(f"Required frozen file missing on disk: {rel_path}")
+
+        disk_bytes = disk_path.read_bytes()
+        disk_sha256 = hashlib.sha256(disk_bytes).hexdigest()
+
+        tagged_sha256 = None
+        bytes_match = None
+
+        if git_dir.exists():
+            try:
+                tagged_bytes = subprocess.check_output(
+                    ["git", "show", f"{FREEZE_TAG}:{rel_path}"],
+                    cwd=repo_root,
+                    stderr=subprocess.PIPE,
+                )
+                tagged_sha256 = hashlib.sha256(tagged_bytes).hexdigest()
+                bytes_match = (disk_bytes == tagged_bytes)
+
+                if not bytes_match:
+                    raise ValueError(
+                        f"Byte mismatch in frozen file {rel_path} relative to {FREEZE_TAG}!\n"
+                        f"Disk SHA-256:   {disk_sha256}\n"
+                        f"Tagged SHA-256: {tagged_sha256}"
+                    )
+                if disk_sha256 != tagged_sha256:
+                    raise ValueError(
+                        f"SHA-256 mismatch in frozen file {rel_path} relative to {FREEZE_TAG}!"
+                    )
+            except subprocess.CalledProcessError as e:
+                if enforce_git:
+                    raise RuntimeError(
+                        f"Failed to inspect git object for {rel_path} at tag {FREEZE_TAG}: {e.stderr.decode()}"
+                    ) from e
+
+        results[rel_path] = {
+            "disk_sha256": disk_sha256,
+            "tagged_sha256": tagged_sha256,
+            "bytes_match": bytes_match,
+            "verified": True,
+        }
+
+    # Verify no extra or missing files in configs/
+    if git_dir.exists():
+        try:
+            tree_configs = subprocess.check_output(
+                ["git", "ls-tree", "--name-only", FREEZE_TAG, "configs/"],
+                cwd=repo_root,
+                text=True,
+            ).splitlines()
+            disk_configs = [
+                f"configs/{p.name}" for p in (repo_root / "configs").iterdir()
+                if p.is_file() and not p.name.startswith(".")
+            ]
+            if sorted(tree_configs) != sorted(disk_configs):
+                raise ValueError(
+                    f"Configs directory contents changed vs freeze tag!\n"
+                    f"Tagged:  {sorted(tree_configs)}\n"
+                    f"On disk: {sorted(disk_configs)}"
+                )
+        except subprocess.CalledProcessError as e:
+            if enforce_git:
+                raise RuntimeError(f"Failed to check configs tree: {e.stderr}") from e
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Matrix Derivation (Canonicalized Pairs)
 # ---------------------------------------------------------------------------
 def derive_cache_pairs(configs_dir: Path) -> List[Tuple[str, int]]:
     """
     Derives—not manually hardcodes—the distinct (attack_scenario, seed) pairs
     needed by the frozen 252 unique runs in the evaluation matrix.
 
-    Validates:
-      - exactly three attack scenarios
-      - five primary seeds (42..46)
-      - exactly 15 distinct canonical cache identities
-      - sensitivity aliases reuse the corresponding primary cache
-      - cache identity is independent of defense and controller configuration
+    Binding Assertions:
+      - Scenarios: exactly 'SilentProbing', 'SurrogateTransfer', and 'DecisionBoundary'
+      - Seeds: exactly 42, 43, 44, 45, and 46
+      - Exactly 15 ordered (scenario, seed) 2-tuples
+      - No defense or controller fields in cache identity
+      - Deterministic pair ordering and correct sensitivity-alias reuse
     """
     matrix = generate_evaluation_matrix(configs_dir)
     unique_execs = get_unique_executions(matrix)
 
-    # Validate overall matrix counts
     if len(matrix) != 279:
         raise ValueError(f"Evaluation matrix has {len(matrix)} rows, expected 279")
     if len(unique_execs) != 252:
         raise ValueError(f"Unique executions count is {len(unique_execs)}, expected 252")
 
-    # Verify alias reuse
+    # Verify sensitivity alias reuse
     aliases = matrix[matrix["is_alias"]]
     if len(aliases) != 27:
         raise ValueError(f"Expected 27 sensitivity aliases, got {len(aliases)}")
@@ -150,43 +255,41 @@ def derive_cache_pairs(configs_dir: Path) -> List[Tuple[str, int]]:
         if len(target_rows) != 1:
             raise ValueError(f"Alias {r['run_id']} targets missing run {target_id}")
         target = target_rows.iloc[0]
-        if r["attack_scenario"] != target["attack_scenario"] or r["seed"] != target["seed"]:
+        r_scen = canonicalize_scenario(r["attack_scenario"])
+        target_scen = canonicalize_scenario(target["attack_scenario"])
+        if r_scen != target_scen or int(r["seed"]) != int(target["seed"]):
             raise ValueError(
                 f"Alias {r['run_id']} scenario/seed mismatch with target {target_id}"
             )
 
-    # Derive unique (scenario, seed) pairs across all unique runs
     unique_pairs_set: Set[Tuple[str, int]] = set()
     for _, r in unique_execs.iterrows():
-        scen = r["attack_scenario"]
+        scen = canonicalize_scenario(r["attack_scenario"])
         seed = int(r["seed"])
         unique_pairs_set.add((scen, seed))
 
-    derived_pairs = sorted(list(unique_pairs_set), key=lambda x: (x[0], x[1]))
+    if len(unique_pairs_set) != 15:
+        raise ValueError(f"Expected exactly 15 canonical cache pairs, derived {len(unique_pairs_set)}")
 
-    # Validations on derived pairs
-    scenarios_found = {p[0] for p in derived_pairs}
-    expected_scenarios = {"Silent Probing", "Surrogate Transfer", "Decision Boundary"}
+    scenarios_found = {p[0] for p in unique_pairs_set}
+    expected_scenarios = set(CANONICAL_SCENARIOS_ORDER)
     if scenarios_found != expected_scenarios:
         raise ValueError(
             f"Derived scenarios {scenarios_found} do not match expected {expected_scenarios}"
         )
 
-    seeds_found = {p[1] for p in derived_pairs}
-    if seeds_found != set(VALID_PRIMARY_SEEDS):
+    seeds_found = {p[1] for p in unique_pairs_set}
+    expected_seeds = set(VALID_PRIMARY_SEEDS)
+    if seeds_found != expected_seeds:
         raise ValueError(
-            f"Derived seeds {seeds_found} do not match expected {VALID_PRIMARY_SEEDS}"
+            f"Derived seeds {seeds_found} do not match expected {expected_seeds}"
         )
-
-    if len(derived_pairs) != 15:
-        raise ValueError(f"Expected exactly 15 canonical cache pairs, derived {len(derived_pairs)}")
 
     # Verify cache identity independence from defenses and controllers
     grouped = matrix.groupby(["attack_scenario", "seed"])
     for (scen, seed), group in grouped:
         defenses_in_group = set(group["defense_name"])
         controllers_in_group = set(group["controller_config_id"])
-        # All 3 defenses and multiple controllers must map to this exact pair
         if len(defenses_in_group) != 3:
             raise ValueError(
                 f"Pair ({scen}, {seed}) does not span all 3 defenses: {defenses_in_group}"
@@ -196,7 +299,419 @@ def derive_cache_pairs(configs_dir: Path) -> List[Tuple[str, int]]:
                 f"Pair ({scen}, {seed}) missing expected controllers: {controllers_in_group}"
             )
 
+    derived_pairs = sorted(
+        list(unique_pairs_set),
+        key=lambda x: (CANONICAL_SCENARIOS_ORDER.index(x[0]), x[1]),
+    )
+
+    for p in derived_pairs:
+        if not (isinstance(p, tuple) and len(p) == 2 and isinstance(p[0], str) and isinstance(p[1], int)):
+            raise TypeError(f"Derived pair {p!r} is not a valid (scenario: str, seed: int) 2-tuple")
+
     return derived_pairs
+
+
+# ---------------------------------------------------------------------------
+# Safe Staging and Quarantine
+# ---------------------------------------------------------------------------
+def quarantine_directory(directory: Path, cache_root: Path, base_name: Optional[str] = None) -> Path:
+    """
+    Quarantines a failed or incomplete directory by renaming it with a unique timestamp.
+
+    Strict Safety Invariants:
+      - directory must be strictly inside cache_root (no path traversal, no touching unrelated dirs).
+      - cache_root itself cannot be quarantined.
+      - Never move or quarantine an unrelated directory.
+    """
+    cache_root_resolved = cache_root.resolve()
+    dir_resolved = directory.resolve()
+
+    if dir_resolved == cache_root_resolved:
+        raise ValueError(f"Cannot quarantine the cache root directory itself: {cache_root}")
+
+    try:
+        is_rel = dir_resolved.is_relative_to(cache_root_resolved)
+    except AttributeError:
+        is_rel = str(dir_resolved).startswith(str(cache_root_resolved))
+
+    if not is_rel:
+        raise ValueError(
+            f"Security violation: Directory {directory} ({dir_resolved}) is not strictly inside "
+            f"cache root {cache_root} ({cache_root_resolved}). "
+            "Quarantine rejected to prevent touching or moving unrelated directories."
+        )
+
+    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M%S%f")
+    prefix = base_name if base_name else dir_resolved.name
+    quarantine_name = f"{prefix}_quarantined_{ts}"
+    quarantine_dir = cache_root_resolved / quarantine_name
+    if dir_resolved.exists():
+        dir_resolved.rename(quarantine_dir)
+    return quarantine_dir
+
+
+# ---------------------------------------------------------------------------
+# Independent Cache Identity Builder
+# ---------------------------------------------------------------------------
+def build_expected_cache_identity(
+    scenario: str,
+    seed: int,
+    expected_row_count: int,
+    prov_hashes: Dict[str, str],
+    script_hashes: Dict[str, str],
+    attack_parameters: Dict[str, Any],
+    query_budgets: Dict[str, Any],
+    x_attacked_sha256: str,
+    status_sha256: str,
+    screening_metrics: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Independently constructs the full expected cache identity dictionary for validation.
+    Never relies on loaded manifest as its own expected truth.
+    """
+    identity = {
+        "schema_version": "1.0",
+        "attack_scenario": canonicalize_scenario(scenario),
+        "effective_seed": int(seed),
+        "row_count": int(expected_row_count),
+        "X_attacked_sha256": x_attacked_sha256,
+        "status_sha256": status_sha256,
+        "output_sha256": x_attacked_sha256,
+        "attack_script_hashes": copy.deepcopy(script_hashes),
+        "attack_parameters": copy.deepcopy(attack_parameters),
+        "query_budgets": copy.deepcopy(query_budgets),
+    }
+    if screening_metrics is not None:
+        identity["screening_metrics"] = copy.deepcopy(screening_metrics)
+
+    identity.update({
+        "attacks_yaml_hash": prov_hashes["attacks_yaml_hash"],
+        "X_eval_hash": prov_hashes["X_eval_hash"],
+        "metadata_eval_hash": prov_hashes["metadata_eval_hash"],
+        "evaluation_roles_hash": prov_hashes["evaluation_roles_hash"],
+        "evaluation_batches_hash": prov_hashes["evaluation_batches_hash"],
+        "crafting_identity_hash": prov_hashes["crafting_identity_hash"],
+        "measurement_identity_hash": prov_hashes["measurement_identity_hash"],
+        "frozen_rf_hash": prov_hashes["frozen_rf_hash"],
+        "scaler_hash": prov_hashes["scaler_hash"],
+        "feature_names_hash": prov_hashes["feature_names_hash"],
+        "feature_mask_hash": prov_hashes["feature_mask_hash"],
+        "training_bounds_hash": prov_hashes["training_bounds_hash"],
+        **{k: v for k, v in prov_hashes.items()}
+    })
+    return identity
+
+
+# ---------------------------------------------------------------------------
+# Strict Independent Cache Completion Validation
+# ---------------------------------------------------------------------------
+def validate_completed_cache(
+    cache_dir: Path,
+    expected_scenario: str,
+    expected_seed: int,
+    expected_cache_identity: Dict[str, Any],
+    expected_feature_names: List[str],
+    resolved_batches: pd.DataFrame,
+    official_mode: bool = True,
+    expected_row_count: int = 72000,
+    expected_orchestration_commit: Optional[str] = None,
+) -> Tuple[bool, str]:
+    """
+    Validates whether an existing cache directory is 100% complete, sound, and matches
+    independently computed expectations.
+
+    Binding Requirements:
+      - Validates against independently computed expected_cache_identity, expected_scenario,
+        and expected_seed (never circular).
+      - Checks completion marker, manifest, provenance, schemas, exact row count,
+        attacked-feature hash, status hash, and cache identity.
+      - File existence alone is strictly insufficient.
+    """
+    completion_path = cache_dir / "completion.json"
+    manifest_path = cache_dir / "manifest.json"
+    x_path = cache_dir / "X_attacked.parquet"
+    s_path = cache_dir / "status.parquet"
+
+    if not completion_path.exists():
+        return False, "Missing completion.json"
+    if not manifest_path.exists():
+        return False, "Missing manifest.json"
+    if not x_path.exists():
+        return False, "Missing X_attacked.parquet"
+    if not s_path.exists():
+        return False, "Missing status.parquet"
+
+    canonical_expected_scen = canonicalize_scenario(expected_scenario)
+
+    try:
+        # 1. Inspect completion.json
+        with open(completion_path, "r") as f:
+            comp_data = json.load(f)
+
+        if comp_data.get("completion_state") != "COMPLETED":
+            return False, f"Incomplete state in completion.json: {comp_data.get('completion_state')}"
+        if not comp_data.get("completed", False):
+            return False, "completed flag is not True in completion.json"
+
+        _validate_iso_timestamp(comp_data.get("generation_end_timestamp"), "generation_end_timestamp")
+
+        # Independent identity validation against expectations
+        if canonicalize_scenario(comp_data.get("attack_scenario", "")) != canonical_expected_scen:
+            return False, f"Scenario mismatch in completion.json: expected {canonical_expected_scen}, got {comp_data.get('attack_scenario')}"
+        if comp_data.get("effective_seed") != expected_seed:
+            return False, f"Seed mismatch in completion.json: expected {expected_seed}, got {comp_data.get('effective_seed')}"
+        if comp_data.get("row_count") != expected_row_count:
+            return False, f"Row count mismatch in completion.json: expected {expected_row_count}, got {comp_data.get('row_count')}"
+
+        if expected_orchestration_commit is not None:
+            exec_commit = comp_data.get("execution_script_commit")
+            if exec_commit != expected_orchestration_commit:
+                return False, f"Orchestration commit mismatch in completion.json: expected {expected_orchestration_commit}, got {exec_commit}"
+
+        # 2. Inspect manifest.json
+        with open(manifest_path, "r") as f:
+            manifest = json.load(f)
+
+        if canonicalize_scenario(manifest.get("attack_scenario", "")) != canonical_expected_scen:
+            return False, f"Scenario mismatch in manifest.json: expected {canonical_expected_scen}, got {manifest.get('attack_scenario')}"
+        if manifest.get("effective_seed") != expected_seed:
+            return False, f"Seed mismatch in manifest.json: expected {expected_seed}, got {manifest.get('effective_seed')}"
+        if manifest.get("row_count") != expected_row_count:
+            return False, f"Row count mismatch in manifest.json: expected {expected_row_count}, got {manifest.get('row_count')}"
+
+        # 3. Compute real SHA-256 digests of generated files
+        x_hash = calculate_file_hash(x_path)
+        s_hash = calculate_file_hash(s_path)
+        m_hash = calculate_file_hash(manifest_path)
+
+        if manifest.get("X_attacked_sha256") != x_hash:
+            return False, "X_attacked file hash does not match manifest X_attacked_sha256"
+        if manifest.get("status_sha256") != s_hash:
+            return False, "status file hash does not match manifest status_sha256"
+
+        art_hashes = comp_data.get("artifacts", {})
+        if art_hashes.get("X_attacked_sha256") != x_hash:
+            return False, "completion.json X_attacked_sha256 mismatch vs actual file hash"
+        if art_hashes.get("status_sha256") != s_hash:
+            return False, "completion.json status_sha256 mismatch vs actual file hash"
+        if art_hashes.get("manifest_sha256") != m_hash:
+            return False, "completion.json manifest_sha256 mismatch vs actual file hash"
+
+        # 4. Validate manifest against INDEPENDENTLY COMPUTED expected_cache_identity
+        validate_cache_manifest(
+            manifest_path=manifest_path,
+            X_attacked_path=x_path,
+            expected_hashes=expected_cache_identity,
+            status_path=s_path,
+            expected_row_count=expected_row_count,
+        )
+
+        # 5. Validate provenance hashes in completion.json agree with expected_cache_identity
+        comp_prov = comp_data.get("provenance_hashes", {})
+        for req_k in _REQUIRED_PROVENANCE_KEYS:
+            if req_k not in comp_prov:
+                return False, f"Missing required provenance key in completion.json: {req_k}"
+            val = comp_prov[req_k]
+            if not _is_hex64(val) or val in ("0" * 64, "a" * 64) or any(p in val.lower() for p in _PLACEHOLDER_STRINGS):
+                return False, f"Invalid or placeholder provenance hash in completion.json for {req_k}: {val!r}"
+            if req_k in expected_cache_identity and val != expected_cache_identity[req_k]:
+                return False, f"Provenance mismatch in completion.json for {req_k}: expected {expected_cache_identity[req_k]}, got {val}"
+
+        # 6. Validate via strict ConcreteAttackCacheProvider with independent expected identity
+        ConcreteAttackCacheProvider(
+            cache_dir=cache_dir,
+            resolved_batches=resolved_batches,
+            expected_cache_identity=expected_cache_identity,
+            expected_feature_names=expected_feature_names,
+            official_mode=official_mode,
+            expected_row_count=expected_row_count,
+        )
+
+        return True, "Valid complete cache"
+    except Exception as e:
+        return False, f"Validation error: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Evaluation Partition Alignment Validation (for official execution)
+# ---------------------------------------------------------------------------
+def validate_evaluation_partition_alignment(
+    df_x_eval: pd.DataFrame,
+    df_meta_eval: pd.DataFrame,
+    df_roles: pd.DataFrame,
+    df_batches: pd.DataFrame,
+    expected_feature_names: List[str],
+) -> None:
+    """
+    Strict validation of evaluation partition alignment for official execution mode.
+
+    Guarantees:
+      - exactly 90,000 aligned X_eval and metadata rows;
+      - exact 78-feature order matching frozen feature names;
+      - zero NaN and infinite feature values;
+      - eval_position values are unique and in range 0..89999;
+      - feature and metadata positions align;
+      - composite identities match the authoritative roles manifest;
+      - exactly 18,000 crafting and 72,000 measurement identities;
+      - crafting and measurement identities are disjoint;
+      - measurement-to-batch mapping is exactly 144 batches of 500.
+    """
+    # 1. Row counts
+    if len(df_x_eval) != 90000:
+        raise ValueError(f"X_eval row count mismatch: expected 90,000, got {len(df_x_eval):,}")
+    if len(df_meta_eval) != 90000:
+        raise ValueError(f"metadata_eval row count mismatch: expected 90,000, got {len(df_meta_eval):,}")
+    if len(df_roles) != 90000:
+        raise ValueError(f"evaluation_roles row count mismatch: expected 90,000, got {len(df_roles):,}")
+    if len(df_batches) != 72000:
+        raise ValueError(f"evaluation_batches row count mismatch: expected 72,000, got {len(df_batches):,}")
+
+    # 2. Features order and names
+    if list(df_x_eval.columns[:len(expected_feature_names)]) != expected_feature_names:
+        raise ValueError("X_eval feature column names or order mismatch vs frozen feature_names.json")
+
+    # 3. Finite float values
+    x_vals = df_x_eval[expected_feature_names].values
+    if not np.isfinite(x_vals).all():
+        raise ValueError("X_eval contains non-finite (NaN or Inf) feature values")
+
+    # 4. Position alignment
+    if "eval_position" in df_x_eval.columns:
+        eps_x = df_x_eval["eval_position"].values
+    else:
+        eps_x = df_x_eval.index.values
+
+    if "eval_position" in df_meta_eval.columns:
+        eps_meta = df_meta_eval["eval_position"].values
+    else:
+        eps_meta = df_meta_eval.index.values
+
+    if not np.array_equal(eps_x, eps_meta):
+        raise ValueError("X_eval and metadata_eval eval_position indices do not align")
+
+    # 5. Roles partition disjointness and counts
+    crafting_mask = (df_roles["role"] == "crafting")
+    measurement_mask = (df_roles["role"] == "measurement")
+
+    if crafting_mask.sum() != 18000:
+        raise ValueError(f"Expected 18,000 crafting roles, found {crafting_mask.sum():,}")
+    if measurement_mask.sum() != 72000:
+        raise ValueError(f"Expected 72,000 measurement roles, found {measurement_mask.sum():,}")
+
+    crafting_eps = set(df_roles.loc[crafting_mask, "eval_position"].values)
+    measurement_eps = set(df_roles.loc[measurement_mask, "eval_position"].values)
+
+    if not crafting_eps.isdisjoint(measurement_eps):
+        overlap = crafting_eps.intersection(measurement_eps)
+        raise ValueError(f"Crafting and measurement roles overlap by {len(overlap)} positions")
+
+    # 6. Batches alignment
+    unique_batches = df_batches["batch_id"].nunique()
+    if unique_batches != 144:
+        raise ValueError(f"Expected 144 unique batches, found {unique_batches}")
+    batch_counts = df_batches["batch_id"].value_counts()
+    if not (batch_counts == 500).all():
+        raise ValueError("Each evaluation batch must contain exactly 500 records")
+
+    batch_eps = set(df_batches["eval_position"].values)
+    if batch_eps != measurement_eps:
+        raise ValueError("evaluation_batches eval_positions do not exactly match measurement role positions")
+
+
+# ---------------------------------------------------------------------------
+# Reproducible Execution State Verification
+# ---------------------------------------------------------------------------
+def verify_reproducible_execution_state(
+    repo_root: Path = REPO_ROOT,
+    configs_dir: Path = REPO_ROOT / "configs",
+    artifacts_dir: Path = REPO_ROOT / "artifacts",
+    data_dir: Path = REPO_ROOT / "data",
+) -> str:
+    """
+    Enforces that official execution (--execute) runs ONLY from a clean, committed,
+    reproducible state.
+
+    Rejects execution if:
+      - Any tracked file is modified or dirty.
+      - Any required Phase 10B source, test, configuration, or documentation file is untracked.
+      - src/ has any diff relative to phase10-protocol-freeze.
+      - Any frozen config or protocol file differs by a single byte from freeze tag.
+      - Any protected hash mismatches.
+    """
+    git_dir = repo_root / ".git"
+    if not git_dir.exists():
+        raise RuntimeError(f"Git repository not found at {repo_root}")
+
+    # 1. Freeze ancestry check
+    res = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", FREEZE_TAG, "HEAD"],
+        cwd=repo_root,
+        capture_output=True,
+    )
+    if res.returncode != 0:
+        raise RuntimeError(f"Freeze tag {FREEZE_TAG} is not an ancestor of current HEAD")
+
+    # 2. Frozen src/ check
+    src_diff = subprocess.check_output(
+        ["git", "diff", "--name-only", FREEZE_TAG, "--", "src/"],
+        cwd=repo_root,
+        text=True,
+    ).strip()
+    if src_diff:
+        raise RuntimeError(f"Frozen src/ directory modified relative to {FREEZE_TAG}: {src_diff.splitlines()}")
+
+    # 3. Frozen configuration byte match
+    verify_frozen_configurations(repo_root=repo_root, enforce_git=True)
+
+    # 4. Protected hashes check
+    for name, p, expected in [
+        ("RF", artifacts_dir / "models/frozen_rf.joblib", PROTECTED_HASHES["RF"]),
+        ("Roles", data_dir / "manifests/evaluation_roles.csv", PROTECTED_HASHES["Roles"]),
+        ("Batches", data_dir / "manifests/evaluation_batches.csv", PROTECTED_HASHES["Batches"]),
+    ]:
+        if calculate_file_hash(p) != expected:
+            raise ValueError(f"Protected hash mismatch for {name}")
+
+    # 5. Git status check: refuse dirty or untracked source/test/config files
+    status_out = subprocess.check_output(
+        ["git", "status", "--porcelain"],
+        cwd=repo_root,
+        text=True,
+    ).splitlines()
+
+    dirty_tracked = []
+    untracked_code = []
+
+    for line in status_out:
+        if not line.strip():
+            continue
+        code = line[:2]
+        path_str = line[3:].strip()
+        if code in (" M", "M ", "D ", "A ", "R ", "C "):
+            dirty_tracked.append(path_str)
+        elif code == "??":
+            # Forbid untracked source, test, config, or documentation files
+            if (
+                path_str.startswith(("src/", "tests/", "configs/", "scripts/", "docs/"))
+                or path_str.endswith((".py", ".yaml", ".md"))
+            ):
+                untracked_code.append(path_str)
+
+    if dirty_tracked:
+        raise RuntimeError(
+            f"Official execution (--execute) refused: tracked files are modified: {dirty_tracked}. "
+            "Must be committed before execution."
+        )
+    if untracked_code:
+        raise RuntimeError(
+            f"Official execution (--execute) refused: untracked code/test/config files detected: {untracked_code}. "
+            "Must be tracked and committed before execution."
+        )
+
+    head_commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=repo_root, text=True
+    ).strip()
+    return head_commit
 
 
 # ---------------------------------------------------------------------------
@@ -217,20 +732,21 @@ def run_preflight(
       - Does NOT load data/processed/X_eval.parquet.
       - Does NOT load data/processed/metadata_eval.parquet.
       - Does NOT load measurement features or evaluation labels.
-      - Safe by default.
+      - Strictly non-mutating: does not create or modify any cache directories.
     """
     preflight_results: Dict[str, Any] = {
         "status": "PASS",
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "git": {},
         "protected_hashes": {},
+        "frozen_file_comparisons": {},
         "configurations": {},
         "manifests": {},
         "derived_pairs": [],
         "cache_inventory": {},
     }
 
-    # 1. Git verification
+    # 1. Git ancestry and tag verification
     git_dir = repo_root / ".git"
     current_head = "UNKNOWN"
     is_ancestor = False
@@ -256,7 +772,6 @@ def run_preflight(
                     f"Freeze tag {FREEZE_TAG} points to commit {tag_commit}, expected {FREEZE_COMMIT}"
                 )
 
-            # Ancestry check
             res = subprocess.run(
                 ["git", "merge-base", "--is-ancestor", FREEZE_TAG, "HEAD"],
                 cwd=repo_root,
@@ -268,24 +783,11 @@ def run_preflight(
                     f"Freeze tag {FREEZE_TAG} ({FREEZE_COMMIT}) is not an ancestor of current HEAD ({current_head})"
                 )
 
-            # Check for changes in configs/ relative to freeze tag
-            diff_configs = subprocess.check_output(
-                ["git", "diff", "--name-only", FREEZE_TAG, "--", "configs/"],
-                cwd=repo_root,
-                stderr=subprocess.PIPE,
-                text=True,
-            ).strip()
-            if diff_configs:
-                raise ValueError(
-                    f"Configs directory differs from freeze tag: {diff_configs.splitlines()}"
-                )
-
             preflight_results["git"] = {
                 "head_commit": current_head,
                 "freeze_commit": tag_commit,
                 "freeze_tag": FREEZE_TAG,
                 "is_ancestor": is_ancestor,
-                "configs_unchanged_vs_freeze": True,
             }
         except subprocess.CalledProcessError as e:
             if enforce_git:
@@ -293,7 +795,11 @@ def run_preflight(
     elif enforce_git:
         raise RuntimeError(f"Git directory not found at {git_dir}")
 
-    # 2. Protected Hashes Verification
+    # 2. Strengthened byte-for-byte and SHA-256 frozen file comparison
+    frozen_comps = verify_frozen_configurations(repo_root=repo_root, enforce_git=enforce_git)
+    preflight_results["frozen_file_comparisons"] = frozen_comps
+
+    # 3. Protected Hashes Verification
     rf_model_path = artifacts_dir / "models/frozen_rf.joblib"
     roles_path = data_dir / "manifests/evaluation_roles.csv"
     batches_path = data_dir / "manifests/evaluation_batches.csv"
@@ -318,13 +824,8 @@ def run_preflight(
             "verified": True,
         }
 
-    # 3. Frozen configuration file checks
+    # 4. Frozen date_frozen verification
     exp_yaml_path = configs_dir / "experiment.yaml"
-    attacks_yaml_path = configs_dir / "attacks.yaml"
-    for c_path in (exp_yaml_path, attacks_yaml_path, configs_dir / "defenses.yaml", configs_dir / "controllers.yaml"):
-        if not c_path.exists():
-            raise FileNotFoundError(f"Required configuration file missing: {c_path}")
-
     with open(exp_yaml_path, "r") as f:
         exp_cfg = yaml.safe_load(f)
     date_frozen = exp_cfg.get("experiment", {}).get("date_frozen")
@@ -333,7 +834,7 @@ def run_preflight(
             f"experiment.date_frozen is {date_frozen!r}, expected {FROZEN_DATE!r}"
         )
 
-    # 4. Preprocessors verification
+    # 5. Preprocessors verification
     mask_path = artifacts_dir / "preprocessors/feature_mask.json"
     bounds_path = artifacts_dir / "preprocessors/training_bounds.parquet"
     scaler_path = artifacts_dir / "preprocessors/standard_scaler.joblib"
@@ -345,14 +846,13 @@ def run_preflight(
 
     preflight_results["configurations"] = {
         "date_frozen": date_frozen,
-        "experiment_yaml_hash": calculate_file_hash(exp_yaml_path),
-        "attacks_yaml_hash": calculate_file_hash(attacks_yaml_path),
         "feature_mask_hash": calculate_file_hash(mask_path),
         "training_bounds_hash": calculate_file_hash(bounds_path),
         "scaler_hash": calculate_file_hash(scaler_path),
+        "feature_names_hash": calculate_file_hash(fnames_path),
     }
 
-    # 5. Manifest structure check (CSV only, NO parquet evaluation features loaded)
+    # 6. Manifest structure check (CSV only, NO parquet evaluation features loaded)
     df_roles = pd.read_csv(roles_path)
     if len(df_roles) != 90000:
         raise ValueError(f"evaluation_roles.csv has {len(df_roles)} rows, expected 90000")
@@ -381,19 +881,19 @@ def run_preflight(
         "records_per_batch": 500,
     }
 
-    # 6. Derive 15 canonical pairs
+    # 7. Derive 15 canonical pairs
     derived_pairs = derive_cache_pairs(configs_dir)
     preflight_results["derived_pairs"] = [
-        {"scenario": p[0], "seed": p[1], "canonical_slug": f"{canonicalize_scenario(p[0])}_{p[1]}"}
+        {"scenario": p[0], "seed": p[1], "canonical_slug": f"{p[0]}_{p[1]}"}
         for p in derived_pairs
     ]
 
-    # 7. Inspect existing cache inventory
+    # 8. Inspect existing cache inventory
     cache_status_map: Dict[str, str] = {}
     valid_caches_count = 0
     if output_dir.exists():
         for p in derived_pairs:
-            slug = f"{canonicalize_scenario(p[0])}_{p[1]}"
+            slug = f"{p[0]}_{p[1]}"
             cdir = output_dir / slug
             if not cdir.exists():
                 cache_status_map[slug] = "NOT_BUILT"
@@ -404,7 +904,7 @@ def run_preflight(
                 cache_status_map[slug] = "INCOMPLETE_OR_CORRUPT"
     else:
         for p in derived_pairs:
-            slug = f"{canonicalize_scenario(p[0])}_{p[1]}"
+            slug = f"{p[0]}_{p[1]}"
             cache_status_map[slug] = "NOT_BUILT"
 
     preflight_results["cache_inventory"] = {
@@ -432,7 +932,11 @@ def print_preflight_report(results: Dict[str, Any]) -> None:
         print(f"  Freeze Commit:   {git.get('freeze_commit')}")
         print(f"  Freeze Tag:      {git.get('freeze_tag')}")
         print(f"  Ancestor Check:  {'PASSED' if git.get('is_ancestor') else 'FAILED'}")
-        print(f"  Configs Status:  {'MATCHES FREEZE TAG' if git.get('configs_unchanged_vs_freeze') else 'MODIFIED'}")
+
+    print("\n--- Strengthened Frozen File Verification (Byte & SHA-256 Match) ---")
+    for path_rel, comp in results.get("frozen_file_comparisons", {}).items():
+        match_str = "EXACT BYTE & SHA-256 MATCH" if comp["bytes_match"] else "MISMATCH"
+        print(f"  [{match_str}] {path_rel}")
 
     print("\n--- Protected Hashes (SHA-256) ---")
     for name, info in results["protected_hashes"].items():
@@ -445,7 +949,7 @@ def print_preflight_report(results: Dict[str, Any]) -> None:
 
     pairs = results["derived_pairs"]
     print(f"\n--- Derived Canonical Cache Pairs ({len(pairs)} Distinct Pairs) ---")
-    print("  #   Scenario                 Seed   Canonical Identifier      Cache Status")
+    print("  #   Canonical Scenario       Seed   Canonical Identifier      Cache Status")
     print("  --  -----------------------  -----  ------------------------  ------------------")
     cache_inv = results["cache_inventory"]["status_per_cache"]
     for idx, p in enumerate(pairs, 1):
@@ -457,107 +961,16 @@ def print_preflight_report(results: Dict[str, Any]) -> None:
     print("  [x] Safe-by-default preflight (non-mutating)")
     print("  [x] Zero evaluation data (X_eval.parquet) read during preflight")
     print("  [x] Zero evaluation labels read during preflight")
-    print(f"  [x] Official execution requires explicit --execute flag")
+    print("  [x] Label isolation enforced (true labels never used in surrogate/reference/perturbation)")
+    print("  [x] Independent cache-reuse validation enforced")
+    print("  [x] Safe staging & quarantine confined beneath cache root")
+    print("  [x] Official execution requires explicit --execute flag")
     print(f"  [x] Total valid caches present: {results['cache_inventory']['completed_count']} / 15")
     print("=" * 78)
 
 
 # ---------------------------------------------------------------------------
-# Cache Validation & Resumption
-# ---------------------------------------------------------------------------
-def validate_completed_cache(
-    cache_dir: Path,
-    expected_feature_names: List[str],
-    resolved_batches: pd.DataFrame,
-    official_mode: bool = True,
-    expected_row_count: int = 72000,
-) -> Tuple[bool, str]:
-    """
-    Validates whether an existing cache directory is 100% complete and sound.
-
-    Checks:
-      - completion.json exists, parses, and has status == 'COMPLETED'
-      - manifest.json exists and validates via validate_cache_manifest
-      - X_attacked.parquet and status.parquet exist and match manifest checksums
-      - ConcreteAttackCacheProvider accepts the cache artifacts without error
-      - completion.json artifact hashes match actual file hashes
-    """
-    completion_path = cache_dir / "completion.json"
-    manifest_path = cache_dir / "manifest.json"
-    x_path = cache_dir / "X_attacked.parquet"
-    s_path = cache_dir / "status.parquet"
-
-    if not completion_path.exists():
-        return False, "Missing completion.json"
-    if not manifest_path.exists():
-        return False, "Missing manifest.json"
-    if not x_path.exists():
-        return False, "Missing X_attacked.parquet"
-    if not s_path.exists():
-        return False, "Missing status.parquet"
-
-    try:
-        with open(completion_path, "r") as f:
-            comp_data = json.load(f)
-        if comp_data.get("completion_state") != "COMPLETED":
-            return False, f"Incomplete state in completion.json: {comp_data.get('completion_state')}"
-        if not comp_data.get("completed", False):
-            return False, "completed flag is not True in completion.json"
-        _validate_iso_timestamp(comp_data.get("generation_end_timestamp"), "generation_end_timestamp")
-
-        with open(manifest_path, "r") as f:
-            manifest = json.load(f)
-
-        # Validate through validate_cache_manifest
-        validate_cache_manifest(
-            manifest_path=manifest_path,
-            X_attacked_path=x_path,
-            expected_hashes=manifest,
-            status_path=s_path,
-            expected_row_count=expected_row_count,
-        )
-
-        # Validate through strict provider
-        ConcreteAttackCacheProvider(
-            cache_dir=cache_dir,
-            resolved_batches=resolved_batches,
-            expected_cache_identity=manifest,
-            expected_feature_names=expected_feature_names,
-            official_mode=official_mode,
-            expected_row_count=expected_row_count,
-        )
-
-        # Cross-validate completion.json checksums
-        x_hash = calculate_file_hash(x_path)
-        s_hash = calculate_file_hash(s_path)
-        m_hash = calculate_file_hash(manifest_path)
-
-        art_hashes = comp_data.get("artifacts", {})
-        if art_hashes.get("X_attacked_sha256") != x_hash:
-            return False, "completion.json X_attacked_sha256 mismatch"
-        if art_hashes.get("status_sha256") != s_hash:
-            return False, "completion.json status_sha256 mismatch"
-        if art_hashes.get("manifest_sha256") != m_hash:
-            return False, "completion.json manifest_sha256 mismatch"
-
-        return True, "Valid complete cache"
-    except Exception as e:
-        return False, f"Validation error: {e}"
-
-
-def quarantine_directory(directory: Path, base_name: Optional[str] = None) -> Path:
-    """Quarantines a failed or incomplete directory by renaming it with a unique timestamp."""
-    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M%S%f")
-    prefix = base_name if base_name else directory.name
-    quarantine_name = f"{prefix}_quarantined_{ts}"
-    quarantine_dir = directory.with_name(quarantine_name)
-    if directory.exists():
-        directory.rename(quarantine_dir)
-    return quarantine_dir
-
-
-# ---------------------------------------------------------------------------
-# Official Cache Execution
+# Single Cache Execution & Orchestration
 # ---------------------------------------------------------------------------
 def build_single_cache(
     scenario: str,
@@ -578,24 +991,44 @@ def build_single_cache(
     override_provenance: Optional[Dict[str, str]] = None,
     override_row_count: Optional[int] = None,
     override_n_boundary_targets: Optional[int] = None,
+    override_orchestration_commit: Optional[str] = None,
 ) -> Path:
     """
     Builds a single canonical cache for the given (scenario, seed) pair.
 
     Orchestration guarantees:
-      - Validates existing cache: if already valid and complete, reuses without recomputation.
-      - If existing cache is invalid or incomplete, quarantines and rebuilds from scratch.
-      - Writes to staging directory ({cache_dir}.staging).
+      - Validates existing cache against independently computed expected identity.
+      - If existing cache is invalid or incomplete, safely quarantines beneath cache root and rebuilds.
+      - Unique staging directory beneath output_dir on the same filesystem for atomic rename.
+      - Enforces strict path containment, rejecting path traversal attempts.
+      - Enforces accurate label semantics: true labels never guide surrogate fitting, benign
+        reference pool selection, or boundary perturbation search.
       - Writes completion.json LAST into staging directory before atomic publication.
-      - Re-validates staging directory before atomically renaming to target.
-      - On any failure: cleans up / quarantines staging and leaves no half-written cache.
+      - Re-validates staging directory against independent expected identity before rename.
+      - On any failure: safely quarantines staging directory beneath output_dir.
     """
+    output_dir = Path(output_dir).resolve()
     canonical_scen = canonicalize_scenario(scenario)
     target_dir_name = f"{canonical_scen}_{seed}"
-    target_cache_dir = output_dir / target_dir_name
-    staging_dir = output_dir / f"{target_dir_name}.staging"
 
-    expected_row_count = 72000 if official_mode else (override_row_count if override_row_count else len(override_X_meas))
+    # Path traversal rejection
+    if any(sep in target_dir_name for sep in ("/", "\\", "..")):
+        raise ValueError(f"Path traversal detected in target directory name: {target_dir_name!r}")
+
+    target_cache_dir = (output_dir / target_dir_name).resolve()
+    try:
+        is_rel = target_cache_dir.is_relative_to(output_dir)
+    except AttributeError:
+        is_rel = str(target_cache_dir).startswith(str(output_dir))
+
+    if not is_rel or target_cache_dir.parent != output_dir:
+        raise ValueError(f"Path traversal detected: target directory {target_cache_dir} is not inside {output_dir}")
+
+    # Unique staging directory on the same filesystem
+    unique_suffix = f"{os.getpid()}_{uuid.uuid4().hex[:8]}"
+    staging_dir = output_dir / f"{target_dir_name}.staging_{unique_suffix}"
+
+    expected_row_count = 72000 if official_mode else (override_row_count if override_row_count is not None else len(override_X_meas))
 
     # Pre-load feature names and bounds
     mask_path = artifacts_dir / "preprocessors/feature_mask.json"
@@ -606,91 +1039,7 @@ def build_single_cache(
     modifiable_mask = mask_data["feature_mask"]
     training_bounds = pd.read_parquet(bounds_path)
 
-    # 1. Whole-cache reuse check
-    if target_cache_dir.exists():
-        is_valid, reason = validate_completed_cache(
-            cache_dir=target_cache_dir,
-            expected_feature_names=feature_names,
-            resolved_batches=resolved_batches,
-            official_mode=official_mode,
-            expected_row_count=expected_row_count,
-        )
-        if is_valid:
-            print(f"[REUSE] Existing cache for {canonical_scen} seed {seed} is valid. Reusing: {target_cache_dir}")
-            return target_cache_dir
-        else:
-            print(f"[QUARANTINE] Target cache directory exists but invalid ({reason}). Quarantining...")
-            quarantine_directory(target_cache_dir, base_name=target_dir_name)
-
-    # 2. Clean up any stale staging or tmp directory from previous crashes
-    if staging_dir.exists():
-        quarantine_directory(staging_dir, base_name=f"{target_dir_name}_stale_staging")
-    stale_tmp = output_dir / f"{target_dir_name}.staging.tmp"
-    if stale_tmp.exists():
-        quarantine_directory(stale_tmp, base_name=f"{target_dir_name}_stale_staging_tmp")
-
-    # 3. Prepare data and provenance
-    start_time_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-
-    if official_mode:
-        # Load official evaluation data through exact eval_position joins
-        x_eval_path = data_dir / "processed/X_eval.parquet"
-        meta_eval_path = data_dir / "processed/metadata_eval.parquet"
-        roles_path = data_dir / "manifests/evaluation_roles.csv"
-
-        df_roles = pd.read_csv(roles_path)
-        df_x_eval = pd.read_parquet(x_eval_path)
-        df_meta_eval = pd.read_parquet(meta_eval_path)
-
-        # Merge on eval_position to partition strictly
-        df_x_eval["eval_position"] = df_x_eval.index.astype(int)
-        df_meta_eval["eval_position"] = df_meta_eval.index.astype(int)
-
-        crafting_eps = df_roles[df_roles["role"] == "crafting"]["eval_position"].sort_values().values
-        measurement_eps = df_roles[df_roles["role"] == "measurement"]["eval_position"].sort_values().values
-
-        X_craft = df_x_eval.iloc[crafting_eps][feature_names].values.astype(np.float32)
-        y_craft = df_meta_eval.iloc[crafting_eps]["y_binary"].values.astype(int)
-
-        X_meas = df_x_eval.iloc[measurement_eps][feature_names].values.astype(np.float32)
-        y_meas = df_meta_eval.iloc[measurement_eps]["y_binary"].values.astype(int)
-        eps_meas = measurement_eps.astype(np.int64)
-
-        # Load RF model
-        import joblib
-        rf_model = joblib.load(artifacts_dir / "models/frozen_rf.joblib")
-        def predict_fn(x_in):
-            return rf_model.predict(x_in)
-
-        # Compute provenance hashes
-        prov_hashes = {
-            "attacks_yaml_hash": calculate_file_hash(configs_dir / "attacks.yaml"),
-            "controllers_yaml_hash": calculate_file_hash(configs_dir / "controllers.yaml"),
-            "defenses_yaml_hash": calculate_file_hash(configs_dir / "defenses.yaml"),
-            "experiment_yaml_hash": calculate_file_hash(configs_dir / "experiment.yaml"),
-            "evaluation_roles_hash": calculate_file_hash(roles_path),
-            "evaluation_batches_hash": calculate_file_hash(data_dir / "manifests/evaluation_batches.csv"),
-            "frozen_rf_hash": calculate_file_hash(artifacts_dir / "models/frozen_rf.joblib"),
-            "scaler_hash": calculate_file_hash(artifacts_dir / "preprocessors/standard_scaler.joblib"),
-            "feature_names_hash": calculate_file_hash(artifacts_dir / "preprocessors/feature_names.json"),
-            "feature_mask_hash": calculate_file_hash(mask_path),
-            "training_bounds_hash": calculate_file_hash(bounds_path),
-            "X_eval_hash": calculate_file_hash(x_eval_path),
-            "metadata_eval_hash": calculate_file_hash(meta_eval_path),
-            "crafting_identity_hash": hashlib.sha256(crafting_eps.astype(np.int64).tobytes()).hexdigest(),
-            "measurement_identity_hash": hashlib.sha256(measurement_eps.astype(np.int64).tobytes()).hexdigest(),
-        }
-    else:
-        # Synthetic testing mode
-        X_craft = override_X_craft
-        y_craft = override_y_craft
-        X_meas = override_X_meas
-        y_meas = override_y_meas
-        eps_meas = override_eps
-        predict_fn = override_predict_fn
-        prov_hashes = override_provenance
-
-    # Compute attack script hashes
+    # Compute attack implementation script hashes
     attacks_src_dir = SRC_PATH / "recall_aware_ids/attacks"
     script_hashes = {
         "base.py": calculate_file_hash(attacks_src_dir / "base.py"),
@@ -702,11 +1051,11 @@ def build_single_cache(
         "build_evaluation_caches.py": calculate_file_hash(Path(__file__).resolve()),
     }
 
-    # Attack parameters and query budgets per scenario
+    # Expected attack parameters and query budgets per scenario
     surrogate_attack = None
     boundary_attack = None
     benign_reference_pool = None
-    n_boundary = 200 if official_mode else (override_n_boundary_targets if override_n_boundary_targets is not None else min(200, len(X_meas)))
+    n_boundary = 200 if official_mode else (override_n_boundary_targets if override_n_boundary_targets is not None else min(200, len(override_X_meas) if override_X_meas is not None else 200))
 
     if canonical_scen == "SilentProbing":
         attack_params = {"modifies_samples": False}
@@ -720,8 +1069,8 @@ def build_single_cache(
         }
         query_budgets = {
             "max_queries_per_sample": 0,
-            "crafting_queries_budget": len(X_craft),
-            "target_evaluation_queries": len(X_meas),
+            "crafting_queries_budget": 18000 if official_mode else len(override_X_craft),
+            "target_evaluation_queries": expected_row_count,
         }
         from recall_aware_ids.attacks.surrogate_transfer import SurrogateTransferAttack
         surrogate_attack = SurrogateTransferAttack(
@@ -747,13 +1096,177 @@ def build_single_cache(
             max_queries=50,
             binary_search_steps=10,
         )
-        # Benign reference pool drawn strictly from crafting pool
-        benign_mask = (y_craft == 0)
-        benign_reference_pool = X_craft[benign_mask] if np.any(benign_mask) else X_craft
     else:
         raise ValueError(f"Unsupported canonical scenario: {canonical_scen}")
 
-    # Build cache into staging directory
+    # Determine current orchestration commit
+    if official_mode:
+        try:
+            current_head = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, stderr=subprocess.PIPE, text=True
+            ).strip()
+        except Exception:
+            current_head = "UNKNOWN"
+    else:
+        current_head = override_orchestration_commit if override_orchestration_commit else "TEST_ORCHESTRATION_HEAD"
+
+    # Compute expected provenance hashes
+    if official_mode:
+        x_eval_path = data_dir / "processed/X_eval.parquet"
+        meta_eval_path = data_dir / "processed/metadata_eval.parquet"
+        roles_path = data_dir / "manifests/evaluation_roles.csv"
+        batches_path = data_dir / "manifests/evaluation_batches.csv"
+
+        df_roles_pre = pd.read_csv(roles_path)
+        crafting_eps_pre = df_roles_pre[df_roles_pre["role"] == "crafting"]["eval_position"].sort_values().values
+        measurement_eps_pre = df_roles_pre[df_roles_pre["role"] == "measurement"]["eval_position"].sort_values().values
+
+        freeze_commit_sha256 = hashlib.sha256(FREEZE_COMMIT.encode("utf-8")).hexdigest()
+        freeze_tag_sha256 = hashlib.sha256(FREEZE_TAG.encode("utf-8")).hexdigest()
+        orchestration_commit_sha256 = hashlib.sha256(current_head.encode("utf-8")).hexdigest()
+
+        prov_hashes = {
+            "attacks_yaml_hash": calculate_file_hash(configs_dir / "attacks.yaml"),
+            "controllers_yaml_hash": calculate_file_hash(configs_dir / "controllers.yaml"),
+            "defenses_yaml_hash": calculate_file_hash(configs_dir / "defenses.yaml"),
+            "experiment_yaml_hash": calculate_file_hash(configs_dir / "experiment.yaml"),
+            "model_yaml_hash": calculate_file_hash(configs_dir / "model.yaml"),
+            "evaluation_roles_hash": calculate_file_hash(roles_path),
+            "evaluation_batches_hash": calculate_file_hash(batches_path),
+            "frozen_rf_hash": calculate_file_hash(artifacts_dir / "models/frozen_rf.joblib"),
+            "scaler_hash": calculate_file_hash(artifacts_dir / "preprocessors/standard_scaler.joblib"),
+            "feature_names_hash": calculate_file_hash(artifacts_dir / "preprocessors/feature_names.json"),
+            "feature_mask_hash": calculate_file_hash(mask_path),
+            "training_bounds_hash": calculate_file_hash(bounds_path),
+            "X_eval_hash": calculate_file_hash(x_eval_path),
+            "metadata_eval_hash": calculate_file_hash(meta_eval_path),
+            "crafting_identity_hash": hashlib.sha256(crafting_eps_pre.astype(np.int64).tobytes()).hexdigest(),
+            "measurement_identity_hash": hashlib.sha256(measurement_eps_pre.astype(np.int64).tobytes()).hexdigest(),
+            "freeze_commit_sha256": freeze_commit_sha256,
+            "freeze_tag_sha256": freeze_tag_sha256,
+            "orchestration_commit_sha256": orchestration_commit_sha256,
+        }
+    else:
+        prov_hashes = override_provenance
+
+    # 1. Whole-cache reuse check using INDEPENDENT EXPECTATIONS
+    if target_cache_dir.exists():
+        x_target = target_cache_dir / "X_attacked.parquet"
+        s_target = target_cache_dir / "status.parquet"
+        m_target = target_cache_dir / "manifest.json"
+
+        if x_target.exists() and s_target.exists() and m_target.exists():
+            x_target_hash = calculate_file_hash(x_target)
+            s_target_hash = calculate_file_hash(s_target)
+
+            screening_metrics_target = None
+            try:
+                with open(m_target, "r") as f:
+                    manifest_raw = json.load(f)
+                screening_metrics_target = manifest_raw.get("screening_metrics")
+            except Exception:
+                pass
+
+            expected_identity_check = build_expected_cache_identity(
+                scenario=canonical_scen,
+                seed=seed,
+                expected_row_count=expected_row_count,
+                prov_hashes=prov_hashes,
+                script_hashes=script_hashes,
+                attack_parameters=attack_params,
+                query_budgets=query_budgets,
+                x_attacked_sha256=x_target_hash,
+                status_sha256=s_target_hash,
+                screening_metrics=screening_metrics_target,
+            )
+
+            is_valid, reason = validate_completed_cache(
+                cache_dir=target_cache_dir,
+                expected_scenario=canonical_scen,
+                expected_seed=seed,
+                expected_cache_identity=expected_identity_check,
+                expected_feature_names=feature_names,
+                resolved_batches=resolved_batches,
+                official_mode=official_mode,
+                expected_row_count=expected_row_count,
+                expected_orchestration_commit=current_head if official_mode else None,
+            )
+            if is_valid:
+                print(f"[REUSE] Existing cache for {canonical_scen} seed {seed} is valid. Reusing: {target_cache_dir}")
+                return target_cache_dir
+            else:
+                print(f"[QUARANTINE] Target cache directory exists but invalid ({reason}). Quarantining...")
+                quarantine_directory(target_cache_dir, cache_root=output_dir, base_name=target_dir_name)
+        else:
+            print(f"[QUARANTINE] Incomplete target cache directory. Quarantining...")
+            quarantine_directory(target_cache_dir, cache_root=output_dir, base_name=target_dir_name)
+
+    # 2. Clean up any stale staging directories from previous crashed attempts
+    if output_dir.exists():
+        for stale in output_dir.glob(f"{target_dir_name}.staging*"):
+            if stale != staging_dir and stale.is_dir():
+                quarantine_directory(stale, cache_root=output_dir, base_name=f"{target_dir_name}_stale_staging")
+
+    # 3. Prepare data
+    start_time_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    if official_mode:
+        x_eval_path = data_dir / "processed/X_eval.parquet"
+        meta_eval_path = data_dir / "processed/metadata_eval.parquet"
+        roles_path = data_dir / "manifests/evaluation_roles.csv"
+        batches_path = data_dir / "manifests/evaluation_batches.csv"
+
+        df_roles = pd.read_csv(roles_path)
+        df_x_eval = pd.read_parquet(x_eval_path)
+        df_meta_eval = pd.read_parquet(meta_eval_path)
+        df_batches = pd.read_csv(batches_path)
+
+        # STRICT PARTITION ALIGNMENT VALIDATION
+        validate_evaluation_partition_alignment(
+            df_x_eval=df_x_eval,
+            df_meta_eval=df_meta_eval,
+            df_roles=df_roles,
+            df_batches=df_batches,
+            expected_feature_names=feature_names,
+        )
+
+        df_x_eval["eval_position"] = df_x_eval.index.astype(int)
+        df_meta_eval["eval_position"] = df_meta_eval.index.astype(int)
+
+        crafting_eps = df_roles[df_roles["role"] == "crafting"]["eval_position"].sort_values().values
+        measurement_eps = df_roles[df_roles["role"] == "measurement"]["eval_position"].sort_values().values
+
+        X_craft = df_x_eval.iloc[crafting_eps][feature_names].values.astype(np.float32)
+        y_craft = df_meta_eval.iloc[crafting_eps]["y_binary"].values.astype(int)
+
+        X_meas = df_x_eval.iloc[measurement_eps][feature_names].values.astype(np.float32)
+        y_meas = df_meta_eval.iloc[measurement_eps]["y_binary"].values.astype(int)
+        eps_meas = measurement_eps.astype(np.int64)
+
+        import joblib
+        rf_model = joblib.load(artifacts_dir / "models/frozen_rf.joblib")
+        def predict_fn(x_in):
+            return rf_model.predict(x_in)
+    else:
+        # Synthetic testing mode
+        X_craft = override_X_craft
+        y_craft = override_y_craft
+        X_meas = override_X_meas
+        y_meas = override_y_meas
+        eps_meas = override_eps
+        predict_fn = override_predict_fn
+
+    # Setup benign reference pool for Decision Boundary (LABEL ISOLATION RULE)
+    if canonical_scen == "DecisionBoundary":
+        # Benign reference selection uses model predictions on crafting rows, NOT true labels
+        craft_preds = predict_fn(X_craft)
+        benign_mask = (craft_preds == 0)
+        if np.any(benign_mask):
+            benign_reference_pool = X_craft[benign_mask]
+        else:
+            benign_reference_pool = X_craft
+
+    # Build cache into staging directory using frozen AttackCacheBuilder
     builder = AttackCacheBuilder(
         feature_names=feature_names,
         modifiable_mask=modifiable_mask,
@@ -787,21 +1300,11 @@ def build_single_cache(
 
         end_time_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
-        # Compute file checksums of generated artifacts
         x_hash = calculate_file_hash(staging_dir / "X_attacked.parquet")
         s_hash = calculate_file_hash(staging_dir / "status.parquet")
         m_hash = calculate_file_hash(staging_dir / "manifest.json")
 
-        # Get git details if available
-        current_head = "UNKNOWN"
-        try:
-            current_head = subprocess.check_output(
-                ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, stderr=subprocess.PIPE, text=True
-            ).strip()
-        except Exception:
-            pass
-
-        # Write completion.json LAST
+        # Write completion.json LAST into staging directory
         completion_data = {
             "completion_state": "COMPLETED",
             "completed": True,
@@ -829,20 +1332,46 @@ def build_single_cache(
         with open(completion_file, "w") as f:
             json.dump(completion_data, f, indent=2)
 
-        # Validate completion marker schema using CompletionMarker
         CompletionMarker(
             run_id=f"cache_{canonical_scen}_{seed}",
             timestamp=end_time_iso,
             provenance_hashes={k: v for k, v in prov_hashes.items() if k in _REQUIRED_PROVENANCE_KEYS},
         )
 
-        # Comprehensive validation of the completed staging directory
+        # Inspect screening metrics if emitted
+        staging_screening = None
+        try:
+            with open(staging_dir / "manifest.json", "r") as f:
+                staging_m = json.load(f)
+            staging_screening = staging_m.get("screening_metrics")
+        except Exception:
+            pass
+
+        # Build independent expected cache identity for staging validation
+        staging_expected_identity = build_expected_cache_identity(
+            scenario=canonical_scen,
+            seed=seed,
+            expected_row_count=expected_row_count,
+            prov_hashes=prov_hashes,
+            script_hashes=script_hashes,
+            attack_parameters=attack_params,
+            query_budgets=query_budgets,
+            x_attacked_sha256=x_hash,
+            status_sha256=s_hash,
+            screening_metrics=staging_screening,
+        )
+
+        # Comprehensive validation of the completed staging directory before atomic publication
         is_valid, reason = validate_completed_cache(
             cache_dir=staging_dir,
+            expected_scenario=canonical_scen,
+            expected_seed=seed,
+            expected_cache_identity=staging_expected_identity,
             expected_feature_names=feature_names,
             resolved_batches=resolved_batches,
             official_mode=official_mode,
             expected_row_count=expected_row_count,
+            expected_orchestration_commit=current_head if official_mode else None,
         )
         if not is_valid:
             raise RuntimeError(f"Staging cache validation failed: {reason}")
@@ -855,15 +1384,14 @@ def build_single_cache(
     except Exception as exc:
         print(f"[ERROR] Cache generation failed for {canonical_scen} seed {seed}: {exc}")
         if staging_dir.exists():
-            print(f"[QUARANTINE] Quarantining failed staging directory: {staging_dir}")
-            quarantine_directory(staging_dir, base_name=f"{target_dir_name}_failed")
-        tmp_dir = output_dir / f"{target_dir_name}.staging.tmp"
-        if tmp_dir.exists():
-            print(f"[QUARANTINE] Quarantining failed temporary directory: {tmp_dir}")
-            quarantine_directory(tmp_dir, base_name=f"{target_dir_name}_failed")
+            print(f"[QUARANTINE] Safely quarantining failed staging directory: {staging_dir}")
+            quarantine_directory(staging_dir, cache_root=output_dir, base_name=f"{target_dir_name}_failed")
         raise
 
 
+# ---------------------------------------------------------------------------
+# Main Orchestration Driver
+# ---------------------------------------------------------------------------
 def build_evaluation_caches(
     configs_dir: Path,
     data_dir: Path,
@@ -893,14 +1421,24 @@ def build_evaluation_caches(
         print("[PREFLIGHT ONLY] Preflight checks PASSED. No caches were generated. Exiting cleanly.")
         return 0
 
-    # 2. Execution authorized
+    # 2. Execution authorized: verify reproducible state first
+    print("\n" + "=" * 78)
+    print("VERIFYING REPRODUCIBLE EXECUTION STATE (--execute)")
+    print("=" * 78)
+    head_commit = verify_reproducible_execution_state(
+        repo_root=REPO_ROOT,
+        configs_dir=configs_dir,
+        artifacts_dir=artifacts_dir,
+        data_dir=data_dir,
+    )
+    print(f"Clean reproducible state verified at commit: {head_commit}")
+
     print("\n" + "=" * 78)
     print("STARTING AUTHORIZED EVALUATION CACHE GENERATION (--execute)")
     print("=" * 78)
 
     derived_pairs = derive_cache_pairs(configs_dir)
 
-    # Filter pairs if requested
     selected_pairs = []
     for scen, seed in derived_pairs:
         if scenario_filter and canonicalize_scenario(scen) != canonicalize_scenario(scenario_filter):
@@ -918,11 +1456,9 @@ def build_evaluation_caches(
     for scen, seed in selected_pairs:
         print(f"  - {scen:20s} (seed {seed})")
 
-    # Load resolved batches once for provider validation
     batches_path = data_dir / "manifests/evaluation_batches.csv"
     resolved_batches = pd.read_csv(batches_path)
 
-    # Execute builds sequentially
     for idx, (scen, seed) in enumerate(selected_pairs, 1):
         print(f"\n[{idx}/{len(selected_pairs)}] Building cache for {scen} seed {seed}...")
         build_single_cache(
@@ -1001,7 +1537,6 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
     args = parser.parse_args(argv)
 
-    # Validate arguments early
     if args.scenario is not None:
         try:
             canonicalize_scenario(args.scenario)

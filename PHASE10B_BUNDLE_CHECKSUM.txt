@@ -1,4 +1,3 @@
-BUNDLE_FILENAME=phase10b_cache_orchestration_review_bundle.zip
-BUNDLE_SHA256=01e3944e4524ab116cb0e705605469dd0f841c523325139c0493e4b70375f4f9
-BUNDLE_SIZE_BYTES=248457
-MEMBER_COUNT=121
+BUNDLE_FILENAME=phase10b_cache_orchestration_review_bundle_v2.zip
+BUNDLE_STATUS=FINAL_VERIFICATION_RECORD
+NOTE=Final archive SHA-256 digest is calculated and reported externally upon archive completion.
