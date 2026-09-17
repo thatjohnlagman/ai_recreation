@@ -450,7 +450,7 @@ def build_bundle():
     finally:
         shutil.rmtree(gen_dir, ignore_errors=True)
 
-    print("\nPhase 10A Freeze Candidate Bundle v5.1 build and verification complete!")
+    print("\nPhase 10A Freeze Candidate Bundle v5.2 build and verification complete!")
     return bundle_path, bundle_hash, bundle_size_bytes, added_count
 
 if __name__ == "__main__":

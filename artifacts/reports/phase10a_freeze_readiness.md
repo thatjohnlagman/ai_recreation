@@ -1,4 +1,4 @@
-# Phase 10A Protocol Freeze Readiness Report (v5.1 Final Correction)
+# Phase 10A Protocol Freeze Readiness Report (v5.2 Final Normalization)
 
 **Project**: Recall-Aware Intrusion Detection System (Thesis Implementation)  
 **Host Machine**: MacBook Air (Mac16,12), Apple M4, 16 GB RAM, macOS 27.0.0, Python 3.9.6 (arm64)  
@@ -9,7 +9,7 @@
 
 ## 1. Executive Summary
 
-Phase 10A v5.1 final review corrections have been successfully completed, validated, and verified on the native Apple Silicon M4 platform. All 196 automated unit and integration tests across the repository pass with zero failures (including 22 new focused tests covering run-level ASR, strengthened `RunSummary` validations, Silent Probing metadata provenance, and output reopening/quarantine). A 5,000-row training-derived runtime and memory pilot was executed without errors, demonstrating stable memory utilization (peak RSS 472.23 MB) and confirming computational feasibility. All three protected artifacts remain bit-for-bit identical to their frozen authoritative hashes. No evaluation records were loaded or inspected, no official attack caches were generated, and the formal freeze date remains unset pending external review.
+Phase 10A v5.2 final review corrections have been successfully completed, validated, and verified on the native Apple Silicon M4 platform. All 200 automated unit and integration tests across the repository pass with zero failures (including 26 new focused tests covering run-level ASR, strengthened `RunSummary` validations, Silent Probing metadata provenance, and comprehensive output reopening/quarantine). A 5,000-row training-derived runtime and memory pilot was executed without errors, demonstrating stable memory utilization (peak RSS 469.67 MB) and confirming computational feasibility. All three protected artifacts remain bit-for-bit identical to their frozen authoritative hashes. No evaluation records were loaded or inspected, no official attack caches were generated, and the formal freeze date remains unset pending external review.
 
 ---
 
@@ -22,7 +22,7 @@ Phase 10A v5.1 final review corrections have been successfully completed, valida
 
 ---
 
-## 3. Final Review Corrections (v5.1)
+## 3. Final Review Corrections (v5.1 & v5.2)
 
 ### 3.1 Run-Level Attack Success Rate (ASR) Semantics
 - **Runner Correction**: In `src/recall_aware_ids/experiment/runner.py`, updated `global_asr` calculation:
@@ -53,7 +53,7 @@ Phase 10A v5.1 final review corrections have been successfully completed, valida
   - Silent Probing explicitly requires zero query budgets and `modifies_samples=False`.
   - Decision Boundary explicitly records the 50-query attack budget.
 
-### 3.4 Pre-Completion Output Reopening and Validation
+### 3.4 Pre-Completion Output Reopening and Validation (v5.1 & v5.2)
 - **Reopening Gate**: Before creating `completion.json`, `ExperimentRunner` reopens and inspects:
   - `config.json` (144 valid `BatchConfigLog` records, batch IDs `0..143`).
   - `confusion.json` (144 valid `BatchConfusionLog` records, batch IDs `0..143`).
@@ -73,40 +73,57 @@ Phase 10A v5.1 final review corrections have been successfully completed, valida
   - `FILE_HASHES.sha256` generated hashing every member except itself (including the hash of `BUNDLE_MANIFEST.txt`).
 - **Independent Post-Extraction Verification**: Extracted archive tested with `zipfile.testzip()`, checked for zero duplicates, verified that ZIP member set equals manifest member set, verified every non-hash-manifest member against `FILE_HASHES.sha256`, and confirmed zero forbidden members.
 
+### 3.6 Serialized-Output Consistency Gate (v5.2)
+- **Canonical Object Comparison**: Reopened `RunSummary` compared against original in-memory summary using full canonical dictionary equality (`dataclasses.asdict(summary) == dataclasses.asdict(reconstructed_summary)`).
+- **Reconstructed Summary Integrity**: All integrity comparisons are performed against `reconstructed_summary`.
+- **Direct Recomputation**: Directly recomputed TP, FP, TN, and FN from reopened 500 labels and 500 predictions for each batch; compared against reopened `BatchConfusionLog`.
+- **Derivable Metrics Verification**: Recomputed accuracy, recall, precision, F1, balanced accuracy, and PR-AUC with `calculate_metrics`, verified within `1e-7` tolerance.
+- **Run ID and Batch ID Integrity**: Validated matching `run_id` and sequential `batch_id` (`0..143`) across `config.json`, `confusion.json`, and `scores.json`.
+- **Global Aggregation and ASR Semantics**: Aggregated reopened records, verified confusion sum equals 72,000, validated global derived metrics, verified ASR semantics, and recomputed global PR-AUC.
+- **Quarantine Regression Tests**: Added tests proving quarantine on altered schema-valid `RunSummary`, confusion records disagreeing with predictions, and predictions/scores disagreeing with confusion/metrics.
+
 ---
 
 ## 4. Test Suite Execution Evidence
 
 ### 4.1 Full Repository Test Suite
 ```text
-Total collected: 196 test items across 17 test modules
-Status: 196 passed, 0 failed, 0 warnings in 5.55s
+Total collected: 200 test items across 17 test modules
+Status: 200 passed, 0 failed, 0 warnings in 5.95s
 ```
 
 ### 4.2 Key Test Module Results
-- `tests/test_phase10a_v5.py`: 25 passed
 - `tests/test_schemas.py`: 58 passed (all `RunSummary` and `BatchConfusionLog` validations)
+- `tests/test_phase10a_v5.py`: 25 passed
+- `tests/test_runner_validation.py`: 21 passed (all timing invariants, zero-attempt ASR, output reopening/quarantine)
 - `tests/test_caching.py`: 20 passed (all builder/provider validations, omitted/fabricated metadata rejections)
-- `tests/test_runner_validation.py`: 17 passed (all timing invariants, zero-attempt ASR, output reopening/quarantine)
+- `tests/test_attacks.py`: 17 passed
+- `tests/test_controller.py`: 14 passed
+- `tests/test_defenses.py`: 13 passed
+- `tests/test_adapters.py`: 12 passed
 - `tests/test_experiment_runner.py`: 9 passed
-- `tests/test_matrix.py`: 4 passed
-- `tests/test_controller.py`: 12 passed
-- `tests/test_defenses.py`: 18 passed
-- `tests/test_attacks.py`: 7 passed
+- `tests/test_matrix.py`: 3 passed
+- `tests/test_role_resolution.py`: 2 passed
+- `tests/test_audit_dataset.py`: 1 passed
+- `tests/test_boundary_selection.py`: 1 passed
+- `tests/test_evaluation_batches.py`: 1 passed
+- `tests/test_preprocess_dataset.py`: 1 passed
+- `tests/test_report_metrics.py`: 1 passed
+- `tests/test_train_model.py`: 1 passed
 
 ---
 
 ## 5. M4 Training-Derived Pilot Results
 
 Executed exclusively on 5,000 deterministic records from `X_train.parquet` / `metadata_train.parquet`:
-- **AFP**: 0.1372s (final invalid cells: 0, protected modified: 0, projected cells: 102,445)
-- **FS**: 0.0913s (effective bit-depth: 4, final invalid cells: 0, protected modified: 0)
-- **RS**: 9.1437s (positive vote fraction range: [0.000, 1.000], protected modified: 0)
-- **Surrogate Transfer**: 8.5713s (1,000 crafting queries, 652 eval queries, 76 eligible, 76 attempted, 1 success)
-- **Decision Boundary**: 17.9244s (1,274 oracle queries, 98 eligible, 98 attempted, 98 successes)
+- **AFP**: 0.0923s (final invalid cells: 0, protected modified: 0, projected cells: 102,445)
+- **FS**: 0.0740s (effective bit-depth: 4, final invalid cells: 0, protected modified: 0)
+- **RS**: 8.6096s (positive vote fraction range: [0.000, 1.000], protected modified: 0)
+- **Surrogate Transfer**: 8.3385s (1,000 crafting queries, 652 eval queries, 76 eligible, 76 attempted, 1 success)
+- **Decision Boundary**: 17.2877s (1,274 oracle queries, 98 eligible, 98 attempted, 98 successes)
 - **Memory Profile**:
-  - Absolute Peak RSS: 472.23 MB (well below 16 GB host RAM / 8 GB conservative ceiling)
-  - Incremental RSS: 318.58 MB
+  - Absolute Peak RSS: 469.67 MB (well below 16 GB host RAM / 8 GB conservative ceiling)
+  - Incremental RSS: 316.16 MB
 - **Exit Code**: 0 (Clean termination)
 
 ---
@@ -128,6 +145,8 @@ Executed exclusively on 5,000 deterministic records from `X_train.parquet` / `me
   - `RED_TEST_OUTPUT.txt` (local diagnostic log)
   - Prior review bundles (`phase10a_freeze_candidate_bundle_v2.zip`, `_v3.zip`, `_v4.zip`, `_v5.zip`, `_v5_1.zip`)
 - **Bundle File**: `phase10a_freeze_candidate_bundle_v5_2.zip`
+- **Candidate Checksum (SHA-256)**: `b3c340aca7768950642e429c68ed8040e5a67347d96b54d08793d17cdc914c43`
+- **Bundle Size**: 215,633 bytes (0.21 MB)
 - **Forbidden Files Scan**: 0 forbidden files found.
 - **Duplicate Members Scan**: 0 duplicate members found.
 - **Protocol Freeze Status**: `experiment.date_frozen` remains `null`. Official evaluation data (`X_eval.parquet`, `metadata_eval.parquet`) and official attack caches were NOT accessed.
