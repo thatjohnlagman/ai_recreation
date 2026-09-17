@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>IDS + Recall-Aware AFP | Enhanced Detection with Adaptive Perturbation Defense</title>
+  
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  
+  <!-- Custom Styles -->
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="app-container">
+    
+    <!-- Top Header -->
+    <header class="app-header">
+      <div class="header-left">
+        <div class="header-logo">
+          <svg class="shield-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            <path d="M9 12l2 2 4-4" stroke="#3b82f6" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <div class="header-title-group">
+          <h1 class="header-title">IDS + Recall-Aware AFP</h1>
+          <p class="header-subtitle">Enhanced Detection with Adaptive Perturbation Defense</p>
+        </div>
+      </div>
+      
+      <div class="header-right">
+        <!-- IDS Status Badge -->
+        <div class="header-status-pill">
+          <span class="status-dot green"></span>
+          <span class="header-status-label">IDS</span>
+          <span class="status-val green">Active</span>
+        </div>
+
+        <!-- AFP Defense Toggle Badge -->
+        <div class="header-status-pill clickable" id="toggle-afp-btn" title="Click to toggle AFP defense state">
+          <span class="status-dot cyan" id="afp-status-dot"></span>
+          <span class="header-status-label">AFP Defense</span>
+          <span class="status-val cyan" id="afp-status-text">Active</span>
+        </div>
+
+        <div class="system-status-indicator">
+          <span class="status-pulse-dot"></span>
+          <span class="status-text">System Online</span>
+        </div>
+
+        <!-- Theme Toggle Button (Icon Only) -->
+        <button class="theme-toggle-btn icon-only" id="theme-toggle-btn" aria-label="Toggle Light and Dark Mode" title="Toggle Light / Dark Mode">
+          <span class="theme-icon sun">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="5"/>
+              <line x1="12" y1="1" x2="12" y2="3"/>
+              <line x1="12" y1="21" x2="12" y2="23"/>
+              <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+              <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+              <line x1="1" y1="12" x2="3" y2="12"/>
+              <line x1="21" y1="12" x2="23" y2="12"/>
+              <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+              <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+            </svg>
+          </span>
+          <span class="theme-icon moon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+            </svg>
+          </span>
+        </button>
+
+        <div class="header-datetime" id="live-datetime">Sep 18, 2026 00:50:53 UTC+8</div>
+      </div>
+    </header>
+
+    <!-- Main Workspace Layout (Full Width) -->
+    <div class="workspace-body full-width">
+      
+      <!-- Center & Right Dashboard Content -->
+      <main class="dashboard-content">
+        
+        <!-- Center Primary Column -->
+        <div class="primary-column">
+          
+          <!-- Top 4 KPI Cards -->
+          <section class="kpi-grid">
+            
+            <!-- KPI 1: Total Traffic -->
+            <div class="kpi-card">
+              <div class="kpi-icon-wrapper blue">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                </svg>
+              </div>
+              <div class="kpi-data">
+                <span class="kpi-label">Total Traffic</span>
+                <span class="kpi-value" id="kpi-total-traffic">12,482</span>
+                <span class="kpi-delta positive">
+                  <span class="arrow">↑</span> 8.4% <span class="delta-muted">vs. previous hour</span>
+                </span>
+              </div>
+            </div>
+
+            <!-- KPI 2: Detected Attacks -->
+            <div class="kpi-card">
+              <div class="kpi-icon-wrapper red">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                  <line x1="12" y1="9" x2="12" y2="13"/>
+                  <line x1="12" y1="17" x2="12.01" y2="17"/>
+                </svg>
+              </div>
+              <div class="kpi-data">
+                <span class="kpi-label">Detected Attacks</span>
+                <span class="kpi-value" id="kpi-detected-attacks">87</span>
+                <span class="kpi-delta positive">
+                  <span class="arrow">↑</span> 36.0% <span class="delta-muted">vs. previous hour</span>
+                </span>
+              </div>
+            </div>
+
+            <!-- KPI 3: Detection Recall -->
+            <div class="kpi-card">
+              <div class="kpi-icon-wrapper teal">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10"/>
+                  <line x1="22" y1="12" x2="18" y2="12"/>
+                  <line x1="6" y1="12" x2="2" y2="12"/>
+                  <line x1="12" y1="6" x2="12" y2="2"/>
+                  <line x1="12" y1="22" x2="12" y2="18"/>
+                </svg>
+              </div>
+              <div class="kpi-data">
+                <span class="kpi-label">Detection Recall</span>
+                <span class="kpi-value" id="kpi-recall">0.962</span>
+                <span class="kpi-delta positive">
+                  <span class="arrow">↑</span> 3.2% <span class="delta-muted">vs. previous hour</span>
+                </span>
+              </div>
+            </div>
+
+            <!-- KPI 4: False Positive Rate -->
+            <div class="kpi-card">
+              <div class="kpi-icon-wrapper coral">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10"/>
+                  <polyline points="12 6 12 12 16 14"/>
+                </svg>
+              </div>
+              <div class="kpi-data">
+                <span class="kpi-label">False Positive Rate</span>
+                <span class="kpi-value" id="kpi-fpr">0.018</span>
+                <span class="kpi-delta positive">
+                  <span class="arrow">↓</span> 42.1% <span class="delta-muted">vs. previous hour</span>
+                </span>
+              </div>
+            </div>
+            
+          </section>
+
+          <!-- Middle Section: Threat Locations Map + Top Threat IPs -->
+          <section class="middle-grid">
+            
+            <!-- Map Card -->
+            <div class="panel-card map-panel">
+              <div class="panel-header">
+                <span class="header-bullet-dot red"></span>
+                <h2 class="panel-title">Threat Locations</h2>
+              </div>
+              <div class="map-wrapper">
+                <div id="threat-map"></div>
+              </div>
+            </div>
+
+            <!-- Top Threat IPs Card -->
+            <div class="panel-card top-threats-panel">
+              <div class="panel-header">
+                <h2 class="panel-title">Top Threat IPs</h2>
+              </div>
+              <div class="table-container">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>IP Address</th>
+                      <th>Location</th>
+                      <th class="text-right">Attacks</th>
+                    </tr>
+                  </thead>
+                  <tbody id="top-threats-tbody">
+                    <!-- Dynamic Rows -->
+                  </tbody>
+                </table>
+              </div>
+              <div class="panel-footer">
+                <a href="#threats" class="link-action">View all threats &rarr;</a>
+              </div>
+            </div>
+            
+          </section>
+
+          <!-- Bottom Section: Recent Detection Feed -->
+          <section class="feed-section">
+            <div class="panel-card feed-panel">
+              <div class="panel-header">
+                <h2 class="panel-title">Recent Detection Feed</h2>
+              </div>
+              <div class="table-container">
+                <table class="data-table feed-table">
+                  <thead>
+                    <tr>
+                      <th>Timestamp</th>
+                      <th>Source IP</th>
+                      <th>Destination IP</th>
+                      <th>Type</th>
+                      <th>Confidence</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody id="recent-feed-tbody">
+                    <!-- Dynamic Feed Rows -->
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+          
+        </div>
+
+        <!-- Right Insights Column -->
+        <aside class="insights-column">
+          
+          <!-- Card 1: Recall-Aware AFP -->
+          <div class="panel-card afp-control-card">
+            <div class="panel-header-inline">
+              <div class="header-inline-left">
+                <svg class="gear-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="3"/>
+                  <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                </svg>
+                <h2 class="panel-title">Recall-Aware AFP</h2>
+              </div>
+              <span class="badge-status-pill green" id="afp-header-badge">Active</span>
+            </div>
+            
+            <p class="panel-description">
+              Automatically adjusts perturbation intensity based on real-time recall and attack conditions.
+            </p>
+
+            <div class="afp-metrics-row">
+              
+              <!-- Circular Donut Gauge -->
+              <div class="gauge-wrapper">
+                <div class="circular-gauge">
+                  <svg viewBox="0 0 100 100" class="gauge-svg">
+                    <circle class="gauge-bg" cx="50" cy="50" r="42"/>
+                    <circle class="gauge-val" id="gauge-circle-bar" cx="50" cy="50" r="42"/>
+                  </svg>
+                  <div class="gauge-inner-text">
+                    <span class="gauge-number" id="gauge-recall-val">0.962</span>
+                    <span class="gauge-sub">Recall</span>
+                  </div>
+                </div>
+                <div class="gauge-badge-pill green" id="gauge-health-pill">Healthy</div>
+              </div>
+
+              <!-- Intensity & Bounds Details -->
+              <div class="afp-controls-details">
+                <div class="afp-intensity-box">
+                  <div class="intensity-label-row">
+                    <span class="param-label">AFP Intensity</span>
+                    <span class="param-value" id="afp-intensity-val">0.42</span>
+                  </div>
+                  <div class="intensity-bar-container">
+                    <div class="intensity-bar-fill" id="afp-bar-fill" style="width: 42%;"></div>
+                  </div>
+                  <div class="intensity-range-labels">
+                    <span>0.20</span>
+                    <span>0.80</span>
+                  </div>
+                </div>
+
+                <div class="bounds-and-thresholds-grid">
+                  <div class="sub-card">
+                    <span class="sub-card-title">Intensity Bounds</span>
+                    <div class="sub-card-row">
+                      <span class="sub-label">Min</span>
+                      <span class="sub-val">0.20</span>
+                    </div>
+                    <div class="sub-card-row">
+                      <span class="sub-label">Max</span>
+                      <span class="sub-val">0.80</span>
+                    </div>
+                  </div>
+
+                  <div class="sub-card">
+                    <span class="sub-card-title">Current Thresholds</span>
+                    <div class="sub-card-row">
+                      <span class="dot-icon orange"></span>
+                      <span class="sub-label">Warning</span>
+                      <span class="sub-val">0.85</span>
+                    </div>
+                    <div class="sub-card-row">
+                      <span class="dot-icon red"></span>
+                      <span class="sub-label">Critical</span>
+                      <span class="sub-val">0.95</span>
+                    </div>
+                  </div>
+                </div>
+
+              </div>
+
+            </div>
+
+          </div>
+
+          <!-- Card 2: Recall vs. AFP Intensity Chart -->
+          <div class="panel-card chart-card">
+            <div class="panel-header-inline">
+              <h2 class="panel-title">Recall vs. AFP Intensity</h2>
+              <div class="chart-legend">
+                <div class="legend-item">
+                  <span class="legend-line green"></span>
+                  <span>Recall</span>
+                </div>
+                <div class="legend-item">
+                  <span class="legend-line blue"></span>
+                  <span>AFP intensity</span>
+                </div>
+              </div>
+            </div>
+            
+            <div class="chart-canvas-container">
+              <canvas id="recallChart"></canvas>
+            </div>
+          </div>
+
+          <!-- Card 3: Recent Attacks -->
+          <div class="panel-card attacks-card">
+            <div class="panel-header-inline">
+              <h2 class="panel-title">Recent Attacks</h2>
+              <a href="#attacks" class="link-action">View all &rarr;</a>
+            </div>
+            <div class="table-container">
+              <table class="data-table attacks-table">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Source IP</th>
+                    <th>Location</th>
+                    <th>Type</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody id="recent-attacks-tbody">
+                  <!-- Dynamic Attack Rows -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+        </aside>
+
+      </main>
+
+    </div>
+
+  </div>
+
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <!-- App JS -->
+  <script src="/static/app.js"></script>
+</body>
+</html>
