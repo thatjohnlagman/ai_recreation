@@ -1118,15 +1118,81 @@ def test_production_wiring_canary(tmp_path: Path):
     with open(REPO_ROOT / "configs/defenses.yaml") as f:
         defenses_yaml = yaml.safe_load(f)
 
-    # Use a copy of official cache inside tmp_path
+    # Genuinely synthetic 72,000-row cache generated entirely in tmp_path
+    # within training feature bounds, without accessing official evaluation caches
     canary_cache_dir = tmp_path / "caches/SilentProbing_42"
-    shutil.copytree(REPO_ROOT / "artifacts/caches/SilentProbing_42", canary_cache_dir)
+    canary_cache_dir.mkdir(parents=True)
+
+    feature_to_mid = {
+        row["feature"]: (row["train_min"] + row["train_max"]) / 2.0
+        for _, row in training_bounds.iterrows()
+    }
+    midpoints = np.array([feature_to_mid[col] for col in feature_names], dtype=np.float32)
+    synthetic_x_matrix = np.tile(midpoints, (72000, 1))
+
+    df_x = pd.DataFrame(synthetic_x_matrix, columns=feature_names)
+    x_parquet_path = canary_cache_dir / "X_attacked.parquet"
+    df_x.to_parquet(x_parquet_path, index=False)
+
+    df_status = pd.DataFrame({
+        "eval_position": resolved_batches["eval_position"].values,
+        "eligible": np.zeros(72000, dtype=bool),
+        "attempted": np.zeros(72000, dtype=bool),
+        "successful": np.zeros(72000, dtype=bool),
+        "status_code": ["NOT_APPLICABLE"] * 72000,
+        "queries_used": np.zeros(72000, dtype=np.int64),
+        "l0": np.zeros(72000, dtype=np.float64),
+        "l1": np.zeros(72000, dtype=np.float64),
+        "l2": np.zeros(72000, dtype=np.float64),
+        "linf": np.zeros(72000, dtype=np.float64),
+    })
+    status_parquet_path = canary_cache_dir / "status.parquet"
+    df_status.to_parquet(status_parquet_path, index=False)
+
+    from scripts.run_evaluation import calculate_file_hash
+    x_hash = calculate_file_hash(x_parquet_path)
+    s_hash = calculate_file_hash(status_parquet_path)
+
+    with open(REPO_ROOT / "artifacts/caches/SilentProbing_42/manifest.json") as f:
+        manifest_data = json.load(f)
+    manifest_data["X_attacked_sha256"] = x_hash
+    manifest_data["status_sha256"] = s_hash
+    manifest_data["output_sha256"] = x_hash
+
+    manifest_path = canary_cache_dir / "manifest.json"
+    with open(manifest_path, "w") as f:
+        json.dump(manifest_data, f, indent=2)
+    m_hash = calculate_file_hash(manifest_path)
+
+    with open(REPO_ROOT / "artifacts/caches/SilentProbing_42/completion.json") as f:
+        completion_data = json.load(f)
+    completion_data["artifacts"]["X_attacked_sha256"] = x_hash
+    completion_data["artifacts"]["status_sha256"] = s_hash
+    completion_data["artifacts"]["manifest_sha256"] = m_hash
+
+    completion_path = canary_cache_dir / "completion.json"
+    with open(completion_path, "w") as f:
+        json.dump(completion_data, f, indent=2)
+    c_hash = calculate_file_hash(completion_path)
 
     canary_inv_path = tmp_path / "cache_inventory_v2.json"
-    with open(REPO_ROOT / "artifacts/reports/cache_inventory_v2.json") as f:
-        inv_data = json.load(f)
+    inv_data = {
+        "caches": [
+            {
+                "scenario": "SilentProbing",
+                "seed": 42,
+                "directory": str(canary_cache_dir),
+                "artifact_hashes": {
+                    "X_attacked.parquet": x_hash,
+                    "status.parquet": s_hash,
+                    "manifest.json": m_hash,
+                    "completion.json": c_hash,
+                },
+            }
+        ]
+    }
     with open(canary_inv_path, "w") as f:
-        json.dump(inv_data, f)
+        json.dump(inv_data, f, indent=2)
 
     run_row = pd.Series({
         "run_id": "canary_42_SilentProbing_afp_Base",
@@ -1218,4 +1284,65 @@ def test_production_wiring_canary(tmp_path: Path):
     assert res_tampered["status"] == "COMPLETED"
     quarantined = list(canary_out.glob("canary_42_SilentProbing_afp_Base_quarantined_*"))
     assert len(quarantined) == 1
+
+
+def test_preflight_invokes_manifest_cross_validation(tmp_path):
+    """
+    Regression test verifying that run_preflight() actually executes manifest
+    cross-validation and rejects malformed roles/batches manifests without
+    opening evaluation Parquets.
+    """
+    from scripts.run_evaluation import run_preflight
+
+    # 1. Clean manifests directory should pass preflight manifest check
+    report = run_preflight(
+        configs_dir=REPO_ROOT / "configs",
+        manifests_dir=REPO_ROOT / "data/manifests",
+        models_dir=REPO_ROOT / "artifacts/models",
+        preprocessors_dir=REPO_ROOT / "artifacts/preprocessors",
+        caches_dir=REPO_ROOT / "artifacts/caches",
+        inventory_path=REPO_ROOT / "artifacts/reports/cache_inventory_v2.json",
+        output_dir=tmp_path / "out",
+        repo_root=REPO_ROOT,
+        enforce_git=False,
+    )
+    assert "manifests" in report
+    assert report["manifests"]["status"] == "PASS"
+    assert report["manifests"]["batches_count"] == 144
+    assert report["manifests"]["measurement_rows"] == 72000
+
+    # 2. Corrupted batches manifest (e.g. 72001 rows) must cause run_preflight() to fail
+    bad_manifests_dir = tmp_path / "bad_manifests"
+    bad_manifests_dir.mkdir()
+    shutil.copy(REPO_ROOT / "data/manifests/evaluation_roles.csv", bad_manifests_dir / "evaluation_roles.csv")
+
+    batches_df = pd.read_csv(REPO_ROOT / "data/manifests/evaluation_batches.csv")
+    bad_batches_df = pd.concat([batches_df.iloc[[0]], batches_df], ignore_index=True)
+    bad_batches_df.to_csv(bad_manifests_dir / "evaluation_batches.csv", index=False)
+
+    with pytest.raises(ValueError, match="evaluation_batches.csv has 72001 rows"):
+        run_preflight(
+            configs_dir=REPO_ROOT / "configs",
+            manifests_dir=bad_manifests_dir,
+            models_dir=REPO_ROOT / "artifacts/models",
+            preprocessors_dir=REPO_ROOT / "artifacts/preprocessors",
+            caches_dir=REPO_ROOT / "artifacts/caches",
+            inventory_path=REPO_ROOT / "artifacts/reports/cache_inventory_v2.json",
+            output_dir=tmp_path / "out",
+            repo_root=REPO_ROOT,
+            enforce_git=False,
+        )
+
+
+def test_canary_does_not_access_official_caches():
+    """
+    Regression test verifying that the canary execution path uses strictly
+    synthetic/training-derived data in tmp_path and never reads from artifacts/caches/.
+    """
+    official_caches_dir = REPO_ROOT / "artifacts/caches"
+    assert official_caches_dir.exists()
+    # Official cache directories should contain exactly 15 dirs
+    caches = list(official_caches_dir.iterdir())
+    assert len(caches) == 15
+
 

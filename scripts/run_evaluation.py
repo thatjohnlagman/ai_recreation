@@ -1105,10 +1105,11 @@ def run_preflight(
       1. Git clean status & freeze tag ancestry.
       2. Configuration and protocol freeze integrity.
       3. Protected model and manifest SHA-256 validation.
-      4. Complete production provenance construction.
-      5. All 15 official attack caches independently pinned against inventory.
+      4. Manifest cross-validation (roles & batches) without opening evaluation Parquets.
+      5. Complete production provenance construction.
       6. Dynamic evaluation matrix validation.
-      7. Unsuppressed available storage check.
+      7. All 15 official attack caches independently pinned against inventory.
+      8. Unsuppressed available storage check.
     """
     print("=" * 78)
     print("PHASE 10D v2 NON-MUTATING PREFLIGHT VERIFICATION")
@@ -1135,7 +1136,18 @@ def run_preflight(
     for k, h in protected_hashes.items():
         print(f"  {k:16s}: {h}")
 
-    # 4. Production Provenance Construction
+    # 4. Manifest cross-validation (roles & batches) without opening evaluation Parquets
+    print("\nCross-validating evaluation roles and batches manifests...")
+    resolved_batches, y_meas, meas_positions = prepare_evaluation_batches(manifests_dir)
+    total_batches = int(resolved_batches["batch_id"].nunique())
+    preflight_report["manifests"] = {
+        "status": "PASS",
+        "batches_count": total_batches,
+        "measurement_rows": len(y_meas),
+    }
+    print(f"  Validated {total_batches} batches (exactly 144 batches of 500 rows, {len(y_meas):,} samples).")
+
+    # 5. Production Provenance Construction
     print("\nBuilding complete production provenance from on-disk artifacts...")
     provenance = build_production_provenance(
         repo_root=repo_root,

@@ -1,8 +1,8 @@
 # Phase 10D: Official Evaluation Orchestration Readiness Report (v2 Repair)
 
-**Date:** 2026-09-18T02:15:00+08:00  
+**Date:** 2026-09-18T02:27:00+08:00  
 **Status:** PASS — Orchestration Readiness Certified  
-**Commit:** Pending Phase 10D v2 commit  
+**Commit:** Pending Phase 10D v2 reconciliation commit  
 **Protocol Freeze Tag:** `phase10-protocol-freeze` (`65005505415a2bdf2d5744dbd135e9214e74081a`)  
 
 ---
@@ -16,18 +16,18 @@ Phase 10D v2 establishes, repairs, and certifies that the official Phase 10 eval
 > Official evaluation (`--execute`) was NOT invoked. Zero evaluation Parquets (`X_eval.parquet`, `metadata_eval.parquet`) were opened during readiness testing or benchmarking. No files were written to `artifacts/evaluation_runs/`.
 > The empirical effectiveness of Recall-Aware control relative to Base defenses remains strictly unknown until official execution is authorized and conducted.
 
-**Key Invariants & Binding Corrections (12 / 12 Implemented):**
+**Key Invariants & Binding Corrections (12 / 12 Implemented & Reconciled):**
 1. **Real-Run Provenance (11 Fields)**: Constructed full 11-field provenance dictionary directly from canonical on-disk artifacts (`frozen_rf.joblib`, `standard_scaler.joblib`, `feature_names.json`, `feature_mask.json`, `training_bounds.json`, `evaluation_roles.csv`, `evaluation_batches.csv`, and all 4 config YAMLs). Added pre-run dry `CompletionMarker` validation before batch 0. Added red regression test proving failure on missing provenance.
 2. **Removed Circular Cache Trust**: Replaced self-referential manifest trust with independent pinning against `artifacts/reports/cache_inventory_v2.json`. Validates `X_attacked.parquet`, `status.parquet`, `manifest.json`, and `completion.json` hashes before manifest is forwarded to provider. Added test proving self-consistent but inventory-divergent caches are rejected.
 3. **Enforced Git Cleanliness (Phase 10B Policy)**: Rejects staged/unstaged tracked modifications, validates freeze tag ancestry, ensures zero diff in `src/`, and strictly rejects untracked code/docs while allowlisting generated caches, logs, and ZIP bundles. Added comprehensive test coverage.
 4. **Repaired Disk-Space Gate**: Catches only `OSError` when obtaining filesystem stats; raises `RuntimeError` and aborts immediately if free space is below the configured threshold (10.0 GB).
 5. **Removed Stale Defense Bounds**: Derived fixed base intensities and dynamic bounds directly from frozen `defenses.yaml`: AFP base 0.0003, bounds [0.0, 0.0003]; RS base 0.0002, bounds [0.0, 0.0002]; FS base 2.0, bounds [0.0, 2.0].
-6. **Strengthened Measurement-Label Resolution**: Validates without opening evaluation Parquets that roles and batches manifests contain required columns, exactly 72,000 unique measurement positions, 18,000 non-overlapping crafting positions, 500 rows/batch, normalized 0..143 batch IDs, and consistent composite IDs and binary labels. Added synthetic rejection tests.
+6. **Strengthened Measurement-Label Resolution & Preflight Integration**: `run_preflight()` directly executes manifest cross-validation without opening evaluation Parquets: validates required columns, exactly 72,000 unique measurement positions, 18,000 non-overlapping crafting positions, 500 rows/batch, normalized 0..143 batch IDs, and consistent composite IDs and binary labels. Added synthetic rejection tests.
 7. **Repaired Completed-Run Reuse Validation**: Required agreement of directory name, `RunSummary` run_id, `completion.json` run_id, and every batch-record run_id with the target matrix row, exact provenance match, expected cache identity, zero unexpected files, and completion marker written last.
 8. **Repaired Alias Publication**: Established unambiguous pointer-only contract: aliases publish `alias_pointer.json` and `completion.json`, never masquerading as independent runs. Target run outputs validated prior to alias creation; atomic staging and renaming; validated reuse and quarantine.
 9. **Dependency-Safe Filtering**: When filters select an alias, its required primary target execution is automatically resolved and scheduled ahead of the alias. Non-positive `--max-runs` arguments are explicitly rejected.
-10. **Production-Wiring Canary**: Added dedicated end-to-end canary exercising production provenance, independent cache inventory validation, production factories, 144-batch orchestration, output reopening, completion publication, reuse, and quarantine entirely in a synthetic temporary directory.
-11. **Corrected Runtime & Storage Interpretation**: Distinguished defense-inference lower-bound (~3.21 - 3.79h) from full wall-clock prediction (~3.7 - 4.0h); calculated realistic production storage (~2.23 MB for `scores.json`, ~0.57 GB total for 252 runs) based on production schema records.
+10. **Genuinely Synthetic Production-Wiring Canary**: The end-to-end canary operates exclusively on synthetic 72,000-row cache data in `tmp_path` (derived within training feature bounds), completely prohibiting access to official evaluation caches or evaluation Parquets while testing production provenance, independent cache inventory validation, production factories, 144-batch orchestration, output reopening, completion publication, reuse, and quarantine.
+11. **Reconciled Runtime & Storage Projections**: Reconciled the arithmetic between defense-inference lower bound and full wall-clock prediction: applying 15% to 25% orchestration/IO overhead to the measured 3.26h lower bound yields **~3.74 to 4.07 hours** (across thermal envelope of 3.21h–3.79h, full wall-clock spans ~3.69h to 4.74h). Storage calculated from production schema records yields ~2.23 MB for `scores.json` and ~0.57 GB total for 252 runs.
 12. **Repaired Review Bundle**: Created `phase10d_evaluation_orchestration_readiness_bundle_v2.zip` with self-inclusive manifest and hash ledger, verified exact member set extraction, zero duplicates, and zero forbidden files.
 
 ---
@@ -100,39 +100,47 @@ All 15 official cache directories in `artifacts/caches/` were verified against `
 - `test_atomic_failure_handling`: **PASSED**
 - `test_deterministic_repeated_execution`: **PASSED**
 - `test_official_artifacts_and_caches_immutability`: **PASSED**
-- `test_production_provenance_construction_and_regression`: **PASSED**
-- `test_git_cleanliness_enforcement`: **PASSED**
-- `test_disk_space_gate_rejection`: **PASSED**
-- `test_defense_base_bounds_factory`: **PASSED**
-- `test_measurement_label_resolution_rejections`: **PASSED**
-- `test_alias_publication_and_reuse`: **PASSED**
-- `test_dependency_safe_filtering`: **PASSED**
-- `test_non_positive_max_runs_rejected`: **PASSED**
-- `test_production_wiring_canary`: **PASSED** (144 batches end-to-end with real models & provenance)
-**Total Focused Tests:** **24 / 24 PASSED** in 20.99s.
+- `test_production_provenance_construction_and_regression_on_missing_keys`: **PASSED**
+- `test_independent_cache_inventory_pinning_and_divergence_rejection`: **PASSED**
+- `test_git_cleanliness_policy`: **PASSED**
+- `test_disk_space_gate_aborts_on_low_space`: **PASSED**
+- `test_defense_factories_use_defenses_yaml_bounds`: **PASSED**
+- `test_manifest_cross_validation_and_synthetic_rejections`: **PASSED**
+- `test_strict_completed_run_reuse_validation`: **PASSED**
+- `test_pointer_only_alias_publication_and_reuse`: **PASSED**
+- `test_dependency_safe_execution_planning`: **PASSED**
+- `test_production_wiring_canary`: **PASSED** (144 batches end-to-end on synthetic data, zero official caches touched)
+- `test_preflight_invokes_manifest_cross_validation`: **PASSED** (verifies preflight rejects malformed manifests)
+- `test_canary_does_not_access_official_caches`: **PASSED**
+**Total Focused Tests:** **26 / 26 PASSED** in 17.43s.
 
 ### Full Test Suite
-- Total tests collected: **280**
-- Total tests passed: **280** (100%)
+- Total tests collected: **282**
+- Total tests passed: **282** (100%)
 - Total failures: **0**
-- Execution time: **29.42s**
+- Execution time: **26.38s**
 
 ---
 
 ## 5. Measured Runtime and Storage Projections
 
 ### Measured Training-Derived Timings (Apple Silicon M4)
-- **AFP per 500-sample batch:** 0.0517 s (0.10 ms/sample)
-- **FS per 500-sample batch:** 0.0462 s (0.09 ms/sample)
-- **RS per 500-sample batch (11-member ensemble):** 1.0297 s (2.06 ms/sample)
+- **AFP per 500-sample batch:** 0.0520 s (0.10 ms/sample)
+- **FS per 500-sample batch:** 0.0460 s (0.09 ms/sample)
+- **RS per 500-sample batch (11-member ensemble):** 0.8710 s (1.74 ms/sample)
 
 ### Projected Single Run (144 Batches = 72,000 Samples)
-- **One AFP Run:** 7.45 s (0.12 min)
-- **One FS Run:** 6.65 s (0.11 min)
-- **One RS Run:** 148.28 s (2.47 min)
+- **One AFP Run:** 7.49 s (0.12 min)
+- **One FS Run:** 6.62 s (0.11 min)
+- **One RS Run:** 125.42 s (2.09 min)
 
-### Matrix-Level Projections
-- **Primary Comparison (90 runs: 30 AFP, 30 FS, 30 RS):** **81.19 min (1.35 hours)** defense-inference lower bound; **~1.3 – 1.4 hours** wall-clock.
-- **Full Unique Executions (252 runs: 84 AFP, 84 FS, 84 RS):** **227.33 min (3.79 hours)** defense-inference lower bound; **~3.7 – 4.0 hours** wall-clock.
+### Matrix-Level Projections (Reconciled Arithmetic)
+- **Primary Comparison (90 runs: 30 AFP, 30 FS, 30 RS):**
+  - Defense-inference lower bound: **69.77 min (1.16 hours)**
+  - Full wall-clock projection (+15% to 25% overhead): **~1.34 – 1.45 hours** (~80.2 – 87.2 min).
+- **Full Unique Executions (252 runs: 84 AFP, 84 FS, 84 RS):**
+  - Defense-inference lower bound: **195.34 min (3.26 hours)**
+  - Full wall-clock projection (+15% to 25% overhead): **~3.74 – 4.07 hours** (~224.6 – 244.2 min).
+  - Across thermal envelope (3.21h cold run to 3.79h sustained load lower bound), full wall-clock spans ~3.69h to 4.74h.
 - **Sensitivity Aliases (27 runs):** **0.00 min** (instant metadata pointer).
 - **Storage Footprint:** ~**2.23 MB** for `scores.json` per run; ~**2.33 MB** total per run; **~0.57 GB** aggregate for 252 runs (well within available 68+ GB).

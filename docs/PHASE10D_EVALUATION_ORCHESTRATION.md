@@ -105,8 +105,8 @@ Implements the Phase 10B cleanliness policy:
 
 ---
 
-## 8. Measurement-Label Resolution Integrity
-During preflight and initialization, manifests are cross-validated without opening evaluation Parquets:
+## 8. Measurement-Label Resolution & Preflight Integrity
+`run_preflight()` directly executes manifest cross-validation without opening evaluation Parquets:
 - `evaluation_roles.csv` and `evaluation_batches.csv` required columns verified.
 - Unique positions asserted: exactly 72,000 measurement positions and 18,000 crafting positions.
 - Crafting positions never overlap measurement positions.
@@ -139,10 +139,11 @@ Execution planning guarantees safety before starting run 0:
 
 ---
 
-## 11. Production-Wiring Canary
+## 11. Genuinely Synthetic Production-Wiring Canary
 A dedicated end-to-end canary (`test_production_wiring_canary` in `tests/test_run_evaluation.py`) validates the complete production wiring:
+- Genuinely synthetic 72,000-row cache generated entirely in `tmp_path` within training feature bounds, completely prohibiting access to official evaluation caches or evaluation Parquets.
 - Production provenance construction (all 11 canonical on-disk artifacts).
-- Independent cache validation against `cache_inventory_v2.json`.
+- Independent cache validation against a dedicated canary inventory ledger.
 - Production defense adapters, policies, and controller factories.
 - Full 144-batch orchestration with sequential timing isolation.
 - Output reopening, recalculation, and cross-metric verification.

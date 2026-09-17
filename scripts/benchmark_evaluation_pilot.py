@@ -217,6 +217,14 @@ def main():
     print(f"  Total per run:                                   {total_mb_per_run:.2f} MB")
     print(f"  Total for 252 unique runs:                       {total_storage_252_gb:.2f} GB")
 
+    primary_lower_h = primary_total_sec / 3600
+    primary_wall_low = primary_lower_h * 1.15
+    primary_wall_high = primary_lower_h * 1.25
+
+    matrix_lower_h = full_252_total_sec / 3600
+    matrix_wall_low = matrix_lower_h * 1.15
+    matrix_wall_high = matrix_lower_h * 1.25
+
     # Generate Markdown Report
     report_path = args.output
     report_content = f"""# Phase 10D Evaluation Runtime and Storage Estimates
@@ -242,23 +250,28 @@ Zero evaluation Parquets (`X_eval.parquet`, `metadata_eval.parquet`) or official
 
 Attack caching is **100% precomputed** in the 15 official attack caches (`artifacts/caches/`). During evaluation, batch data is loaded directly from pre-validated Parquet files into memory, eliminating attack generation overhead.
 
-| Scope | AFP Component | FS Component | RS Component | Defense-Inference Lower Bound | Full Wall-Clock Projection |
+| Scope | AFP Component | FS Component | RS Component | Defense-Inference Lower Bound | Full Wall-Clock Projection (+15% to 25% overhead) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Single Run (1 execution)** | {afp_run_sec:.2f} s ({afp_run_sec/60:.2f} min) | {fs_run_sec:.2f} s ({fs_run_sec/60:.2f} min) | {rs_run_sec:.2f} s ({rs_run_sec/60:.2f} min) | — | — |
-| **Primary Comparison (90 references)** | 30 runs: {30*afp_run_sec/60:.2f} min | 30 runs: {30*fs_run_sec/60:.2f} min | 30 runs: {30*rs_run_sec/60:.2f} min | **{primary_total_sec/60:.2f} min ({primary_total_sec/3600:.2f} h)** | **~1.3 – 1.4 h** |
-| **Full Evaluation Matrix (252 unique runs)** | 84 runs: {84*afp_run_sec/60:.2f} min | 84 runs: {84*fs_run_sec/60:.2f} min | 84 runs: {84*rs_run_sec/60:.2f} min | **{full_252_total_sec/60:.2f} min ({full_252_total_sec/3600:.2f} h)** | **~3.7 – 4.0 h** |
+| **Primary Comparison (90 references)** | 30 runs: {30*afp_run_sec/60:.2f} min | 30 runs: {30*fs_run_sec/60:.2f} min | 30 runs: {30*rs_run_sec/60:.2f} min | **{primary_total_sec/60:.2f} min ({primary_lower_h:.2f} h)** | **~{primary_wall_low:.2f} – {primary_wall_high:.2f} h** (~{primary_wall_low*60:.1f} – {primary_wall_high*60:.1f} min) |
+| **Full Evaluation Matrix (252 unique runs)** | 84 runs: {84*afp_run_sec/60:.2f} min | 84 runs: {84*fs_run_sec/60:.2f} min | 84 runs: {84*rs_run_sec/60:.2f} min | **{full_252_total_sec/60:.2f} min ({matrix_lower_h:.2f} h)** | **~{matrix_wall_low:.2f} – {matrix_wall_high:.2f} h** (~{matrix_wall_low*60:.1f} – {matrix_wall_high*60:.1f} min) |
 | **C1 Sensitivity Aliases (27 references)** | Instant | Instant | Instant | **0.00 min** (metadata pointer) | **< 1 s** |
 
 > [!IMPORTANT]
 > **Defense-Inference Lower Bound vs Full Wall-Clock Prediction**:
-> The **{full_252_total_sec/3600:.2f}-hour figure** (reconciling the 3.21h–3.30h range observed under varying CPU thermal/load conditions) represents a **defense-inference lower bound only**.
+> The **{matrix_lower_h:.2f}-hour figure** represents a **defense-inference lower bound only**.
 > It strictly isolates CPU/RAM matrix defense inference. It excludes:
 > - Parquet attack-cache loading and deserialization;
 > - JSON serialization for `scores.json`, `confusion.json`, and `config.json`;
 > - Global metric recalculation (PR-AUC, Balanced Accuracy, Macro F1 across 72,000 samples);
 > - Output reopening, re-parsing, and cross-metric validation (`_validate_run_outputs()`);
 > - Directory staging, atomic renames, and filesystem metadata operations.
-> Accounting for an estimated 15% to 25% orchestration and I/O overhead, the true end-to-end wall-clock execution time is realistically estimated at **~3.7 to 4.0 hours**.
+>
+> Accounting for an estimated 15% to 25% orchestration and I/O overhead:
+> - **Primary Comparison (90 runs)**: {primary_lower_h:.2f}h lower bound $\\times$ [1.15, 1.25] = **~{primary_wall_low:.2f} to {primary_wall_high:.2f} hours** (~{primary_wall_low*60:.1f} to {primary_wall_high*60:.1f} min).
+> - **Full Evaluation Matrix (252 unique runs)**: {matrix_lower_h:.2f}h lower bound $\\times$ [1.15, 1.25] = **~{matrix_wall_low:.2f} to {matrix_wall_high:.2f} hours** (~{matrix_wall_low*60:.1f} to {matrix_wall_high*60:.1f} min).
+>
+> Note: Across varying CPU thermal/load conditions on this host, the defense-inference lower bound ranges from 3.21h (cold run) to 3.79h (sustained load). Applying 15%–25% overhead to the full envelope yields an overall expected wall-clock range of ~3.69h (3.21h $\\times$ 1.15) to ~4.74h (3.79h $\\times$ 1.25). For the authoritative sustained-load lower bound ({matrix_lower_h:.2f}h), the projected wall-clock execution time is **~{matrix_wall_low:.2f} to {matrix_wall_high:.2f} hours**.
 
 > [!NOTE]
 > **Dominant Defense**: Randomized Smoothing (RS) performs 11 Random Forest inference passes per sample and accounts for approximately **{rs_run_sec/(afp_run_sec + fs_run_sec + rs_run_sec)*100:.1f}%** of total execution time.
