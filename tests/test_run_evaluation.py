@@ -31,9 +31,11 @@ import dataclasses
 import hashlib
 import json
 import math
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List
 
+import joblib
 import numpy as np
 import pandas as pd
 import pytest
@@ -374,7 +376,7 @@ def test_completed_run_reuse(tmp_path: Path):
     run_dir.mkdir()
     valid, err = validate_completed_run(run_dir)
     assert not valid
-    assert "Missing completion.json" in err
+    assert "Missing required files" in err or "completion.json" in err
 
 
 # ---------------------------------------------------------------------------
@@ -635,3 +637,585 @@ def test_official_artifacts_and_caches_immutability():
         for fname, exp_hash in c["artifact_hashes"].items():
             actual = calculate_file_hash(cdir / fname)
             assert actual == exp_hash, f"Cache file {cdir / fname} altered! Expected {exp_hash}, got {actual}"
+
+
+# ---------------------------------------------------------------------------
+# Test 15: Production Provenance Construction & Regression on Missing Keys
+# ---------------------------------------------------------------------------
+def test_production_provenance_construction_and_regression_on_missing_keys():
+    from scripts.run_evaluation import build_production_provenance
+    from recall_aware_ids.experiment.schemas import CompletionMarker, _REQUIRED_PROVENANCE_KEYS
+
+    # Exercise actual production provenance construction path
+    prov = build_production_provenance(repo_root=REPO_ROOT)
+    assert set(prov.keys()) == _REQUIRED_PROVENANCE_KEYS
+    for k, v in prov.items():
+        assert len(v) == 64 and all(c in "0123456789abcdef" for c in v)
+
+    # Validate against actual official cache manifest
+    manifest_path = REPO_ROOT / "artifacts/caches/SilentProbing_42/manifest.json"
+    with open(manifest_path) as f:
+        cache_manifest = json.load(f)
+    for k in (
+        "frozen_rf_hash", "scaler_hash", "feature_names_hash", "feature_mask_hash",
+        "training_bounds_hash", "evaluation_roles_hash", "evaluation_batches_hash",
+        "attacks_yaml_hash", "controllers_yaml_hash", "defenses_yaml_hash", "experiment_yaml_hash"
+    ):
+        assert prov[k] == cache_manifest[k], f"Mismatch for {k} vs cache manifest"
+
+    # RED REGRESSION TEST: Prove old 7-key wiring raises due to missing provenance
+    old_wiring_prov = {
+        "frozen_rf_hash": prov["frozen_rf_hash"],
+        "evaluation_roles_hash": prov["evaluation_roles_hash"],
+        "evaluation_batches_hash": prov["evaluation_batches_hash"],
+        "attacks_yaml_hash": prov["attacks_yaml_hash"],
+        "defenses_yaml_hash": prov["defenses_yaml_hash"],
+        "controllers_yaml_hash": prov["controllers_yaml_hash"],
+        "experiment_yaml_hash": prov["experiment_yaml_hash"],
+    }
+    with pytest.raises(ValueError, match="provenance_hashes missing required keys"):
+        CompletionMarker(
+            run_id="test_run",
+            timestamp="2026-09-18T00:00:00Z",
+            provenance_hashes=old_wiring_prov,
+        )
+
+    # GREEN TEST: Prove full 11-key production provenance validates successfully
+    prov_with_cache = dict(prov)
+    prov_with_cache["cache_manifest_hash"] = hashlib.sha256(b"cache").hexdigest()
+    marker = CompletionMarker(
+        run_id="test_run",
+        timestamp="2026-09-18T00:00:00Z",
+        provenance_hashes=prov_with_cache,
+    )
+    assert marker.run_id == "test_run"
+
+
+# ---------------------------------------------------------------------------
+# Test 16: Independent Cache Inventory Pinning & Divergence Rejection
+# ---------------------------------------------------------------------------
+def test_independent_cache_inventory_pinning_and_divergence_rejection(tmp_path: Path):
+    from scripts.run_evaluation import validate_cache_against_inventory, build_production_provenance
+
+    prov = build_production_provenance(repo_root=REPO_ROOT)
+    inv_path = REPO_ROOT / "artifacts/reports/cache_inventory_v2.json"
+    cache_dir = REPO_ROOT / "artifacts/caches/SilentProbing_42"
+
+    # Valid cache matches inventory
+    manifest = validate_cache_against_inventory(
+        cache_dir=cache_dir,
+        scenario="SilentProbing",
+        seed=42,
+        inventory_path=inv_path,
+        expected_provenance=prov,
+    )
+    assert manifest["attack_scenario"] == "SilentProbing"
+    assert manifest["effective_seed"] == 42
+
+    # Divergence 1: Missing / altered scenario in inventory
+    with pytest.raises(ValueError, match="not found in independent inventory"):
+        validate_cache_against_inventory(
+            cache_dir=cache_dir,
+            scenario="SilentProbing",
+            seed=999,
+            inventory_path=inv_path,
+            expected_provenance=prov,
+        )
+
+    # Divergence 2: Self-consistent but altered parquet vs inventory
+    tmp_cache = tmp_path / "SilentProbing_42"
+    shutil.copytree(cache_dir, tmp_cache)
+    with open(tmp_cache / "X_attacked.parquet", "ab") as f:
+        f.write(b"\x00")
+
+    with pytest.raises(ValueError, match="SHA-256 mismatch vs independent inventory"):
+        validate_cache_against_inventory(
+            cache_dir=tmp_cache,
+            scenario="SilentProbing",
+            seed=42,
+            inventory_path=inv_path,
+            expected_provenance=prov,
+        )
+
+    # Divergence 3: Self-consistent altered manifest.json vs inventory
+    tmp_cache2 = tmp_path / "SilentProbing_42_tampered_manifest"
+    shutil.copytree(cache_dir, tmp_cache2)
+    with open(tmp_cache2 / "manifest.json", "r") as f:
+        m_data = json.load(f)
+    m_data["notes"] = "tampered"
+    with open(tmp_cache2 / "manifest.json", "w") as f:
+        json.dump(m_data, f)
+
+    with pytest.raises(ValueError, match="manifest.json SHA-256 mismatch vs independent inventory"):
+        validate_cache_against_inventory(
+            cache_dir=tmp_cache2,
+            scenario="SilentProbing",
+            seed=42,
+            inventory_path=inv_path,
+            expected_provenance=prov,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 17: Git Cleanliness Policy Cases
+# ---------------------------------------------------------------------------
+def test_git_cleanliness_policy(monkeypatch):
+    from scripts.run_evaluation import check_git_cleanliness
+
+    def set_mock_git(status_output: str):
+        def mock_check_output(cmd, **kwargs):
+            if "status" in cmd:
+                return status_output
+            if "diff" in cmd:
+                return ""
+            if "rev-parse" in cmd:
+                return "b5a615ec571f1f522da3c2c7af450c8dae949ddc"
+            return ""
+        monkeypatch.setattr("subprocess.check_output", mock_check_output)
+        monkeypatch.setattr("subprocess.check_call", lambda *args, **kwargs: 0)
+
+    # Case 1: Unstaged tracked modification
+    set_mock_git(" M scripts/run_evaluation.py\n")
+    with pytest.raises(RuntimeError, match="tracked files are modified: \\[' M:scripts/run_evaluation.py'\\]"):
+        check_git_cleanliness(repo_root=REPO_ROOT, enforce_git=True)
+
+    # Case 2: Staged tracked modification
+    set_mock_git("M  scripts/run_evaluation.py\n")
+    with pytest.raises(RuntimeError, match="tracked files are modified: \\['M :scripts/run_evaluation.py'\\]"):
+        check_git_cleanliness(repo_root=REPO_ROOT, enforce_git=True)
+
+    # Case 3: Combined staged & unstaged modification
+    set_mock_git("MM scripts/run_evaluation.py\n")
+    with pytest.raises(RuntimeError, match="tracked files are modified: \\['MM:scripts/run_evaluation.py'\\]"):
+        check_git_cleanliness(repo_root=REPO_ROOT, enforce_git=True)
+
+    # Case 4: Tracked deleted file
+    set_mock_git(" D scripts/old_script.py\n")
+    with pytest.raises(RuntimeError, match="tracked files are modified: \\[' D:scripts/old_script.py'\\]"):
+        check_git_cleanliness(repo_root=REPO_ROOT, enforce_git=True)
+
+    # Case 5: Tracked renamed file
+    set_mock_git("R  scripts/old.py -> scripts/new.py\n")
+    with pytest.raises(RuntimeError, match="tracked files are modified"):
+        check_git_cleanliness(repo_root=REPO_ROOT, enforce_git=True)
+
+    # Case 6: Untracked code/doc file
+    set_mock_git("?? scripts/untracked.py\n")
+    with pytest.raises(RuntimeError, match="untracked forbidden files detected: \\['scripts/untracked.py'\\]"):
+        check_git_cleanliness(repo_root=REPO_ROOT, enforce_git=True)
+
+    # Case 7: Allowlisted untracked artifacts pass cleanly
+    set_mock_git("?? artifacts/caches/SilentProbing_42/\n?? phase10_bundle.zip\n?? test.log\n")
+    res = check_git_cleanliness(repo_root=REPO_ROOT, enforce_git=True)
+    assert res["clean"] is True
+    assert res["allowed_untracked_count"] == 3
+
+
+# ---------------------------------------------------------------------------
+# Test 18: Disk Space Gate Aborts on Low Free Space
+# ---------------------------------------------------------------------------
+def test_disk_space_gate_aborts_on_low_space(monkeypatch):
+    from scripts.run_evaluation import check_disk_space
+
+    # Normal free space check returns positive float
+    free_gb = check_disk_space(repo_root=REPO_ROOT, min_gb=1.0)
+    assert free_gb > 1.0
+
+    # Low space aborts with RuntimeError (never swallowed)
+    with pytest.raises(RuntimeError, match="Insufficient disk space"):
+        check_disk_space(repo_root=REPO_ROOT, min_gb=10000.0)
+
+    # OSError on obtaining disk statistics is converted to RuntimeError
+    def mock_disk_usage_error(*args, **kwargs):
+        raise OSError("I/O error reading filesystem statistics")
+    monkeypatch.setattr("shutil.disk_usage", mock_disk_usage_error)
+
+    with pytest.raises(RuntimeError, match="Failed to obtain filesystem disk usage"):
+        check_disk_space(repo_root=REPO_ROOT, min_gb=10.0)
+
+
+# ---------------------------------------------------------------------------
+# Test 19: Defense Factories Use defenses.yaml Bounds
+# ---------------------------------------------------------------------------
+def test_defense_factories_use_defenses_yaml_bounds():
+    from scripts.run_evaluation import create_policy_controller
+
+    with open(REPO_ROOT / "configs/controllers.yaml") as f:
+        controllers_yaml = yaml.safe_load(f)
+    with open(REPO_ROOT / "configs/defenses.yaml") as f:
+        defenses_yaml = yaml.safe_load(f)
+
+    # AFP: base 0.0003, bounds [0.0, 0.0003]
+    p_afp = create_policy_controller("Base", "afp", controllers_yaml, defenses_yaml)
+    assert p_afp.fixed_intensity == 0.0003
+    assert p_afp.intensity_min == 0.0
+    assert p_afp.intensity_max == 0.0003
+
+    # RS: base 0.0002, bounds [0.0, 0.0002]
+    p_rs = create_policy_controller("Base", "randomized_smoothing", controllers_yaml, defenses_yaml)
+    assert p_rs.fixed_intensity == 0.0002
+    assert p_rs.intensity_min == 0.0
+    assert p_rs.intensity_max == 0.0002
+
+    # FS: base 2.0, bounds [0.0, 2.0]
+    p_fs = create_policy_controller("Base", "feature_squeezing", controllers_yaml, defenses_yaml)
+    assert p_fs.fixed_intensity == 2.0
+    assert p_fs.intensity_min == 0.0
+    assert p_fs.intensity_max == 2.0
+
+
+# ---------------------------------------------------------------------------
+# Test 20: Manifest Cross-Validation & Synthetic Rejections
+# ---------------------------------------------------------------------------
+def test_manifest_cross_validation_and_synthetic_rejections(tmp_path: Path):
+    from scripts.run_evaluation import prepare_evaluation_batches
+
+    # 1. Real manifests pass
+    resolved_batches, y_meas, hashes = prepare_evaluation_batches(REPO_ROOT / "data/manifests")
+    assert len(resolved_batches) == 72000
+    assert len(y_meas) == 72000
+    assert set(resolved_batches["batch_id"]) == set(range(144))
+
+    # 2. Synthetic rejection tests
+    roles = pd.read_csv(REPO_ROOT / "data/manifests/evaluation_roles.csv")
+    batches = pd.read_csv(REPO_ROOT / "data/manifests/evaluation_batches.csv")
+
+    # Mismatched row count (incomplete positions)
+    b_missing = batches.head(71999)
+    b_missing.to_csv(tmp_path / "evaluation_batches.csv", index=False)
+    roles.to_csv(tmp_path / "evaluation_roles.csv", index=False)
+    with pytest.raises(ValueError, match="expected 72000"):
+        prepare_evaluation_batches(tmp_path)
+
+    # Duplicate eval_position
+    b_dup = batches.copy()
+    b_dup.loc[1, "eval_position"] = b_dup.loc[0, "eval_position"]
+    b_dup.to_csv(tmp_path / "evaluation_batches.csv", index=False)
+    with pytest.raises(ValueError, match="Duplicate eval_position"):
+        prepare_evaluation_batches(tmp_path)
+
+    # Crafting role appearing in batches
+    craft_pos = roles[roles["role"] == "crafting"].iloc[0]["eval_position"]
+    b_craft = batches.copy()
+    b_craft.loc[0, "eval_position"] = craft_pos
+    b_craft.to_csv(tmp_path / "evaluation_batches.csv", index=False)
+    with pytest.raises(ValueError, match="positions do not exactly match measurement role positions"):
+        prepare_evaluation_batches(tmp_path)
+
+    # Mislabeled role count
+    r_bad_count = roles.copy()
+    r_bad_count.loc[0, "role"] = "crafting"
+    r_bad_count.to_csv(tmp_path / "evaluation_roles.csv", index=False)
+    batches.to_csv(tmp_path / "evaluation_batches.csv", index=False)
+    with pytest.raises(ValueError, match="Expected 18000 crafting roles"):
+        prepare_evaluation_batches(tmp_path)
+
+    # Non-binary y_binary
+    r_bad_y = roles.copy()
+    r_bad_y.loc[0, "y_binary"] = 2
+    r_bad_y.to_csv(tmp_path / "evaluation_roles.csv", index=False)
+    with pytest.raises(ValueError, match="y_binary contains non-binary values"):
+        prepare_evaluation_batches(tmp_path)
+
+    # Composite identity mismatch
+    r_bad_cid = roles.copy()
+    r_bad_cid.loc[0, "_raw_row_idx"] = 9999999
+    r_bad_cid.to_csv(tmp_path / "evaluation_roles.csv", index=False)
+    with pytest.raises(ValueError, match="_raw_row_idx disagrees"):
+        prepare_evaluation_batches(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Test 21: Strict Completed-Run Reuse Validation
+# ---------------------------------------------------------------------------
+def test_strict_completed_run_reuse_validation(tmp_path: Path):
+    from scripts.run_evaluation import validate_completed_run
+    from recall_aware_ids.experiment.runner import ExperimentRunner, LabelProvider
+    from recall_aware_ids.experiment.policies import FixedIntensityPolicy
+    import time
+
+    run_id = "primary_42_SilentProbing_afp_Base"
+    batches = make_synthetic_batches()
+    lp = LabelProvider(y_measurement=np.zeros(72000, dtype=int))
+    cache = SyntheticCacheProvider()
+    adapter = MockDefenseModelAdapter()
+    policy = FixedIntensityPolicy("Base", 0.0003, 0.0, 0.005)
+
+    runner = ExperimentRunner(
+        resolved_batches=batches,
+        label_provider=lp,
+        attack_cache=cache,
+        defense_adapter=adapter,
+        policy_controller=policy,
+        output_dir=tmp_path,
+        run_id=run_id,
+        seed=42,
+        attack_scenario="SilentProbing",
+        defense_name="afp",
+        config_id="Base",
+        provenance_hashes=VALID_PROVENANCE,
+    )
+    runner.execute_run()
+
+    run_dir = tmp_path / run_id
+    row = pd.Series({
+        "run_id": run_id, "seed": 42,
+        "attack_scenario": "SilentProbing", "defense_name": "afp", "controller_config_id": "Base"
+    })
+    is_valid, err = validate_completed_run(run_dir, expected_row=row, expected_provenance=VALID_PROVENANCE)
+    assert is_valid, f"Expected valid, got: {err}"
+
+    # Rejection on seed mismatch
+    bad_row = pd.Series({
+        "run_id": run_id, "seed": 43,
+        "attack_scenario": "SilentProbing", "defense_name": "afp", "controller_config_id": "Base"
+    })
+    is_valid, err = validate_completed_run(run_dir, expected_row=bad_row, expected_provenance=VALID_PROVENANCE)
+    assert not is_valid and "Seed mismatch" in err
+
+    # Rejection on defense mismatch
+    bad_row2 = pd.Series({
+        "run_id": run_id, "seed": 42,
+        "attack_scenario": "SilentProbing", "defense_name": "randomized_smoothing", "controller_config_id": "Base"
+    })
+    is_valid, err = validate_completed_run(run_dir, expected_row=bad_row2, expected_provenance=VALID_PROVENANCE)
+    assert not is_valid and "Defense mismatch" in err
+
+    # Rejection on unexpected file
+    (run_dir / "unexpected.log").write_text("extra")
+    is_valid, err = validate_completed_run(run_dir, expected_row=row, expected_provenance=VALID_PROVENANCE)
+    assert not is_valid and "Unexpected files" in err
+    (run_dir / "unexpected.log").unlink()
+
+    # Rejection on file modified after completion.json
+    time.sleep(0.15)
+    (run_dir / "scores.json").touch()
+    is_valid, err = validate_completed_run(run_dir, expected_row=row, expected_provenance=VALID_PROVENANCE)
+    assert not is_valid and "scores.json was modified after completion.json" in err
+
+
+# ---------------------------------------------------------------------------
+# Test 22: Pointer-Only Alias Publication and Reuse
+# ---------------------------------------------------------------------------
+def test_pointer_only_alias_publication_and_reuse(tmp_path: Path):
+    from scripts.run_evaluation import publish_alias, validate_completed_alias
+    from recall_aware_ids.experiment.runner import ExperimentRunner, LabelProvider
+    from recall_aware_ids.experiment.policies import FixedIntensityPolicy
+
+    target_id = "primary_42_SilentProbing_afp_C1"
+    batches = make_synthetic_batches()
+    lp = LabelProvider(y_measurement=np.zeros(72000, dtype=int))
+    cache = SyntheticCacheProvider()
+    adapter = MockDefenseModelAdapter()
+    policy = FixedIntensityPolicy("C1", 0.0003, 0.0, 0.005)
+
+    runner = ExperimentRunner(
+        resolved_batches=batches,
+        label_provider=lp,
+        attack_cache=cache,
+        defense_adapter=adapter,
+        policy_controller=policy,
+        output_dir=tmp_path,
+        run_id=target_id,
+        seed=42,
+        attack_scenario="SilentProbing",
+        defense_name="afp",
+        config_id="C1",
+        provenance_hashes=VALID_PROVENANCE,
+    )
+    runner.execute_run()
+
+    alias_id = "sensitivity_42_SilentProbing_afp_C1"
+    alias_row = pd.Series({
+        "run_id": alias_id,
+        "alias_for_run_id": target_id,
+        "seed": 42,
+        "attack_scenario": "SilentProbing",
+        "defense_name": "afp",
+        "controller_config_id": "C1",
+        "is_alias": True,
+    })
+
+    res = publish_alias(alias_row, output_dir=tmp_path, expected_provenance=VALID_PROVENANCE)
+    assert res["status"] == "PUBLISHED_ALIAS"
+
+    alias_dir = tmp_path / alias_id
+    assert alias_dir.exists()
+    assert set(p.name for p in alias_dir.iterdir()) == {"alias_pointer.json", "completion.json"}
+
+    # Valid reuse returns REUSED_ALIAS
+    res2 = publish_alias(alias_row, output_dir=tmp_path, expected_provenance=VALID_PROVENANCE)
+    assert res2["status"] == "REUSED_ALIAS"
+
+    # Mismatched tuple rejection
+    bad_alias_row = alias_row.copy()
+    bad_alias_row["seed"] = 43
+    with pytest.raises(ValueError, match="Alias tuple seed mismatch"):
+        publish_alias(bad_alias_row, output_dir=tmp_path, expected_provenance=VALID_PROVENANCE)
+
+    # Corrupt alias quarantine and recovery
+    with open(alias_dir / "alias_pointer.json", "w") as f:
+        f.write("corrupted")
+    res3 = publish_alias(alias_row, output_dir=tmp_path, expected_provenance=VALID_PROVENANCE)
+    assert res3["status"] == "PUBLISHED_ALIAS"
+    quarantined = list(tmp_path.glob(f"{alias_id}_quarantined_*"))
+    assert len(quarantined) == 1
+
+
+# ---------------------------------------------------------------------------
+# Test 23: Dependency-Safe Execution Planning
+# ---------------------------------------------------------------------------
+def test_dependency_safe_execution_planning():
+    from scripts.run_evaluation import resolve_and_validate_execution_plan, derive_and_validate_matrix
+
+    matrix, _ = derive_and_validate_matrix(REPO_ROOT / "configs")
+
+    alias_id = "sensitivity_42_SilentProbing_afp_C1"
+    filtered = matrix[matrix["run_id"] == alias_id]
+    assert len(filtered) == 1
+
+    unique_runs, alias_runs = resolve_and_validate_execution_plan(
+        matrix=matrix,
+        filtered_matrix=filtered,
+        output_dir=REPO_ROOT / "artifacts/evaluation_runs",
+        expected_provenance={},
+    )
+    target_id = "primary_42_SilentProbing_afp_C1"
+    assert target_id in unique_runs["run_id"].values
+    assert alias_id in alias_runs["run_id"].values
+
+    # Reject non-positive max_runs
+    with pytest.raises(ValueError, match="--max-runs must be a strictly positive integer"):
+        resolve_and_validate_execution_plan(matrix, matrix, REPO_ROOT / "artifacts/evaluation_runs", {}, max_runs=0)
+    with pytest.raises(ValueError, match="--max-runs must be a strictly positive integer"):
+        resolve_and_validate_execution_plan(matrix, matrix, REPO_ROOT / "artifacts/evaluation_runs", {}, max_runs=-10)
+
+
+# ---------------------------------------------------------------------------
+# Test 24: True Production-Wiring Canary
+# ---------------------------------------------------------------------------
+def test_production_wiring_canary(tmp_path: Path):
+    from scripts.run_evaluation import (
+        execute_single_run,
+        build_production_provenance,
+        prepare_evaluation_batches,
+    )
+
+    prov = build_production_provenance(repo_root=REPO_ROOT)
+    resolved_batches, y_meas, _ = prepare_evaluation_batches(REPO_ROOT / "data/manifests")
+
+    with open(REPO_ROOT / "artifacts/preprocessors/feature_mask.json") as f:
+        mask_data = json.load(f)
+    feature_names = mask_data["feature_columns"]
+    modifiable_mask = np.array(mask_data["feature_mask"], dtype=bool)
+
+    training_bounds = pd.read_parquet(REPO_ROOT / "artifacts/preprocessors/training_bounds.parquet")
+    benign_profile = pd.read_parquet(REPO_ROOT / "artifacts/preprocessors/afp_benign_profile.parquet")
+    rf_model = joblib.load(REPO_ROOT / "artifacts/models/frozen_rf.joblib")
+
+    with open(REPO_ROOT / "configs/controllers.yaml") as f:
+        controllers_yaml = yaml.safe_load(f)
+    with open(REPO_ROOT / "configs/defenses.yaml") as f:
+        defenses_yaml = yaml.safe_load(f)
+
+    # Use a copy of official cache inside tmp_path
+    canary_cache_dir = tmp_path / "caches/SilentProbing_42"
+    shutil.copytree(REPO_ROOT / "artifacts/caches/SilentProbing_42", canary_cache_dir)
+
+    canary_inv_path = tmp_path / "cache_inventory_v2.json"
+    with open(REPO_ROOT / "artifacts/reports/cache_inventory_v2.json") as f:
+        inv_data = json.load(f)
+    with open(canary_inv_path, "w") as f:
+        json.dump(inv_data, f)
+
+    run_row = pd.Series({
+        "run_id": "canary_42_SilentProbing_afp_Base",
+        "seed": 42,
+        "attack_scenario": "SilentProbing",
+        "defense_name": "afp",
+        "controller_config_id": "Base",
+        "is_alias": False,
+    })
+
+    canary_out = tmp_path / "runs"
+    canary_out.mkdir()
+
+    # Execute 144 batches end-to-end using real production wiring
+    res = execute_single_run(
+        run_row=run_row,
+        output_dir=canary_out,
+        caches_dir=tmp_path / "caches",
+        inventory_path=canary_inv_path,
+        configs_dir=REPO_ROOT / "configs",
+        manifests_dir=REPO_ROOT / "data/manifests",
+        models_dir=REPO_ROOT / "artifacts/models",
+        preprocessors_dir=REPO_ROOT / "artifacts/preprocessors",
+        resolved_batches=resolved_batches,
+        y_measurement=y_meas,
+        feature_names=feature_names,
+        modifiable_mask=modifiable_mask,
+        training_bounds=training_bounds,
+        benign_profile=benign_profile,
+        rf_model=rf_model,
+        controllers_yaml=controllers_yaml,
+        defenses_yaml=defenses_yaml,
+        provenance_hashes=prov,
+    )
+    assert res["status"] == "COMPLETED"
+
+    run_dir = canary_out / "canary_42_SilentProbing_afp_Base"
+    assert run_dir.exists()
+    assert set(p.name for p in run_dir.iterdir()) == {
+        "config.json", "confusion.json", "scores.json", "run_summary.json", "completion.json"
+    }
+
+    # Verify validated reuse on rerun
+    res_reuse = execute_single_run(
+        run_row=run_row,
+        output_dir=canary_out,
+        caches_dir=tmp_path / "caches",
+        inventory_path=canary_inv_path,
+        configs_dir=REPO_ROOT / "configs",
+        manifests_dir=REPO_ROOT / "data/manifests",
+        models_dir=REPO_ROOT / "artifacts/models",
+        preprocessors_dir=REPO_ROOT / "artifacts/preprocessors",
+        resolved_batches=resolved_batches,
+        y_measurement=y_meas,
+        feature_names=feature_names,
+        modifiable_mask=modifiable_mask,
+        training_bounds=training_bounds,
+        benign_profile=benign_profile,
+        rf_model=rf_model,
+        controllers_yaml=controllers_yaml,
+        defenses_yaml=defenses_yaml,
+        provenance_hashes=prov,
+    )
+    assert res_reuse["status"] == "REUSED"
+
+    # Verify quarantine on tampered outputs
+    with open(run_dir / "completion.json", "w") as f:
+        f.write("corrupted")
+    res_tampered = execute_single_run(
+        run_row=run_row,
+        output_dir=canary_out,
+        caches_dir=tmp_path / "caches",
+        inventory_path=canary_inv_path,
+        configs_dir=REPO_ROOT / "configs",
+        manifests_dir=REPO_ROOT / "data/manifests",
+        models_dir=REPO_ROOT / "artifacts/models",
+        preprocessors_dir=REPO_ROOT / "artifacts/preprocessors",
+        resolved_batches=resolved_batches,
+        y_measurement=y_meas,
+        feature_names=feature_names,
+        modifiable_mask=modifiable_mask,
+        training_bounds=training_bounds,
+        benign_profile=benign_profile,
+        rf_model=rf_model,
+        controllers_yaml=controllers_yaml,
+        defenses_yaml=defenses_yaml,
+        provenance_hashes=prov,
+    )
+    assert res_tampered["status"] == "COMPLETED"
+    quarantined = list(canary_out.glob("canary_42_SilentProbing_afp_Base_quarantined_*"))
+    assert len(quarantined) == 1
+

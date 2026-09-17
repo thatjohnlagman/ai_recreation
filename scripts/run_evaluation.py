@@ -2,7 +2,7 @@
 """
 scripts/run_evaluation.py
 
-Phase 10D Official Evaluation Orchestration Entry Point.
+Phase 10D v2 Official Evaluation Orchestration Entry Point.
 
 This script acts as the official execution and validation orchestrator for Phase 10
 evaluation matrix runs. It strictly enforces:
@@ -10,17 +10,24 @@ evaluation matrix runs. It strictly enforces:
   2. Preflight separation: preflight never accesses evaluation features (X_eval.parquet) or labels.
   3. Dynamic matrix derivation: derives exactly 279 matrix references (90 primary, 189 sensitivity,
      27 exact C1 aliases, 252 unique executions, 36,288 batch evaluations) from frozen configs.
-  4. Exact pairing and common randomness: Base and RA runs are paired on
-     (seed, attack_scenario, defense_mechanism, batch_id) with bit-identical pseudorandom sequences.
-  5. Timing and label isolation: intensity obtained strictly before batch-t labels; feedback submitted
-     only for batch t+1; Base receives no feedback.
-  6. Deterministic whole-run restart: runs are never resumed mid-sequence; any interrupted run restarts
-     cleanly from batch 0.
-  7. Run reuse and quarantine: completed runs are validated before reuse; corrupt or incomplete runs are
-     quarantined to <run_id>_quarantined_<timestamp>.
-  8. Two-stage atomic publication: staging in .staging_<run_id>_<timestamp>, serialized output reopening
-     and validation via _validate_run_outputs, completion.json written last, atomic rename to <run_id>.
-  9. Resource limits: RS chunk size 100 ensures operations stay well within M4/16-GB memory limit.
+  4. Real-run complete provenance: builds all 11 required provenance hashes from canonical on-disk
+     artifacts and independently verifies them against official cache manifests.
+  5. Dry CompletionMarker validation: validates completion marker construction before running any batch.
+  6. Independent cache pinning: validates caches against artifacts/reports/cache_inventory_v2.json
+     before trusting or parsing cache manifests.
+  7. Enforced Git cleanliness: rejects any staged/unstaged tracked modification or untracked code/doc files.
+  8. Unsuppressed disk-space gate: aborts execution if free space is below required threshold.
+  9. Defenses.yaml derived bounds: Base intensities and bounds derived directly from frozen defenses.yaml.
+ 10. Strengthened manifest cross-validation: validates roles vs batches alignment, 72,000 measurement positions,
+     zero crafting overlap, binary y_binary agreement, composite identities, and deterministic sorting.
+ 11. Strict run reuse and quarantine: validates that existing runs match the target matrix row, provenance,
+     cache identity, and batch-record run IDs before reuse; quarantines corrupted runs.
+ 12. Pointer-only alias publication: alias directories are pointer-only artifacts with alias_pointer.json
+     and completion.json, never masquerading as independent runs.
+ 13. Dependency-safe execution planning: automatically resolves primary target runs for aliases before execution.
+ 14. Exact pairing and common randomness: Base and RA runs paired on (seed, attack_scenario, defense, batch_id).
+ 15. Timing and label isolation: intensity obtained strictly before batch-t labels; feedback submitted only
+     for batch t+1; Base receives no feedback.
 """
 from __future__ import annotations
 
@@ -98,6 +105,7 @@ PROTECTED_HASHES = {
     "RF": "9608672c5d5e38a9272c560679cdd2291399de0e0917c8c9dff373bfd200f51d",
     "Roles": "cbf650879aa1369fa26b803777f30d4b0add9e7aff2c05d399ba7f42563f7b45",
     "Batches": "4084017e5593732e455763416f7fc38254fc9dab2466eca289b66e68dc0ff79a",
+    "ExperimentConfig": "a1c5a389b1bc3c66311c7a96a7ccc3ee54af86506e64b38be7f26ad3c3d84c70",
 }
 
 FROZEN_PROTOCOL_FILES = [
@@ -122,18 +130,6 @@ CANONICAL_DEFENSES = {
     "afp": "afp",
     "feature_squeezing": "feature_squeezing",
     "randomized_smoothing": "randomized_smoothing",
-}
-
-CALIBRATED_BASE_INTENSITIES = {
-    "afp": 0.0003,
-    "feature_squeezing": 2.0,
-    "randomized_smoothing": 0.0002,
-}
-
-BASE_INTENSITY_BOUNDS = {
-    "afp": (0.0, 0.005),
-    "feature_squeezing": (1.0, 5.0),
-    "randomized_smoothing": (0.0, 0.001),
 }
 
 
@@ -165,6 +161,141 @@ def canonicalize_defense(defense: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Complete Production Provenance Construction
+# ---------------------------------------------------------------------------
+def build_production_provenance(
+    repo_root: Path = REPO_ROOT,
+    configs_dir: Optional[Path] = None,
+    manifests_dir: Optional[Path] = None,
+    models_dir: Optional[Path] = None,
+    preprocessors_dir: Optional[Path] = None,
+) -> Dict[str, str]:
+    """
+    Builds the complete, authoritative 11-field provenance dictionary from canonical
+    on-disk artifacts. Validates that every hash is a lowercase 64-char hex string
+    and matches the required provenance schema.
+    """
+    cfg_dir = configs_dir or (repo_root / "configs")
+    man_dir = manifests_dir or (repo_root / "data/manifests")
+    mod_dir = models_dir or (repo_root / "artifacts/models")
+    pre_dir = preprocessors_dir or (repo_root / "artifacts/preprocessors")
+
+    prov_file_map = {
+        "frozen_rf_hash": mod_dir / "frozen_rf.joblib",
+        "scaler_hash": pre_dir / "standard_scaler.joblib",
+        "feature_names_hash": pre_dir / "feature_names.json",
+        "feature_mask_hash": pre_dir / "feature_mask.json",
+        "training_bounds_hash": pre_dir / "training_bounds.parquet",
+        "evaluation_roles_hash": man_dir / "evaluation_roles.csv",
+        "evaluation_batches_hash": man_dir / "evaluation_batches.csv",
+        "attacks_yaml_hash": cfg_dir / "attacks.yaml",
+        "controllers_yaml_hash": cfg_dir / "controllers.yaml",
+        "defenses_yaml_hash": cfg_dir / "defenses.yaml",
+        "experiment_yaml_hash": cfg_dir / "experiment.yaml",
+    }
+
+    provenance: Dict[str, str] = {}
+    for key, p in prov_file_map.items():
+        if not p.exists():
+            raise FileNotFoundError(f"Canonical provenance artifact missing on disk: {p}")
+        h = calculate_file_hash(p)
+        if not _is_hex64(h):
+            raise ValueError(f"Calculated hash for {key} is not a valid 64-char hex: {h!r}")
+        if h in ("0" * 64, "a" * 64) or any(ph in h.lower() for ph in _PLACEHOLDER_STRINGS):
+            raise ValueError(f"Calculated hash for {key} is a placeholder: {h!r}")
+        provenance[key] = h
+
+    # Validate against schemas._REQUIRED_PROVENANCE_KEYS
+    _validate_provenance(provenance)
+    return provenance
+
+
+# ---------------------------------------------------------------------------
+# Independent Cache Validation Against Authoritative Inventory
+# ---------------------------------------------------------------------------
+def validate_cache_against_inventory(
+    cache_dir: Path,
+    scenario: str,
+    seed: int,
+    inventory_path: Path,
+    expected_provenance: Dict[str, str],
+) -> Dict[str, Any]:
+    """
+    Validates an attack cache against the independent cache_inventory_v2.json ledger.
+    Guarantees:
+      - Cache is found in the inventory with exact (scenario, seed) match.
+      - Current on-disk SHA-256 of X_attacked.parquet, status.parquet, manifest.json,
+        and completion.json match the inventory's recorded hashes.
+      - Manifest's internal provenance fields match independently calculated expected_provenance.
+      - Completion marker confirms COMPLETED state and matches seed and row count.
+    Only after manifest hash is independently pinned against inventory is it returned.
+    """
+    if not inventory_path.exists():
+        raise FileNotFoundError(f"Authoritative cache inventory missing: {inventory_path}")
+
+    with open(inventory_path, "r") as f:
+        inv = json.load(f)
+
+    # Locate canonical entry
+    matching = [
+        c for c in inv.get("caches", [])
+        if canonicalize_scenario(c.get("scenario", "")) == scenario and int(c.get("seed", -1)) == seed
+    ]
+    if len(matching) == 0:
+        raise ValueError(f"Cache ({scenario}, seed {seed}) not found in independent inventory: {inventory_path}")
+    if len(matching) > 1:
+        raise ValueError(f"Ambiguous cache entries ({len(matching)}) for ({scenario}, seed {seed}) in inventory")
+
+    inv_entry = matching[0]
+    expected_artifact_hashes = inv_entry["artifact_hashes"]
+
+    # Verify physical file existence and hashes against inventory
+    for fname in ("X_attacked.parquet", "status.parquet", "manifest.json", "completion.json"):
+        fpath = cache_dir / fname
+        if not fpath.exists():
+            raise FileNotFoundError(f"Cache {cache_dir.name} missing required file: {fname}")
+        actual_hash = calculate_file_hash(fpath)
+        expected_hash = expected_artifact_hashes.get(fname)
+        if actual_hash != expected_hash:
+            raise ValueError(
+                f"Cache {cache_dir.name} file {fname} SHA-256 mismatch vs independent inventory!\n"
+                f"Expected: {expected_hash}\n"
+                f"Actual:   {actual_hash}"
+            )
+
+    # Parse and validate pinned manifest
+    manifest_path = cache_dir / "manifest.json"
+    with open(manifest_path, "r") as f:
+        manifest = json.load(f)
+
+    # Validate against expected provenance
+    for prov_key, expected_val in expected_provenance.items():
+        if prov_key in manifest:
+            manifest_val = manifest[prov_key]
+            if manifest_val != expected_val:
+                raise ValueError(
+                    f"Cache {cache_dir.name} manifest[{prov_key!r}] ({manifest_val}) disagrees "
+                    f"with independently calculated production provenance ({expected_val})!"
+                )
+
+    # Validate completion marker
+    comp_path = cache_dir / "completion.json"
+    with open(comp_path, "r") as f:
+        comp_data = json.load(f)
+
+    if comp_data.get("completion_state") != "COMPLETED" or not comp_data.get("completed"):
+        raise ValueError(f"Cache {cache_dir.name} completion.json indicates incomplete state")
+    if canonicalize_scenario(comp_data.get("attack_scenario", "")) != scenario:
+        raise ValueError(f"Cache {cache_dir.name} completion scenario mismatch")
+    if int(comp_data.get("effective_seed", -1)) != seed:
+        raise ValueError(f"Cache {cache_dir.name} completion seed mismatch")
+    if int(comp_data.get("row_count", 0)) != 72000:
+        raise ValueError(f"Cache {cache_dir.name} completion row count mismatch")
+
+    return manifest
+
+
+# ---------------------------------------------------------------------------
 # Strengthened Frozen Configuration and Protocol Verification
 # ---------------------------------------------------------------------------
 def verify_frozen_configurations(
@@ -172,7 +303,7 @@ def verify_frozen_configurations(
     enforce_git: bool = True,
 ) -> Dict[str, Dict[str, Any]]:
     """
-    Strengthened freeze check: Compares the current bytes and SHA-256 values of every
+    Strengthened freeze check: Compares current bytes and SHA-256 values of every
     frozen configuration and protocol file against the tagged version at phase10-protocol-freeze.
     """
     results: Dict[str, Dict[str, Any]] = {}
@@ -252,15 +383,17 @@ def verify_frozen_configurations(
 # Protected Artifact Hash Verification
 # ---------------------------------------------------------------------------
 def verify_protected_artifacts(repo_root: Path = REPO_ROOT) -> Dict[str, str]:
-    """Verifies that the frozen RF model, roles manifest, and batches manifest match protected hashes."""
+    """Verifies that frozen RF model, roles manifest, batches manifest, and experiment config match protected hashes."""
     rf_path = repo_root / "artifacts/models/frozen_rf.joblib"
     roles_path = repo_root / "data/manifests/evaluation_roles.csv"
     batches_path = repo_root / "data/manifests/evaluation_batches.csv"
+    exp_cfg_path = repo_root / "configs/experiment.yaml"
 
     hashes = {
         "RF": calculate_file_hash(rf_path),
         "Roles": calculate_file_hash(roles_path),
         "Batches": calculate_file_hash(batches_path),
+        "ExperimentConfig": calculate_file_hash(exp_cfg_path),
     }
 
     for key, expected in PROTECTED_HASHES.items():
@@ -275,152 +408,248 @@ def verify_protected_artifacts(repo_root: Path = REPO_ROOT) -> Dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Cache Validation
+# Strict Git Execution Cleanliness
 # ---------------------------------------------------------------------------
-def verify_official_attack_caches(
-    caches_dir: Path,
-    expected_pairs: List[Tuple[str, int]],
-) -> Dict[str, Dict[str, Any]]:
+def check_git_cleanliness(
+    repo_root: Path = REPO_ROOT,
+    output_dir: Optional[Path] = None,
+    enforce_git: bool = True,
+) -> Dict[str, Any]:
     """
-    Verifies that all 15 expected official attack caches exist and validate completely.
+    Enforces the strict Phase 10B Git cleanliness policy:
+      - Freeze tag is an ancestor of HEAD.
+      - Frozen src/ has zero diff relative to phase10-protocol-freeze.
+      - Rejects any staged or unstaged tracked modification.
+      - Rejects untracked source, test, script, config, or documentation files.
+      - Explicitly allowlists only known generated artifacts (artifacts/caches/,
+        historical ZIP bundles, logs, and the configured evaluation output dir).
     """
-    cache_results: Dict[str, Dict[str, Any]] = {}
+    git_dir = repo_root / ".git"
+    if not git_dir.exists():
+        if enforce_git:
+            raise RuntimeError(f"Git repository not found at {repo_root}")
+        return {"status": "SKIPPED_NO_GIT"}
 
-    for scenario, seed in expected_pairs:
-        slug = f"{scenario}_{seed}"
-        cdir = caches_dir / slug
-        if not cdir.exists():
-            raise FileNotFoundError(f"Official attack cache directory missing: {cdir}")
-
-        manifest_path = cdir / "manifest.json"
-        x_path = cdir / "X_attacked.parquet"
-        status_path = cdir / "status.parquet"
-        comp_path = cdir / "completion.json"
-
-        if not manifest_path.exists():
-            raise FileNotFoundError(f"Cache {slug} missing manifest.json")
-        if not x_path.exists():
-            raise FileNotFoundError(f"Cache {slug} missing X_attacked.parquet")
-        if not status_path.exists():
-            raise FileNotFoundError(f"Cache {slug} missing status.parquet")
-        if not comp_path.exists():
-            raise FileNotFoundError(f"Cache {slug} missing completion.json")
-
-        with open(manifest_path) as f:
-            m = json.load(f)
-
-        # Validate manifest hashes
-        validate_cache_manifest(
-            manifest_path=manifest_path,
-            X_attacked_path=x_path,
-            expected_hashes=m,
-            status_path=status_path,
-            expected_row_count=72000,
-        )
-
-        with open(comp_path) as f:
-            c = json.load(f)
-
-        if c.get("completion_state") != "COMPLETED" or not c.get("completed"):
-            raise ValueError(f"Cache {slug} completion.json indicates incomplete state")
-        if canonicalize_scenario(c.get("attack_scenario", "")) != scenario:
-            raise ValueError(f"Cache {slug} completion scenario mismatch: expected {scenario}, got {c.get('attack_scenario')}")
-        if int(c.get("effective_seed", -1)) != seed:
-            raise ValueError(f"Cache {slug} completion seed mismatch: expected {seed}, got {c.get('effective_seed')}")
-        if int(c.get("row_count", 0)) != 72000:
-            raise ValueError(f"Cache {slug} completion row count mismatch: expected 72000, got {c.get('row_count')}")
-
-        cache_results[slug] = {
-            "scenario": scenario,
-            "seed": seed,
-            "directory": str(cdir),
-            "manifest_sha256": calculate_file_hash(manifest_path),
-            "X_attacked_sha256": m["X_attacked_sha256"],
-            "status_sha256": m["status_sha256"],
-            "generation_end_timestamp": c.get("generation_end_timestamp"),
+    if not enforce_git:
+        head_commit = "LOCAL_DEV"
+        try:
+            head_commit = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=repo_root, text=True
+            ).strip()
+        except Exception:
+            pass
+        return {
+            "head_commit": head_commit,
+            "clean": True,
+            "allowed_untracked_count": 0,
+            "enforced": False,
         }
 
-    return cache_results
+    # 1. Freeze tag ancestry
+    try:
+        subprocess.check_call(
+            ["git", "merge-base", "--is-ancestor", FREEZE_TAG, "HEAD"],
+            cwd=repo_root,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except subprocess.CalledProcessError:
+        raise RuntimeError(f"Freeze tag {FREEZE_TAG} is not an ancestor of current HEAD")
+
+    # 2. Frozen src/ check
+    src_diff = subprocess.check_output(
+        ["git", "diff", "--name-only", FREEZE_TAG, "--", "src/"],
+        cwd=repo_root,
+        text=True,
+    ).strip()
+    if src_diff:
+        raise RuntimeError(f"Frozen src/ directory modified relative to {FREEZE_TAG}:\n{src_diff}")
+
+    # 3. Status porcelain check
+    status_lines = subprocess.check_output(
+        ["git", "status", "--porcelain"],
+        cwd=repo_root,
+        text=True,
+    ).splitlines()
+
+    dirty_tracked = []
+    untracked_forbidden = []
+    allowed_untracked = []
+
+    out_dir_rel = str(output_dir.relative_to(repo_root)) if output_dir and output_dir.is_relative_to(repo_root) else "artifacts/evaluation_runs"
+
+    for line in status_lines:
+        if not line.strip():
+            continue
+        code = line[:2]
+        path_str = line[3:].strip().strip('"')
+
+        if code == "??":
+            # Allowlist check
+            is_allowed = (
+                path_str.startswith("artifacts/caches/")
+                or path_str.startswith(out_dir_rel)
+                or path_str.startswith(".gemini/")
+                or (path_str.endswith(".zip") and path_str.startswith("phase10"))
+                or path_str.endswith(".log")
+            )
+            if is_allowed:
+                allowed_untracked.append(path_str)
+            else:
+                # Disallow any untracked code, tests, scripts, configs, or docs
+                if (
+                    path_str.startswith(("src/", "tests/", "configs/", "scripts/", "docs/", "artifacts/reports/"))
+                    or path_str.endswith((".py", ".yaml", ".yml", ".md", ".json", ".csv", ".parquet", ".sh", ".txt"))
+                ):
+                    untracked_forbidden.append(path_str)
+                else:
+                    untracked_forbidden.append(path_str)
+        else:
+            dirty_tracked.append(f"{code}:{path_str}")
+
+    if dirty_tracked:
+        raise RuntimeError(
+            f"Git execution cleanliness violated: tracked files are modified: {dirty_tracked}. "
+            "Working tree must be committed."
+        )
+    if untracked_forbidden:
+        raise RuntimeError(
+            f"Git execution cleanliness violated: untracked forbidden files detected: {untracked_forbidden}. "
+            "Must be committed or removed."
+        )
+
+    head_commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=repo_root, text=True
+    ).strip()
+
+    return {
+        "head_commit": head_commit,
+        "clean": True,
+        "allowed_untracked_count": len(allowed_untracked),
+    }
 
 
 # ---------------------------------------------------------------------------
-# Dynamic Evaluation Matrix Derivation & Validation
+# Unsuppressed Disk Space Gate
 # ---------------------------------------------------------------------------
-def derive_and_validate_matrix(configs_dir: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
+def check_disk_space(repo_root: Path = REPO_ROOT, min_gb: float = 10.0) -> float:
     """
-    Derives the complete evaluation matrix from frozen configurations and asserts:
-      - 279 matrix references
-      - 27 exact C1 aliases
-      - 252 unique executions
-      - 144 batches per execution
-      - 36,288 unique batch evaluations
-      - primary comparison: 90 references
-      - sensitivity analysis: 189 references
+    Checks available free disk space. Only catches OSError on obtaining statistics.
+    Raises RuntimeError and aborts if free space is below min_gb.
     """
-    matrix = generate_evaluation_matrix(configs_dir)
-    unique_execs = get_unique_executions(matrix)
+    try:
+        total, used, free = shutil.disk_usage(repo_root)
+        free_gb = free / (1024**3)
+    except OSError as e:
+        raise RuntimeError(f"Failed to obtain filesystem disk usage: {e}") from e
 
-    primary = matrix[matrix["run_id"].str.startswith("primary_")]
-    sensitivity = matrix[matrix["run_id"].str.startswith("sensitivity_")]
-    aliases = matrix[matrix["is_alias"]]
+    if free_gb < min_gb:
+        raise RuntimeError(f"Insufficient disk space: {free_gb:.2f} GB available < {min_gb:.2f} GB required")
 
-    if len(matrix) != 279:
-        raise ValueError(f"Expected 279 matrix references, derived {len(matrix)}")
-    if len(aliases) != 27:
-        raise ValueError(f"Expected 27 exact C1 aliases, derived {len(aliases)}")
-    if len(unique_execs) != 252:
-        raise ValueError(f"Expected 252 unique executions, derived {len(unique_execs)}")
-    if len(primary) != 90:
-        raise ValueError(f"Expected 90 primary references, derived {len(primary)}")
-    if len(sensitivity) != 189:
-        raise ValueError(f"Expected 189 sensitivity references, derived {len(sensitivity)}")
-
-    total_batch_evals = len(unique_execs) * 144
-    if total_batch_evals != 36288:
-        raise ValueError(f"Expected 36288 batch evaluations, got {total_batch_evals}")
-
-    return matrix, unique_execs
+    return free_gb
 
 
 # ---------------------------------------------------------------------------
-# Resolved Batches & Label Provider Preparation
+# Strengthened Manifest Cross-Validation & Batch Preparation
 # ---------------------------------------------------------------------------
 def prepare_evaluation_batches(
     manifests_dir: Path,
 ) -> Tuple[pd.DataFrame, np.ndarray, Dict[str, str]]:
     """
-    Loads evaluation_batches.csv and prepares the measurement mapping for ExperimentRunner:
-      - sorts deterministically by eval_position
-      - assigns measurement_idx = 0..71999
-      - maps batch_id from 1..144 (in CSV) to 0..143 (in runner)
-      - extracts y_binary measurement array (length 72,000)
+    Loads and rigorously cross-validates evaluation_roles.csv and evaluation_batches.csv:
+      - Asserts required columns exist in both manifests.
+      - Asserts roles.csv has exactly 90,000 rows (18,000 crafting, 72,000 measurement).
+      - Asserts batches.csv has exactly 72,000 rows.
+      - Asserts batch positions are unique and equal exactly the measurement positions.
+      - Asserts zero overlap with crafting positions.
+      - Asserts batch IDs normalize strictly to 0..143 (each with exactly 500 rows).
+      - Asserts y_binary is strictly in {0, 1} and agrees between manifests.
+      - Asserts composite identities (_source_file, _raw_row_idx) agree.
+      - Deterministically sorts by eval_position and builds measurement_idx = 0..71999.
     """
-    batches_path = manifests_dir / "evaluation_batches.csv"
     roles_path = manifests_dir / "evaluation_roles.csv"
+    batches_path = manifests_dir / "evaluation_batches.csv"
 
-    if not batches_path.exists():
-        raise FileNotFoundError(f"Missing {batches_path}")
     if not roles_path.exists():
         raise FileNotFoundError(f"Missing {roles_path}")
+    if not batches_path.exists():
+        raise FileNotFoundError(f"Missing {batches_path}")
 
-    df_batches = pd.read_csv(batches_path)
-    if len(df_batches) != 72000:
-        raise ValueError(f"Expected 72000 rows in evaluation_batches.csv, got {len(df_batches)}")
+    roles = pd.read_csv(roles_path)
+    batches = pd.read_csv(batches_path)
 
-    # Sort deterministically by eval_position
-    sorted_batches = df_batches.sort_values("eval_position").reset_index(drop=True)
-    sorted_batches["measurement_idx"] = np.arange(len(sorted_batches), dtype=int)
+    # 1. Required columns
+    roles_req = {"eval_position", "_source_file", "_raw_row_idx", "y_binary", "attack_family", "role"}
+    batches_req = {"eval_position", "_source_file", "_raw_row_idx", "y_binary", "attack_family", "role", "batch_id", "within_batch_position"}
 
-    # Convert 1-indexed batch_id (1..144) to 0-indexed (0..143)
-    if sorted_batches["batch_id"].min() == 1 and sorted_batches["batch_id"].max() == 144:
-        sorted_batches["batch_id"] = sorted_batches["batch_id"] - 1
+    if not roles_req.issubset(roles.columns):
+        raise ValueError(f"evaluation_roles.csv missing columns: {roles_req - set(roles.columns)}")
+    if not batches_req.issubset(batches.columns):
+        raise ValueError(f"evaluation_batches.csv missing columns: {batches_req - set(batches.columns)}")
 
-    if set(sorted_batches["batch_id"].unique()) != set(range(144)):
-        raise ValueError(f"Batch IDs in resolved_batches must span 0..143")
+    # 2. Exact role partition counts
+    if len(roles) != 90000:
+        raise ValueError(f"evaluation_roles.csv has {len(roles)} rows, expected 90000")
+    if len(batches) != 72000:
+        raise ValueError(f"evaluation_batches.csv has {len(batches)} rows, expected 72000")
 
-    batch_counts = sorted_batches["batch_id"].value_counts()
-    if not (batch_counts == 500).all():
-        raise ValueError("Each batch must have exactly 500 records")
+    crafting_roles = roles[roles["role"] == "crafting"]
+    measurement_roles = roles[roles["role"] == "measurement"]
+
+    if len(crafting_roles) != 18000:
+        raise ValueError(f"Expected 18000 crafting roles, got {len(crafting_roles)}")
+    if len(measurement_roles) != 72000:
+        raise ValueError(f"Expected 72000 measurement roles, got {len(measurement_roles)}")
+
+    # 3. Position uniqueness and exact alignment
+    if batches["eval_position"].duplicated().any():
+        raise ValueError("Duplicate eval_position found in evaluation_batches.csv")
+    if roles["eval_position"].duplicated().any():
+        raise ValueError("Duplicate eval_position found in evaluation_roles.csv")
+
+    batch_pos_set = set(batches["eval_position"])
+    meas_pos_set = set(measurement_roles["eval_position"])
+    craft_pos_set = set(crafting_roles["eval_position"])
+
+    if batch_pos_set != meas_pos_set:
+        raise ValueError("evaluation_batches.csv positions do not exactly match measurement role positions")
+    if len(batch_pos_set.intersection(craft_pos_set)) > 0:
+        raise ValueError("Crafting role positions detected inside evaluation_batches.csv")
+
+    # 4. Batch ID normalization (1..144 -> 0..143)
+    b_ids = batches["batch_id"].values
+    if b_ids.min() == 1 and b_ids.max() == 144:
+        norm_b_ids = b_ids - 1
+    elif b_ids.min() == 0 and b_ids.max() == 143:
+        norm_b_ids = b_ids
+    else:
+        raise ValueError(f"evaluation_batches.csv batch_id out of expected bounds: [{b_ids.min()}, {b_ids.max()}]")
+
+    if set(norm_b_ids) != set(range(144)):
+        raise ValueError("Normalized batch IDs must span exactly 0..143")
+
+    b_counts = pd.Series(norm_b_ids).value_counts()
+    if not (b_counts == 500).all():
+        raise ValueError("Every batch in evaluation_batches.csv must contain exactly 500 rows")
+
+    # 5. Binary y_binary and composite identity alignment
+    if not set(roles["y_binary"].unique()).issubset({0, 1}):
+        raise ValueError("evaluation_roles.csv y_binary contains non-binary values")
+    if not set(batches["y_binary"].unique()).issubset({0, 1}):
+        raise ValueError("evaluation_batches.csv y_binary contains non-binary values")
+
+    merged = batches.merge(measurement_roles, on="eval_position", suffixes=("_batch", "_role"))
+    if not (merged["y_binary_batch"] == merged["y_binary_role"]).all():
+        raise ValueError("y_binary disagrees between evaluation_batches.csv and evaluation_roles.csv")
+    if not (merged["_source_file_batch"] == merged["_source_file_role"]).all():
+        raise ValueError("_source_file disagrees between evaluation_batches.csv and evaluation_roles.csv")
+    if not (merged["_raw_row_idx_batch"] == merged["_raw_row_idx_role"]).all():
+        raise ValueError("_raw_row_idx disagrees between evaluation_batches.csv and evaluation_roles.csv")
+
+    # 6. Deterministic sorting and measurement_idx assignment
+    sorted_batches = batches.sort_values("eval_position").reset_index(drop=True)
+    sorted_batches["batch_id"] = sorted_batches["batch_id"] - 1 if sorted_batches["batch_id"].min() == 1 else sorted_batches["batch_id"]
+    sorted_batches["measurement_idx"] = np.arange(72000, dtype=int)
 
     y_measurement = sorted_batches["y_binary"].values.astype(int)
 
@@ -433,26 +662,134 @@ def prepare_evaluation_batches(
 
 
 # ---------------------------------------------------------------------------
-# Completed Run Validation and Quarantine
+# Defense and Policy Factory (Derived from defenses.yaml)
 # ---------------------------------------------------------------------------
-def validate_completed_run(run_dir: Path) -> Tuple[bool, Optional[str]]:
+def create_defense_adapter(
+    defense_name: str,
+    feature_names: List[str],
+    modifiable_mask: np.ndarray,
+    training_bounds: pd.DataFrame,
+    benign_profile: pd.DataFrame,
+    rf_model: Any,
+    defenses_yaml: Dict[str, Any],
+) -> Any:
+    """Instantiates defense adapter using calibrated baseline from defenses.yaml."""
+    d = canonicalize_defense(defense_name)
+    def_cfg = defenses_yaml[d]
+
+    if d == "afp":
+        afp = AdaptiveFeaturePoisoning(
+            feature_names=feature_names,
+            modifiable_mask=modifiable_mask,
+            training_bounds=training_bounds,
+            benign_profile=benign_profile,
+        )
+        return AFPDefenseAdapter(
+            afp=afp,
+            model=rf_model,
+            epsilon_base=float(def_cfg["epsilon_base"]),
+            alpha=float(def_cfg.get("alpha", 0.5)),
+        )
+    elif d == "feature_squeezing":
+        fs = FeatureSqueezing(
+            feature_names=feature_names,
+            modifiable_mask=modifiable_mask,
+            training_bounds=training_bounds,
+        )
+        return FSDefenseAdapter(fs=fs, model=rf_model)
+    elif d == "randomized_smoothing":
+        rs = RandomizedSmoothing(
+            feature_names=feature_names,
+            modifiable_mask=modifiable_mask,
+            training_bounds=training_bounds,
+            ensemble_size=int(def_cfg.get("ensemble_size", 11)),
+        )
+        return RSDefenseAdapter(
+            rs=rs,
+            predict_func=rf_model.predict,
+            chunk_size=int(def_cfg.get("chunk_size", 100)),
+        )
+    else:
+        raise ValueError(f"Unsupported defense: {defense_name}")
+
+
+def create_policy_controller(
+    controller_config_id: str,
+    defense_name: str,
+    controllers_yaml: Dict[str, Any],
+    defenses_yaml: Dict[str, Any],
+) -> Any:
     """
-    Reopens and rigorously validates an existing run directory:
-      - completion.json exists and satisfies CompletionMarker schema
-      - config.json, confusion.json, scores.json, run_summary.json exist and parse
-      - _validate_run_outputs passes (recomputed metrics match summary and confusion records)
-      - returns (True, None) if valid, or (False, error_reason) if invalid
+    Instantiates FixedIntensityPolicy for Base (deriving intensity and bounds
+    directly from frozen defenses.yaml) or RecallAwareController for C1..C7.
+    """
+    d = canonicalize_defense(defense_name)
+    def_cfg = defenses_yaml[d]
+
+    if controller_config_id == "Base":
+        if d == "afp":
+            base_val = float(def_cfg["epsilon_base"])
+        elif d == "randomized_smoothing":
+            base_val = float(def_cfg["sigma"])
+        elif d == "feature_squeezing":
+            base_val = float(def_cfg["squeezing_intensity"])
+        else:
+            raise ValueError(f"Unknown defense {defense_name}")
+
+        min_val = float(def_cfg["intensity_min"])
+        max_val = float(def_cfg["intensity_max"])
+
+        return FixedIntensityPolicy(
+            config_id="Base",
+            fixed_intensity=base_val,
+            intensity_min=min_val,
+            intensity_max=max_val,
+        )
+    else:
+        cfg = controllers_yaml["controller_configurations"][controller_config_id]
+        return RecallAwareController(
+            config=cfg,
+            defense_config=def_cfg,
+            defense_name=d,
+            zero_division_value=0.0,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Completed Run Reuse and Quarantine Validation
+# ---------------------------------------------------------------------------
+def validate_completed_run(
+    run_dir: Path,
+    expected_row: Optional[pd.Series] = None,
+    expected_provenance: Optional[Dict[str, str]] = None,
+    expected_cache_identity: Optional[Dict[str, Any]] = None,
+) -> Tuple[bool, Optional[str]]:
+    """
+    Validates that a run directory is complete, untampered, and belongs to the
+    expected matrix row.
     """
     if not run_dir.exists() or not run_dir.is_dir():
         return False, "Directory does not exist or is not a directory"
 
-    comp_path = run_dir / "completion.json"
-    summary_path = run_dir / "run_summary.json"
+    # Reject unexpected output files
+    expected_files = {"config.json", "confusion.json", "scores.json", "run_summary.json", "completion.json"}
+    actual_files = {p.name for p in run_dir.iterdir() if not p.name.startswith(".")}
+    if actual_files != expected_files:
+        unexpected = actual_files - expected_files
+        missing = expected_files - actual_files
+        reasons = []
+        if missing:
+            reasons.append(f"Missing required files: {sorted(missing)}")
+        if unexpected:
+            reasons.append(f"Unexpected files: {sorted(unexpected)}")
+        return False, "; ".join(reasons)
 
-    if not comp_path.exists():
-        return False, "Missing completion.json (incomplete run)"
-    if not summary_path.exists():
-        return False, "Missing run_summary.json"
+    # Verify completion.json written last
+    comp_path = run_dir / "completion.json"
+    comp_mtime = comp_path.stat().st_mtime
+    for fname in ("config.json", "confusion.json", "scores.json", "run_summary.json"):
+        if (run_dir / fname).stat().st_mtime > comp_mtime + 0.1:
+            return False, f"{fname} was modified after completion.json"
 
     try:
         with open(comp_path, "r") as f:
@@ -460,15 +797,46 @@ def validate_completed_run(run_dir: Path) -> Tuple[bool, Optional[str]]:
         marker = CompletionMarker(**c_data)
         _validate_provenance(marker.provenance_hashes)
     except Exception as e:
-        return False, f"completion.json failed validation: {e}"
+        return False, f"completion.json validation failed: {e}"
 
+    summary_path = run_dir / "run_summary.json"
     try:
         with open(summary_path, "r") as f:
             s_data = json.load(f)
         summary = RunSummary(**s_data)
     except Exception as e:
-        return False, f"run_summary.json failed validation: {e}"
+        return False, f"run_summary.json validation failed: {e}"
 
+    if run_dir.name != marker.run_id or run_dir.name != summary.run_id:
+        return False, f"Run ID mismatch: dir={run_dir.name}, marker={marker.run_id}, summary={summary.run_id}"
+
+    # Match against expected matrix row
+    if expected_row is not None:
+        if run_dir.name != expected_row["run_id"]:
+            return False, f"Run ID mismatch with expected matrix row: {expected_row['run_id']}"
+        if int(summary.seed) != int(expected_row["seed"]):
+            return False, f"Seed mismatch: expected {expected_row['seed']}, got {summary.seed}"
+        if canonicalize_scenario(summary.attack_scenario) != canonicalize_scenario(expected_row["attack_scenario"]):
+            return False, f"Scenario mismatch: expected {expected_row['attack_scenario']}, got {summary.attack_scenario}"
+        if canonicalize_defense(summary.defense) != canonicalize_defense(expected_row["defense_name"]):
+            return False, f"Defense mismatch: expected {expected_row['defense_name']}, got {summary.defense}"
+        if summary.config_id != expected_row["controller_config_id"]:
+            return False, f"Controller config mismatch: expected {expected_row['controller_config_id']}, got {summary.config_id}"
+
+    # Match expected provenance
+    if expected_provenance is not None:
+        if set(marker.provenance_hashes.keys()) != set(expected_provenance.keys()):
+            return False, f"completion.json provenance keys do not match expected production provenance keys"
+        for k, exp_h in expected_provenance.items():
+            if marker.provenance_hashes.get(k) != exp_h:
+                return False, f"Provenance hash mismatch for {k}: expected {exp_h}, got {marker.provenance_hashes.get(k)}"
+
+    # Match expected cache identity
+    if expected_cache_identity is not None:
+        if summary.cache_identity != expected_cache_identity:
+            return False, "run_summary.cache_identity does not match expected cache identity"
+
+    # Reopen and validate batch files
     try:
         _validate_run_outputs(run_dir, summary)
     except Exception as e:
@@ -495,90 +863,240 @@ def quarantine_run_directory(run_dir: Path, reason: str) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Defense and Policy Factory
+# Pointer-Only Alias Publication and Reuse Validation
 # ---------------------------------------------------------------------------
-def create_defense_adapter(
-    defense_name: str,
-    feature_names: List[str],
-    modifiable_mask: np.ndarray,
-    training_bounds: pd.DataFrame,
-    benign_profile: pd.DataFrame,
-    rf_model: Any,
-) -> Any:
-    """Instantiates the appropriate defense adapter for the given defense mechanism."""
-    d = canonicalize_defense(defense_name)
-    if d == "afp":
-        afp = AdaptiveFeaturePoisoning(
-            feature_names=feature_names,
-            modifiable_mask=modifiable_mask,
-            training_bounds=training_bounds,
-            benign_profile=benign_profile,
-        )
-        return AFPDefenseAdapter(
-            afp=afp,
-            model=rf_model,
-            epsilon_base=CALIBRATED_BASE_INTENSITIES["afp"],
-            alpha=0.5,
-        )
-    elif d == "feature_squeezing":
-        fs = FeatureSqueezing(
-            feature_names=feature_names,
-            modifiable_mask=modifiable_mask,
-            training_bounds=training_bounds,
-        )
-        return FSDefenseAdapter(fs=fs, model=rf_model)
-    elif d == "randomized_smoothing":
-        rs = RandomizedSmoothing(
-            feature_names=feature_names,
-            modifiable_mask=modifiable_mask,
-            training_bounds=training_bounds,
-            ensemble_size=11,
-        )
-        return RSDefenseAdapter(
-            rs=rs,
-            predict_func=rf_model.predict,
-            chunk_size=100,  # Strict chunk size 100 for M4 memory safety
-        )
-    else:
-        raise ValueError(f"Unsupported defense: {defense_name}")
+def validate_completed_alias(
+    alias_dir: Path,
+    expected_row: pd.Series,
+    expected_provenance: Dict[str, str],
+    output_dir: Path,
+) -> Tuple[bool, Optional[str]]:
+    """
+    Validates an existing alias directory. It must be a pointer-only artifact
+    containing ONLY alias_pointer.json and completion.json.
+    """
+    if not alias_dir.exists() or not alias_dir.is_dir():
+        return False, "Alias directory does not exist or is not a directory"
+
+    actual_files = {p.name for p in alias_dir.iterdir() if not p.name.startswith(".")}
+    expected_files = {"alias_pointer.json", "completion.json"}
+    if actual_files != expected_files:
+        return False, f"Alias directory contains invalid files (expected {expected_files}, got {actual_files})"
+
+    # Validate completion.json
+    comp_path = alias_dir / "completion.json"
+    try:
+        with open(comp_path, "r") as f:
+            c_data = json.load(f)
+        marker = CompletionMarker(**c_data)
+        _validate_provenance(marker.provenance_hashes)
+        if marker.run_id != expected_row["run_id"]:
+            return False, f"Alias completion run_id mismatch: expected {expected_row['run_id']}, got {marker.run_id}"
+    except Exception as e:
+        return False, f"Alias completion.json failed validation: {e}"
+
+    # Validate alias_pointer.json
+    ptr_path = alias_dir / "alias_pointer.json"
+    try:
+        with open(ptr_path, "r") as f:
+            ptr = json.load(f)
+        if ptr.get("run_id") != expected_row["run_id"]:
+            return False, f"Alias pointer run_id mismatch: expected {expected_row['run_id']}, got {ptr.get('run_id')}"
+        if ptr.get("alias_for_run_id") != expected_row["alias_for_run_id"]:
+            return False, f"Alias target mismatch: expected {expected_row['alias_for_run_id']}, got {ptr.get('alias_for_run_id')}"
+        if int(ptr.get("seed", -1)) != int(expected_row["seed"]):
+            return False, "Alias pointer seed mismatch"
+        if canonicalize_scenario(ptr.get("attack_scenario", "")) != canonicalize_scenario(expected_row["attack_scenario"]):
+            return False, "Alias pointer scenario mismatch"
+        if canonicalize_defense(ptr.get("defense", "")) != canonicalize_defense(expected_row["defense_name"]):
+            return False, "Alias pointer defense mismatch"
+    except Exception as e:
+        return False, f"alias_pointer.json validation failed: {e}"
+
+    # Validate target run exists and is valid
+    target_dir = output_dir / expected_row["alias_for_run_id"]
+    is_target_valid, err = validate_completed_run(target_dir, expected_provenance=expected_provenance)
+    if not is_target_valid:
+        return False, f"Alias target {target_dir.name} is invalid: {err}"
+
+    target_summary_hash = calculate_file_hash(target_dir / "run_summary.json")
+    if ptr.get("target_run_summary_sha256") != target_summary_hash:
+        return False, "Alias pointer target_run_summary_sha256 does not match current target summary hash"
+
+    return True, None
 
 
-def create_policy_controller(
-    controller_config_id: str,
-    defense_name: str,
-    controllers_yaml: Dict[str, Any],
-    defenses_yaml: Dict[str, Any],
-) -> Any:
-    """Instantiates FixedIntensityPolicy for Base or RecallAwareController for C1..C7."""
-    d = canonicalize_defense(defense_name)
-    if controller_config_id == "Base":
-        base_val = CALIBRATED_BASE_INTENSITIES[d]
-        min_val, max_val = BASE_INTENSITY_BOUNDS[d]
-        return FixedIntensityPolicy(
-            config_id="Base",
-            fixed_intensity=base_val,
-            intensity_min=min_val,
-            intensity_max=max_val,
+def publish_alias(
+    alias_row: pd.Series,
+    output_dir: Path,
+    expected_provenance: Dict[str, str],
+) -> Dict[str, Any]:
+    """
+    Publishes an alias as a pointer-only artifact atomically.
+    """
+    alias_id = str(alias_row["run_id"])
+    target_id = str(alias_row["alias_for_run_id"])
+    target_dir = output_dir / target_id
+
+    if not target_dir.exists():
+        raise RuntimeError(f"Alias target {target_id} does not exist in {output_dir}")
+
+    is_valid, err = validate_completed_run(target_dir, expected_provenance=expected_provenance)
+    if not is_valid:
+        raise RuntimeError(f"Alias target {target_id} is invalid: {err}")
+
+    # Ensure alias tuple exactly matches target tuple
+    target_summary_path = target_dir / "run_summary.json"
+    with open(target_summary_path, "r") as f:
+        target_summary_data = json.load(f)
+    if int(target_summary_data["seed"]) != int(alias_row["seed"]):
+        raise ValueError(f"Alias tuple seed mismatch: alias={alias_row['seed']}, target={target_summary_data['seed']}")
+    if canonicalize_scenario(target_summary_data["attack_scenario"]) != canonicalize_scenario(alias_row["attack_scenario"]):
+        raise ValueError(f"Alias tuple scenario mismatch: alias={alias_row['attack_scenario']}, target={target_summary_data['attack_scenario']}")
+    if canonicalize_defense(target_summary_data["defense"]) != canonicalize_defense(alias_row["defense_name"]):
+        raise ValueError(f"Alias tuple defense mismatch: alias={alias_row['defense_name']}, target={target_summary_data['defense']}")
+
+    # Check for existing alias directory
+    alias_dir = output_dir / alias_id
+    if alias_dir.exists():
+        is_alias_valid, a_err = validate_completed_alias(alias_dir, alias_row, expected_provenance, output_dir)
+        if is_alias_valid:
+            return {"run_id": alias_id, "status": "REUSED_ALIAS", "alias_for": target_id}
+        else:
+            quarantine_run_directory(alias_dir, f"Invalid alias: {a_err}")
+
+    # Staging directory on the same filesystem
+    staging_dir = output_dir / f".staging_{alias_id}_{uuid.uuid4().hex}"
+    staging_dir.mkdir(parents=True, exist_ok=False)
+
+    try:
+        target_summary_hash = calculate_file_hash(target_dir / "run_summary.json")
+        target_comp_hash = calculate_file_hash(target_dir / "completion.json")
+
+        alias_pointer = {
+            "run_id": alias_id,
+            "seed": int(alias_row["seed"]),
+            "attack_scenario": canonicalize_scenario(alias_row["attack_scenario"]),
+            "defense": canonicalize_defense(alias_row["defense_name"]),
+            "config_id": str(alias_row["controller_config_id"]),
+            "is_alias": True,
+            "alias_for_run_id": target_id,
+            "target_run_summary_sha256": target_summary_hash,
+            "target_completion_sha256": target_comp_hash,
+            "target_provenance": expected_provenance,
+            "published_at": datetime.datetime.utcnow().isoformat() + "Z",
+        }
+        with open(staging_dir / "alias_pointer.json", "w") as f:
+            json.dump(alias_pointer, f, indent=2)
+
+        marker = CompletionMarker(
+            run_id=alias_id,
+            timestamp=datetime.datetime.utcnow().isoformat() + "Z",
+            provenance_hashes=expected_provenance,
         )
+        with open(staging_dir / "completion.json", "w") as f:
+            json.dump(dataclasses.asdict(marker), f, indent=2)
+
+        staging_dir.rename(alias_dir)
+        return {"run_id": alias_id, "status": "PUBLISHED_ALIAS", "alias_for": target_id}
+    except Exception:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Dependency-Safe Execution Planning
+# ---------------------------------------------------------------------------
+def resolve_and_validate_execution_plan(
+    matrix: pd.DataFrame,
+    filtered_matrix: pd.DataFrame,
+    output_dir: Path,
+    expected_provenance: Dict[str, str],
+    max_runs: Optional[int] = None,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Validates and resolves the execution plan:
+      - Validates max_runs > 0.
+      - For each alias: ensures that its primary target run is either already
+        completed and validated, or automatically included in the execution plan
+        ahead of the alias.
+      - Returns (unique_runs_to_execute, alias_runs_to_publish).
+    """
+    if max_runs is not None:
+        if max_runs <= 0:
+            raise ValueError(f"--max-runs must be a strictly positive integer, got {max_runs}")
+        filtered_matrix = filtered_matrix.head(max_runs)
+
+    all_target_ids = set()
+    for _, row in filtered_matrix[filtered_matrix["is_alias"]].iterrows():
+        target_id = row["alias_for_run_id"]
+        all_target_ids.add(target_id)
+
+    # Check targets not in filtered_matrix
+    missing_targets = []
+    for tid in sorted(all_target_ids):
+        target_dir = output_dir / tid
+        is_target_valid, _ = validate_completed_run(target_dir, expected_provenance=expected_provenance)
+        if not is_target_valid and tid not in filtered_matrix["run_id"].values:
+            # Need to auto-include target
+            target_row = matrix[matrix["run_id"] == tid]
+            if len(target_row) == 0:
+                raise ValueError(f"Primary target run {tid} not found in matrix!")
+            missing_targets.append(target_row.iloc[0])
+
+    if missing_targets:
+        targets_df = pd.DataFrame(missing_targets)
+        combined = pd.concat([targets_df, filtered_matrix]).drop_duplicates(subset=["run_id"])
     else:
-        cfg = controllers_yaml["controller_configurations"][controller_config_id]
-        def_cfg = defenses_yaml[d]
-        return RecallAwareController(
-            config=cfg,
-            defense_config=def_cfg,
-            defense_name=d,
-            zero_division_value=0.0,
-        )
+        combined = filtered_matrix
+
+    unique_runs = combined[~combined["is_alias"]].reset_index(drop=True)
+    alias_runs = combined[combined["is_alias"]].reset_index(drop=True)
+
+    return unique_runs, alias_runs
+
+
+# ---------------------------------------------------------------------------
+# Dynamic Evaluation Matrix Derivation & Validation
+# ---------------------------------------------------------------------------
+def derive_and_validate_matrix(configs_dir: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Derives complete evaluation matrix and validates exact reference counts."""
+    matrix = generate_evaluation_matrix(configs_dir)
+    unique_execs = get_unique_executions(matrix)
+
+    primary = matrix[matrix["run_id"].str.startswith("primary_")]
+    sensitivity = matrix[matrix["run_id"].str.startswith("sensitivity_")]
+    aliases = matrix[matrix["is_alias"]]
+
+    if len(matrix) != 279:
+        raise ValueError(f"Expected 279 matrix references, derived {len(matrix)}")
+    if len(aliases) != 27:
+        raise ValueError(f"Expected 27 exact C1 aliases, derived {len(aliases)}")
+    if len(unique_execs) != 252:
+        raise ValueError(f"Expected 252 unique executions, derived {len(unique_execs)}")
+    if len(primary) != 90:
+        raise ValueError(f"Expected 90 primary references, derived {len(primary)}")
+    if len(sensitivity) != 189:
+        raise ValueError(f"Expected 189 sensitivity references, derived {len(sensitivity)}")
+
+    total_batch_evals = len(unique_execs) * 144
+    if total_batch_evals != 36288:
+        raise ValueError(f"Expected 36288 batch evaluations, got {total_batch_evals}")
+
+    return matrix, unique_execs
 
 
 # ---------------------------------------------------------------------------
 # Preflight Checker
 # ---------------------------------------------------------------------------
 def run_preflight(
-    configs_dir: Path,
-    manifests_dir: Path,
-    models_dir: Path,
-    caches_dir: Path,
+    configs_dir: Path = REPO_ROOT / "configs",
+    manifests_dir: Path = REPO_ROOT / "data/manifests",
+    models_dir: Path = REPO_ROOT / "artifacts/models",
+    preprocessors_dir: Path = REPO_ROOT / "artifacts/preprocessors",
+    caches_dir: Path = REPO_ROOT / "artifacts/caches",
+    inventory_path: Path = REPO_ROOT / "artifacts/reports/cache_inventory_v2.json",
+    output_dir: Path = REPO_ROOT / "artifacts/evaluation_runs",
     repo_root: Path = REPO_ROOT,
     enforce_git: bool = True,
 ) -> Dict[str, Any]:
@@ -587,46 +1105,22 @@ def run_preflight(
       1. Git clean status & freeze tag ancestry.
       2. Configuration and protocol freeze integrity.
       3. Protected model and manifest SHA-256 validation.
-      4. All 15 official attack caches integrity.
-      5. Dynamic evaluation matrix validation.
-      6. Available storage capacity.
+      4. Complete production provenance construction.
+      5. All 15 official attack caches independently pinned against inventory.
+      6. Dynamic evaluation matrix validation.
+      7. Unsuppressed available storage check.
     """
     print("=" * 78)
-    print("PHASE 10D NON-MUTATING PREFLIGHT VERIFICATION")
+    print("PHASE 10D v2 NON-MUTATING PREFLIGHT VERIFICATION")
     print("=" * 78)
 
     preflight_report: Dict[str, Any] = {"timestamp": datetime.datetime.utcnow().isoformat() + "Z"}
 
     # 1. Git verification
-    git_dir = repo_root / ".git"
-    if git_dir.exists():
-        try:
-            head_commit = subprocess.check_output(
-                ["git", "rev-parse", "HEAD"], cwd=repo_root, text=True
-            ).strip()
-            status_output = subprocess.check_output(
-                ["git", "status", "--porcelain"], cwd=repo_root, text=True
-            ).strip()
-
-            # Check if freeze tag is an ancestor of HEAD
-            subprocess.check_call(
-                ["git", "merge-base", "--is-ancestor", FREEZE_TAG, "HEAD"],
-                cwd=repo_root,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            tag_is_ancestor = True
-
-            preflight_report["git"] = {
-                "head_commit": head_commit,
-                "freeze_tag_ancestor": tag_is_ancestor,
-                "tracked_clean": len(status_output) == 0,
-            }
-            print(f"Git HEAD: {head_commit} (Freeze Tag Ancestor: {tag_is_ancestor})")
-        except Exception as e:
-            if enforce_git:
-                raise RuntimeError(f"Git preflight check failed: {e}") from e
-            preflight_report["git"] = {"error": str(e)}
+    print("Checking Git cleanliness...")
+    git_res = check_git_cleanliness(repo_root=repo_root, output_dir=output_dir, enforce_git=enforce_git)
+    preflight_report["git"] = git_res
+    print(f"  Git HEAD: {git_res.get('head_commit')} (Clean: {git_res.get('clean')})")
 
     # 2. Frozen configuration files
     print("\nVerifying frozen configurations...")
@@ -639,9 +1133,21 @@ def run_preflight(
     protected_hashes = verify_protected_artifacts(repo_root)
     preflight_report["protected_hashes"] = protected_hashes
     for k, h in protected_hashes.items():
-        print(f"  {k:8s}: {h}")
+        print(f"  {k:16s}: {h}")
 
-    # 4. Matrix derivation
+    # 4. Production Provenance Construction
+    print("\nBuilding complete production provenance from on-disk artifacts...")
+    provenance = build_production_provenance(
+        repo_root=repo_root,
+        configs_dir=configs_dir,
+        manifests_dir=manifests_dir,
+        models_dir=models_dir,
+        preprocessors_dir=preprocessors_dir,
+    )
+    preflight_report["production_provenance"] = provenance
+    print(f"  Constructed all {len(provenance)} provenance hashes successfully.")
+
+    # 5. Matrix derivation
     print("\nDeriving evaluation matrix dynamically...")
     matrix, unique_execs = derive_and_validate_matrix(configs_dir)
     primary = matrix[matrix["run_id"].str.startswith("primary_")]
@@ -662,8 +1168,8 @@ def run_preflight(
         "total_batch_evaluations": len(unique_execs) * 144,
     }
 
-    # 5. Attack caches
-    print("\nVerifying 15 official attack caches...")
+    # 6. Attack caches pinned against independent inventory
+    print("\nValidating 15 official attack caches against independent inventory...")
     cache_pairs = sorted(
         list(
             {
@@ -672,20 +1178,21 @@ def run_preflight(
             }
         )
     )
-    cache_results = verify_official_attack_caches(caches_dir, cache_pairs)
-    preflight_report["caches"] = cache_results
-    print(f"  All {len(cache_results)} official attack caches fully verified.")
+    for scen, seed in cache_pairs:
+        cdir = caches_dir / f"{scen}_{seed}"
+        validate_cache_against_inventory(
+            cache_dir=cdir,
+            scenario=scen,
+            seed=seed,
+            inventory_path=inventory_path,
+            expected_provenance=provenance,
+        )
+    print(f"  All {len(cache_pairs)} official attack caches validated against {inventory_path.name}.")
 
-    # 6. Disk space check
-    try:
-        total, used, free = shutil.disk_usage(repo_root)
-        free_gb = free / (1024**3)
-        preflight_report["disk_free_gb"] = free_gb
-        print(f"\nAvailable Disk Space: {free_gb:.2f} GB (minimum required: 10.00 GB)")
-        if free_gb < 10.0:
-            raise RuntimeError(f"Insufficient disk space: {free_gb:.2f} GB < 10.00 GB required")
-    except Exception as e:
-        print(f"  Warning: disk usage check warning: {e}")
+    # 7. Unsuppressed disk space check
+    free_gb = check_disk_space(repo_root=repo_root, min_gb=10.0)
+    preflight_report["disk_free_gb"] = free_gb
+    print(f"\nAvailable Disk Space: {free_gb:.2f} GB (minimum required: 10.00 GB)")
 
     print("\n" + "=" * 78)
     print("PREFLIGHT PASS: All integrity gates and frozen contracts satisfied.")
@@ -700,6 +1207,7 @@ def execute_single_run(
     run_row: pd.Series,
     output_dir: Path,
     caches_dir: Path,
+    inventory_path: Path,
     configs_dir: Path,
     manifests_dir: Path,
     models_dir: Path,
@@ -716,58 +1224,49 @@ def execute_single_run(
     provenance_hashes: Dict[str, str],
 ) -> Dict[str, Any]:
     """
-    Executes a single run from the matrix with full validation, staging, and atomic publication.
+    Executes a single unique run with dry CompletionMarker pre-validation,
+    two-stage atomic publication, and quarantine.
     """
     run_id = str(run_row["run_id"])
     seed = int(run_row["seed"])
     attack_scenario = canonicalize_scenario(run_row["attack_scenario"])
     defense_name = canonicalize_defense(run_row["defense_name"])
     controller_config_id = str(run_row["controller_config_id"])
-    is_alias = bool(run_row["is_alias"])
-    alias_target = str(run_row["alias_for_run_id"])
 
     final_run_dir = output_dir / run_id
 
-    # Handle C1 Aliases
-    if is_alias:
-        target_dir = output_dir / alias_target
-        if not target_dir.exists():
-            raise RuntimeError(
-                f"Alias {run_id} cannot be published before target run {alias_target} exists!"
-            )
-        is_target_valid, err = validate_completed_run(target_dir)
-        if not is_target_valid:
-            raise RuntimeError(
-                f"Alias target {alias_target} is invalid: {err}. Quarantine and recompute target first."
-            )
+    # Prepare Run Provenance Hashes
+    cache_slug = f"{attack_scenario}_{seed}"
+    cache_dir = caches_dir / cache_slug
 
-        # Publish alias marker atomically
-        staging_dir = output_dir / f".staging_{run_id}_{uuid.uuid4().hex}"
-        staging_dir.mkdir(parents=True, exist_ok=False)
+    # Validate cache against independent inventory FIRST
+    cache_manifest = validate_cache_against_inventory(
+        cache_dir=cache_dir,
+        scenario=attack_scenario,
+        seed=seed,
+        inventory_path=inventory_path,
+        expected_provenance=provenance_hashes,
+    )
 
-        alias_record = {
-            "run_id": run_id,
-            "seed": seed,
-            "attack_scenario": attack_scenario,
-            "defense": defense_name,
-            "config_id": controller_config_id,
-            "is_alias": True,
-            "alias_for_run_id": alias_target,
-            "published_at": datetime.datetime.utcnow().isoformat() + "Z",
-        }
-        with open(staging_dir / "alias_pointer.json", "w") as f:
-            json.dump(alias_record, f, indent=2)
+    run_prov = dict(provenance_hashes)
+    run_prov["cache_manifest_hash"] = calculate_file_hash(cache_dir / "manifest.json")
 
-        # Copy summary and completion from target for downstream transparency
-        shutil.copy2(target_dir / "run_summary.json", staging_dir / "run_summary.json")
-        shutil.copy2(target_dir / "completion.json", staging_dir / "completion.json")
+    # Dry-run CompletionMarker validation BEFORE starting any batch work
+    dry_marker = CompletionMarker(
+        run_id=run_id,
+        timestamp=datetime.datetime.utcnow().isoformat() + "Z",
+        provenance_hashes=run_prov,
+    )
+    _validate_provenance(dry_marker.provenance_hashes)
 
-        staging_dir.rename(final_run_dir)
-        return {"run_id": run_id, "status": "ALIASED", "alias_for": alias_target}
-
-    # If run already exists, validate it
+    # Check for existing run directory reuse
     if final_run_dir.exists():
-        is_valid, err = validate_completed_run(final_run_dir)
+        is_valid, err = validate_completed_run(
+            final_run_dir,
+            expected_row=run_row,
+            expected_provenance=run_prov,
+            expected_cache_identity=cache_manifest,
+        )
         if is_valid:
             print(f"  [REUSE] Run {run_id} already exists and passed validation. Reusing.")
             return {"run_id": run_id, "status": "REUSED"}
@@ -775,16 +1274,6 @@ def execute_single_run(
             print(f"  [QUARANTINE] Run {run_id} exists but is incomplete or invalid: {err}.")
             quarantine_dir = quarantine_run_directory(final_run_dir, err)
             print(f"  Quarantined to {quarantine_dir.name}. Restarting from batch 0.")
-
-    # Locate Attack Cache
-    cache_slug = f"{attack_scenario}_{seed}"
-    cache_dir = caches_dir / cache_slug
-    if not cache_dir.exists():
-        raise FileNotFoundError(f"Required attack cache missing: {cache_dir}")
-
-    manifest_path = cache_dir / "manifest.json"
-    with open(manifest_path) as f:
-        cache_manifest = json.load(f)
 
     # Prepare Cache Provider
     cache_provider = ConcreteAttackCacheProvider(
@@ -807,6 +1296,7 @@ def execute_single_run(
         training_bounds=training_bounds,
         benign_profile=benign_profile,
         rf_model=rf_model,
+        defenses_yaml=defenses_yaml,
     )
 
     # Prepare Controller Policy
@@ -817,11 +1307,7 @@ def execute_single_run(
         defenses_yaml=defenses_yaml,
     )
 
-    # Run Provenance Hashes
-    run_prov = dict(provenance_hashes)
-    run_prov["cache_manifest_hash"] = calculate_file_hash(manifest_path)
-
-    # Run in staging directory
+    # Staging directory on the same filesystem
     staging_dir = output_dir / f".staging_{run_id}_{uuid.uuid4().hex}"
     staging_dir.mkdir(parents=True, exist_ok=False)
 
@@ -842,19 +1328,16 @@ def execute_single_run(
         )
         runner.execute_run()
 
-        # The runner writes output inside staging_dir / run_id
         runner_out = staging_dir / run_id
         if not runner_out.exists():
             raise RuntimeError(f"Runner failed to create output directory {runner_out}")
 
-        # Atomic rename from staging_dir / run_id to final_run_dir
         runner_out.rename(final_run_dir)
         shutil.rmtree(staging_dir, ignore_errors=True)
 
         return {"run_id": run_id, "status": "COMPLETED"}
 
     except Exception as e:
-        # Quarantine staging directory if failure occurred
         ts = datetime.datetime.utcnow().strftime("%Y%m%d%H%M%S%f")
         q_dir = output_dir / f"{run_id}_failed_quarantined_{ts}"
         if staging_dir.exists():
@@ -878,7 +1361,7 @@ def execute_single_run(
 # ---------------------------------------------------------------------------
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Phase 10D Official Evaluation Orchestrator (Safe by Default).",
+        description="Phase 10D v2 Official Evaluation Orchestrator (Safe by Default).",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
@@ -929,7 +1412,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         "--max-runs",
         type=int,
         default=None,
-        help="Optional maximum number of runs to execute.",
+        help="Optional maximum number of runs to execute (must be positive).",
     )
     parser.add_argument(
         "--output-dir",
@@ -942,6 +1425,12 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         type=Path,
         default=REPO_ROOT / "artifacts/caches",
         help="Directory containing the 15 official attack caches.",
+    )
+    parser.add_argument(
+        "--inventory-path",
+        type=Path,
+        default=REPO_ROOT / "artifacts/reports/cache_inventory_v2.json",
+        help="Path to authoritative cache inventory ledger.",
     )
     parser.add_argument(
         "--configs-dir",
@@ -967,6 +1456,19 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default=REPO_ROOT / "artifacts/preprocessors",
         help="Directory containing preprocessors (bounds, mask, benign profile).",
     )
+    parser.add_argument(
+        "--enforce-git",
+        dest="enforce_git",
+        action="store_true",
+        default=True,
+        help="Enforce clean git working tree and freeze ancestry (default: True).",
+    )
+    parser.add_argument(
+        "--no-enforce-git",
+        dest="enforce_git",
+        action="store_false",
+        help="Bypass git cleanliness checks (for local testing/development only).",
+    )
     return parser.parse_args(argv)
 
 
@@ -981,9 +1483,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         configs_dir=args.configs_dir,
         manifests_dir=args.manifests_dir,
         models_dir=args.models_dir,
+        preprocessors_dir=args.preprocessors_dir,
         caches_dir=args.caches_dir,
+        inventory_path=args.inventory_path,
+        output_dir=args.output_dir,
         repo_root=REPO_ROOT,
-        enforce_git=True,
+        enforce_git=args.enforce_git,
     )
 
     if args.preflight_only or not args.execute:
@@ -997,7 +1502,16 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    # 2. Derive Matrix & Filter Runs
+    # 2. Build complete production provenance
+    provenance = build_production_provenance(
+        repo_root=REPO_ROOT,
+        configs_dir=args.configs_dir,
+        manifests_dir=args.manifests_dir,
+        models_dir=args.models_dir,
+        preprocessors_dir=args.preprocessors_dir,
+    )
+
+    # 3. Derive Matrix & Filter Runs
     matrix, _ = derive_and_validate_matrix(args.configs_dir)
     filtered_matrix = matrix.copy()
 
@@ -1024,12 +1538,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("No matrix runs matched the specified filters.")
         return 0
 
-    if args.max_runs is not None and args.max_runs > 0:
-        filtered_matrix = filtered_matrix.head(args.max_runs)
+    # 4. Resolve dependency-safe execution plan
+    unique_runs, alias_runs = resolve_and_validate_execution_plan(
+        matrix=matrix,
+        filtered_matrix=filtered_matrix,
+        output_dir=args.output_dir,
+        expected_provenance=provenance,
+        max_runs=args.max_runs,
+    )
 
-    print(f"Selected {len(filtered_matrix)} runs for evaluation.")
+    print(f"Execution Plan: {len(unique_runs)} unique executions, {len(alias_runs)} alias pointers.")
 
-    # 3. Load Common Components
+    # 5. Load Common Components
     resolved_batches, y_measurement, manifest_hashes = prepare_evaluation_batches(
         args.manifests_dir
     )
@@ -1048,35 +1568,19 @@ def main(argv: Optional[List[str]] = None) -> int:
         controllers_yaml = yaml.safe_load(f)
     with open(args.configs_dir / "defenses.yaml") as f:
         defenses_yaml = yaml.safe_load(f)
-    with open(args.configs_dir / "attacks.yaml") as f:
-        attacks_yaml = yaml.safe_load(f)
-    with open(args.configs_dir / "experiment.yaml") as f:
-        experiment_yaml = yaml.safe_load(f)
 
-    provenance_hashes = {
-        "frozen_rf_hash": calculate_file_hash(args.models_dir / "frozen_rf.joblib"),
-        "evaluation_roles_hash": manifest_hashes["evaluation_roles_hash"],
-        "evaluation_batches_hash": manifest_hashes["evaluation_batches_hash"],
-        "attacks_yaml_hash": calculate_file_hash(args.configs_dir / "attacks.yaml"),
-        "defenses_yaml_hash": calculate_file_hash(args.configs_dir / "defenses.yaml"),
-        "controllers_yaml_hash": calculate_file_hash(args.configs_dir / "controllers.yaml"),
-        "experiment_yaml_hash": calculate_file_hash(args.configs_dir / "experiment.yaml"),
-    }
-
-    # Execute unique runs first, then aliases
-    unique_runs = filtered_matrix[~filtered_matrix["is_alias"]]
-    alias_runs = filtered_matrix[filtered_matrix["is_alias"]]
-
+    # 6. Execute unique runs first, then publish aliases
     completed_count = 0
     reused_count = 0
     aliased_count = 0
 
     for idx, (_, r) in enumerate(unique_runs.iterrows(), 1):
-        print(f"[{idx}/{len(unique_runs)}] Executing run: {r['run_id']}...")
+        print(f"[{idx}/{len(unique_runs)}] Processing unique run: {r['run_id']}...")
         res = execute_single_run(
             run_row=r,
             output_dir=args.output_dir,
             caches_dir=args.caches_dir,
+            inventory_path=args.inventory_path,
             configs_dir=args.configs_dir,
             manifests_dir=args.manifests_dir,
             models_dir=args.models_dir,
@@ -1090,7 +1594,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             rf_model=rf_model,
             controllers_yaml=controllers_yaml,
             defenses_yaml=defenses_yaml,
-            provenance_hashes=provenance_hashes,
+            provenance_hashes=provenance,
         )
         if res["status"] == "REUSED":
             reused_count += 1
@@ -1099,24 +1603,10 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     for idx, (_, r) in enumerate(alias_runs.iterrows(), 1):
         print(f"[{idx}/{len(alias_runs)}] Publishing alias: {r['run_id']} -> {r['alias_for_run_id']}...")
-        res = execute_single_run(
-            run_row=r,
+        res = publish_alias(
+            alias_row=r,
             output_dir=args.output_dir,
-            caches_dir=args.caches_dir,
-            configs_dir=args.configs_dir,
-            manifests_dir=args.manifests_dir,
-            models_dir=args.models_dir,
-            preprocessors_dir=args.preprocessors_dir,
-            resolved_batches=resolved_batches,
-            y_measurement=y_measurement,
-            feature_names=feature_names,
-            modifiable_mask=modifiable_mask,
-            training_bounds=training_bounds,
-            benign_profile=benign_profile,
-            rf_model=rf_model,
-            controllers_yaml=controllers_yaml,
-            defenses_yaml=defenses_yaml,
-            provenance_hashes=provenance_hashes,
+            expected_provenance=provenance,
         )
         aliased_count += 1
 

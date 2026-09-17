@@ -6,11 +6,14 @@ The Phase 10 evaluation matrix comprises 279 reference configurations evaluated 
 This document establishes the architecture and execution contract of the evaluation orchestrator (`scripts/run_evaluation.py`), guaranteeing:
 1. **Zero Unintentional Execution**: Default execution mode performs non-mutating preflight only. Full evaluation execution requires explicit `--execute`.
 2. **Deterministic Whole-Run Restart**: Runs are never resumed halfway through a controller state sequence. Any failure, crash, or incomplete run restarts cleanly from batch 0.
-3. **Run Immutability & Reuse**: Completed runs with valid `completion.json` and validated serialized outputs are never recomputed.
+3. **Run Immutability & Validated Reuse**: Completed runs with valid `completion.json` and validated serialized outputs are never recomputed. Reuse validates seed, scenario, defense, config, cache identity, expected provenance, and internal batch-record run IDs.
 4. **Quarantine of Corrupted / Incomplete Runs**: Partial or invalid output directories are immediately quarantined to `<run_id>_quarantined_<timestamp>` with detailed failure diagnostic records.
 5. **Exact Pairing & Common Randomness**: Base and RA configurations share identical stochastic seeds and batch-level pseudorandom state sequences `rng = np.random.RandomState(int(seed) * 10000 + int(batch_id))`. Under equal defense intensities, Base and RA generate bit-identical defended inputs.
 6. **Strict Timing Isolation**: At batch $t$, defense intensity is determined prior to accessing batch-$t$ labels. Prediction and defense occur on defended outputs. Labels are accessed post-prediction to calculate TP/FN. Feedback is delivered strictly for batch $t+1$. Base receives no feedback.
 7. **Two-Stage Atomic Publication**: All execution writes to a staging directory `.staging_<run_id>_<timestamp>`. Serialized outputs (`config.json`, `confusion.json`, `scores.json`, `run_summary.json`) are reopened and validated via `_validate_run_outputs()` before `completion.json` is written. Upon validation, the directory is atomically renamed to its final target path `<output_dir>/<run_id>`.
+8. **Independent Cache Inventory Pinning**: Official attack caches are validated against `artifacts/reports/cache_inventory_v2.json` before any manifest or Parquet is trusted. Manifests are never trusted circularly.
+9. **Pointer-Only Alias Contract**: Sensitivity C1 aliases are published as pointer-only directories containing `alias_pointer.json` and `completion.json`, never masquerading as independently executed runs.
+10. **Dependency-Safe Filtering**: When filters select an alias, its required primary target execution is automatically resolved and scheduled ahead of the alias.
 
 ---
 
@@ -27,19 +30,20 @@ The evaluation matrix is derived dynamically from `configs/experiment.yaml`, `co
 ---
 
 ## 3. Defense Adapters and Base Parameters
+Defense fixed base intensities and dynamic bounds are derived directly from frozen `configs/defenses.yaml`:
 1. **Adaptive Feature Poisoning (AFP)**:
    - Fixed base intensity: $\epsilon = 0.0003$.
+   - Controller intensity range: $[0.0, 0.0003]$.
    - Calibrated constant: $\alpha = 0.5$.
-   - Controller intensity range: $[0.0, 0.005]$.
    - Model inference: `model.predict(X_def)` and `model.predict_proba(X_def)[:, 1]` on defended output.
 2. **Feature Squeezing (FS)**:
    - Fixed base continuous intensity: $2.0$.
+   - Controller intensity range: $[0.0, 2.0]$.
    - Effective bit depth logged: $d = \max(0, 6 - \lfloor\text{intensity}\rfloor)$.
-   - Controller intensity range: $[1.0, 5.0]$.
    - Model inference: `model.predict(X_def)` and `model.predict_proba(X_def)[:, 1]` on defended output.
 3. **Randomized Smoothing (RS)**:
    - Fixed base intensity: $\sigma = 0.0002$.
-   - Controller intensity range: $[0.0, 0.001]$.
+   - Controller intensity range: $[0.0, 0.0002]$.
    - 11-member ensemble inference with chunk size 100 to remain within M4/16-GB memory limits.
    - Positive score: positive vote fraction $\text{votes} / 11$. Hard prediction: majority vote.
 4. **Protected Features**:
@@ -48,48 +52,99 @@ The evaluation matrix is derived dynamically from `configs/experiment.yaml`, `co
 
 ---
 
-## 4. Run Lifecycle and State Machine
-Each unique execution transitions through the following formal state machine:
-```
-               [Select Run]
-                    |
-          Does <run_id> exist?
-             /             \
-          [YES]            [NO]
-           /                 \
-  Validate Run Outputs        \
-      /         \              \
-  [VALID]     [INVALID]         \
-    |             |              \
- [REUSE]     Quarantine Dir       \
- (Skip)      to <run>_quarantined  \
-                  \                 /
-                   \               /
-                    v             v
-             Create Staging Directory
-           .staging_<run_id>_<timestamp>
-                          |
-             Reset Controller State (batch 0)
-                          |
-             Execute 144 Batches in Order
-                          |
-             Write config.json, confusion.json,
-             scores.json, run_summary.json
-                          |
-             Reopen & Validate Serialized Outputs
-                          |
-             Write completion.json (LAST)
-                          |
-             Atomic Directory Rename to <output_dir>/<run_id>
-```
+## 4. Complete Provenance Architecture (11 Fields)
+Every completed run constructs and verifies all 11 required provenance keys against canonical on-disk artifacts:
+1. `frozen_rf_hash`: `artifacts/models/frozen_rf.joblib`
+2. `scaler_hash`: `artifacts/preprocessors/standard_scaler.joblib`
+3. `feature_names_hash`: `artifacts/preprocessors/feature_names.json`
+4. `feature_mask_hash`: `artifacts/preprocessors/feature_mask.json`
+5. `training_bounds_hash`: `artifacts/preprocessors/training_bounds.json`
+6. `evaluation_roles_hash`: `data/manifests/evaluation_roles.csv`
+7. `evaluation_batches_hash`: `data/manifests/evaluation_batches.csv`
+8. `attacks_yaml_hash`: `configs/attacks.yaml`
+9. `controllers_yaml_hash`: `configs/controllers.yaml`
+10. `defenses_yaml_hash`: `configs/defenses.yaml`
+11. `experiment_yaml_hash`: `configs/experiment.yaml`
+
+**Pre-Run Dry Validation**:
+Before initiating batch 0 of any run, `CompletionMarker` is pre-instantiated and validated with the full 11-field provenance dictionary, ensuring provenance validity before expensive batch inference begins.
 
 ---
 
-## 5. Provenance Requirements
-Every completed run verifies and records full provenance in `completion.json` and `run_summary.json`:
-- `frozen_rf_hash`: `9608672c5d5e38a9272c560679cdd2291399de0e0917c8c9dff373bfd200f51d`
-- `evaluation_roles_hash`: `cbf650879aa1369fa26b803777f30d4b0add9e7aff2c05d399ba7f42563f7b45`
-- `evaluation_batches_hash`: `4084017e5593732e455763416f7fc38254fc9dab2466eca289b66e68dc0ff79a`
-- `attacks_yaml_hash`, `defenses_yaml_hash`, `controllers_yaml_hash`, `experiment_yaml_hash`
-- `cache_manifest_hash`: SHA-256 of the attack cache manifest used for the run.
-- Zero placeholder or dummy strings permitted.
+## 5. Non-Circular Cache Validation
+Rather than circularly trusting a cache's own `manifest.json`, the orchestrator implements independent verification:
+- Loads authoritative `artifacts/reports/cache_inventory_v2.json`.
+- Locates the canonical scenario and seed entry.
+- Compares SHA-256 of `X_attacked.parquet`, `status.parquet`, `manifest.json`, and `completion.json` against inventory records.
+- Compares internal model, preprocessor, and config hashes against independently computed provenance.
+- Only after all 4 files are independently pinned against the inventory is the manifest forwarded to `ConcreteAttackCacheProvider`.
+- Self-consistent but inventory-divergent caches are strictly rejected.
+
+---
+
+## 6. Strict Git Execution Cleanliness
+Implements the Phase 10B cleanliness policy:
+- Validates that `phase10-protocol-freeze` tag is an ancestor of `HEAD`.
+- Validates zero diff in `src/` against `phase10-protocol-freeze`.
+- Rejects any staged or unstaged modifications to tracked files.
+- Rejects untracked code, test, script, config, or documentation files.
+- Allowlist strictly permits:
+  - `artifacts/caches/`
+  - configured evaluation output directory
+  - `.gemini/` IDE workspace metadata
+  - historical ZIP bundles (`phase10*.zip`)
+  - execution logs (`*.log`)
+- Fails closed on any Git parsing error.
+
+---
+
+## 7. Disk-Space Safety Gate
+- Checks filesystem free space at the evaluation output destination.
+- Catches only `OSError` during disk stat acquisition.
+- If free space is below minimum threshold (10.0 GB), raises `RuntimeError` and aborts immediately. Warnings are never substituted for safety failures.
+
+---
+
+## 8. Measurement-Label Resolution Integrity
+During preflight and initialization, manifests are cross-validated without opening evaluation Parquets:
+- `evaluation_roles.csv` and `evaluation_batches.csv` required columns verified.
+- Unique positions asserted: exactly 72,000 measurement positions and 18,000 crafting positions.
+- Crafting positions never overlap measurement positions.
+- Evaluation batch positions equal exactly the measurement positions.
+- Batches normalize strictly to integers $0 \dots 143$, each having exactly 500 rows.
+- Binary labels (`y_binary \in \{0, 1\}`) and composite identities (`_source_file`, `_raw_row_idx`) agree wherever present.
+
+---
+
+## 9. Pointer-Only Alias Publication Contract
+Aliases represent identical mathematical evaluations (sensitivity C1 runs aliasing primary C1 runs).
+- Aliases never masquerade as independently executed runs.
+- Published as pointer directories containing:
+  - `alias_pointer.json`: immutable record containing `target_run_id`, `target_path`, `target_run_hash`, `alias_tuple`, `target_validation_summary`.
+  - `completion.json`: alias-specific completion marker certifying publication.
+- Target run outputs are validated before alias creation.
+- Published atomically via same-filesystem staging and renaming.
+- Corrupted or invalid existing alias directories are quarantined.
+- Downstream analysis code resolves `alias_pointer.json` rather than double-counting executions.
+
+---
+
+## 10. Dependency-Safe Filter Planning
+Execution planning guarantees safety before starting run 0:
+- When filters (`--run-id`, `--config`, etc.) select an alias:
+  - If target run is already completed and validated on disk, the alias is scheduled.
+  - If target run is not yet completed, the target run is automatically resolved and prepended to the execution sequence ahead of the alias.
+- The entire filtered execution plan is validated upfront.
+- Non-positive `--max-runs` arguments are rejected with an explicit error.
+
+---
+
+## 11. Production-Wiring Canary
+A dedicated end-to-end canary (`test_production_wiring_canary` in `tests/test_run_evaluation.py`) validates the complete production wiring:
+- Production provenance construction (all 11 canonical on-disk artifacts).
+- Independent cache validation against `cache_inventory_v2.json`.
+- Production defense adapters, policies, and controller factories.
+- Full 144-batch orchestration with sequential timing isolation.
+- Output reopening, recalculation, and cross-metric verification.
+- Completion marker publication, validated reuse, and quarantine behavior.
+- Operates entirely in a synthetic temporary directory without opening evaluation Parquets or writing under `artifacts/evaluation_runs/`.

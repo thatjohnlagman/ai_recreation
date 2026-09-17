@@ -39,7 +39,7 @@ from typing import Dict, List, Set
 
 ROOT = Path(__file__).resolve().parents[1]
 
-BUNDLE_NAME = "phase10d_evaluation_orchestration_readiness_bundle.zip"
+BUNDLE_NAME = "phase10d_evaluation_orchestration_readiness_bundle_v2.zip"
 BUNDLE_PATH = ROOT / BUNDLE_NAME
 
 PROTECTED_HASHES = {
@@ -52,7 +52,7 @@ PROTECTED_HASHES = {
 FREEZE_TAG = "phase10-protocol-freeze"
 FREEZE_COMMIT = "65005505415a2bdf2d5744dbd135e9214e74081a"
 
-FORBIDDEN_EXTENSIONS = {".parquet", ".csv", ".joblib", ".pkl", ".pdf", ".pyc", ".tar", ".gz"}
+FORBIDDEN_EXTENSIONS = {".parquet", ".csv", ".joblib", ".pkl", ".pdf", ".pyc", ".tar", ".gz", ".zip"}
 FORBIDDEN_PATTERNS = [
     ".git/",
     ".venv",
@@ -64,8 +64,13 @@ FORBIDDEN_PATTERNS = [
     "artifacts/evaluation_runs",
     "data/processed",
     "data/raw",
+    "data/interim",
     "X_attacked.parquet",
     "status.parquet",
+    ".env",
+    "secret",
+    "id_rsa",
+    "credentials",
 ]
 
 
@@ -182,6 +187,7 @@ def main():
             "scripts/benchmark_evaluation_pilot.py",
             "scripts/build_evaluation_caches.py",
             "scripts/generate_cache_inventory_v2.py",
+            "scripts/build_phase10d_review_bundle.py",
             # Src files
             "src/recall_aware_ids/experiment/runner.py",
             "src/recall_aware_ids/experiment/adapters.py",
@@ -282,21 +288,30 @@ Timestamp: {preflight_res.stdout.splitlines()[1] if len(preflight_res.stdout.spl
             cache_report_lines.append(f"{p}: {h}")
         (evidence_dir / "IMMUTABLE_CACHE_METADATA_COMPARISON.txt").write_text("\n".join(cache_report_lines) + "\n")
 
-        # Duplicate and forbidden scans
-        all_bundle_files = []
-        for p in bundle_root.rglob("*"):
-            if p.is_file():
-                rel = p.relative_to(bundle_root)
-                all_bundle_files.append(str(rel))
+        # Determine all final members that will be present in the bundle
+        existing_files = set(
+            str(p.relative_to(bundle_root))
+            for p in bundle_root.rglob("*")
+            if p.is_file()
+        )
+        all_final_members = sorted(
+            existing_files
+            | {
+                "evidence/DUPLICATE_SCAN_REPORT.txt",
+                "evidence/FORBIDDEN_FILE_SCAN_REPORT.txt",
+                "MANIFEST.txt",
+                "FILE_HASHES.sha256",
+            }
+        )
 
-        # Check for duplicates
-        file_basenames = [Path(f).name for f in all_bundle_files]
-        dup_report = f"Total files: {len(all_bundle_files)}\nUnique basenames: {len(set(file_basenames))}\n"
+        # Duplicate scan across all final members
+        file_basenames = [Path(f).name for f in all_final_members]
+        dup_report = f"Total files: {len(all_final_members)}\nUnique basenames: {len(set(file_basenames))}\n"
         (evidence_dir / "DUPLICATE_SCAN_REPORT.txt").write_text(dup_report)
 
-        # Check for forbidden files
+        # Forbidden files scan across all final members
         forbidden_found = []
-        for rel in all_bundle_files:
+        for rel in all_final_members:
             p = Path(rel)
             if p.suffix.lower() in FORBIDDEN_EXTENSIONS:
                 forbidden_found.append(f"Forbidden extension {p.suffix}: {rel}")
@@ -309,13 +324,8 @@ Timestamp: {preflight_res.stdout.splitlines()[1] if len(preflight_res.stdout.spl
 
         (evidence_dir / "FORBIDDEN_FILE_SCAN_REPORT.txt").write_text("No forbidden files found. PASS.\n")
 
-        # Manifest
-        all_bundle_files_sorted = sorted([
-            str(p.relative_to(bundle_root))
-            for p in bundle_root.rglob("*")
-            if p.is_file()
-        ])
-        manifest_text = "\n".join(all_bundle_files_sorted) + "\n"
+        # Manifest: lists EVERY final member including MANIFEST.txt and FILE_HASHES.sha256
+        manifest_text = "\n".join(all_final_members) + "\n"
         (bundle_root / "MANIFEST.txt").write_text(manifest_text)
 
         # Internal hash ledger: FILE_HASHES.sha256 (hashes all files in bundle except itself)
@@ -323,6 +333,11 @@ Timestamp: {preflight_res.stdout.splitlines()[1] if len(preflight_res.stdout.spl
             p for p in bundle_root.rglob("*")
             if p.is_file() and p.name != "FILE_HASHES.sha256"
         ])
+        if len(all_files_for_ledger) != len(all_final_members) - 1:
+            raise ValueError(
+                f"Ledger file count mismatch: on-disk={len(all_files_for_ledger)}, expected={len(all_final_members) - 1}"
+            )
+
         ledger_lines = []
         for p in all_files_for_ledger:
             rel = str(p.relative_to(bundle_root))
@@ -330,6 +345,17 @@ Timestamp: {preflight_res.stdout.splitlines()[1] if len(preflight_res.stdout.spl
             ledger_lines.append(f"{h}  {rel}")
 
         (bundle_root / "FILE_HASHES.sha256").write_text("\n".join(ledger_lines) + "\n")
+
+        # Sanity check on-disk files match all_final_members exactly
+        actual_files_on_disk = sorted([
+            str(p.relative_to(bundle_root))
+            for p in bundle_root.rglob("*")
+            if p.is_file()
+        ])
+        if actual_files_on_disk != all_final_members:
+            diff_extra = set(actual_files_on_disk) - set(all_final_members)
+            diff_missing = set(all_final_members) - set(actual_files_on_disk)
+            raise ValueError(f"On-disk files mismatch all_final_members! Missing: {diff_missing}, Extra: {diff_extra}")
 
         # Create zip archive
         if BUNDLE_PATH.exists():
@@ -352,19 +378,48 @@ Timestamp: {preflight_res.stdout.splitlines()[1] if len(preflight_res.stdout.spl
         if len(namelist) != len(set(namelist)):
             raise ValueError("Duplicate files found inside zip archive!")
 
-        # Verify internal ledger matches perfectly
+        # Verify internal ledger matches perfectly and manifest matches extracted files exactly
         with tempfile.TemporaryDirectory() as extract_dir:
             zf.extractall(extract_dir)
             ext_root = Path(extract_dir)
+
+            manifest_file = ext_root / "MANIFEST.txt"
+            if not manifest_file.exists():
+                raise FileNotFoundError("MANIFEST.txt missing from extracted archive!")
+
+            manifest_members = set([line.strip() for line in manifest_file.read_text().splitlines() if line.strip()])
+            extracted_files = set([
+                str(p.relative_to(ext_root))
+                for p in ext_root.rglob("*")
+                if p.is_file()
+            ])
+            if extracted_files != manifest_members:
+                diff_missing = manifest_members - extracted_files
+                diff_extra = extracted_files - manifest_members
+                raise ValueError(
+                    f"Extracted member set does not match MANIFEST.txt!\n"
+                    f"Missing from extract: {diff_missing}\n"
+                    f"Extra in extract: {diff_extra}"
+                )
 
             ledger_file = ext_root / "FILE_HASHES.sha256"
             if not ledger_file.exists():
                 raise FileNotFoundError("FILE_HASHES.sha256 missing from extracted archive!")
 
+            ledger_entries = {}
             for line in ledger_file.read_text().splitlines():
                 if not line.strip():
                     continue
                 exp_h, rel_f = line.split("  ", 1)
+                ledger_entries[rel_f] = exp_h
+
+            expected_ledger_members = manifest_members - {"FILE_HASHES.sha256"}
+            if set(ledger_entries.keys()) != expected_ledger_members:
+                diff_missing = expected_ledger_members - set(ledger_entries.keys())
+                diff_extra = set(ledger_entries.keys()) - expected_ledger_members
+                raise ValueError(f"FILE_HASHES.sha256 mismatch with manifest! Missing: {diff_missing}, Extra: {diff_extra}")
+
+            for rel_f, exp_h in ledger_entries.items():
                 actual_h = calculate_sha256(ext_root / rel_f)
                 if actual_h != exp_h:
                     raise ValueError(f"Extracted member {rel_f} hash mismatch! Expected {exp_h}, got {actual_h}")
