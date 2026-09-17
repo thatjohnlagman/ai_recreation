@@ -18,6 +18,8 @@ import pandas as pd
 import streamlit as st
 import altair as alt
 
+import attack_bridge
+
 # ── Streamlit Page Configuration ──────────────────────────────────────────────
 st.set_page_config(
     page_title="IDS Security Posture Console | Recall-Aware Defense",
@@ -810,9 +812,9 @@ def _init_session():
         # SIEM metrics & Logs
         "events":            deque(maxlen=MAX_EVENTS),
         "analytics":         [],
-        "total_attacks":     1979,    # Pre-seeded to match mockup reference
-        "events_dropped":    623,     # Pre-seeded to match mockup reference
-        "urgency_counts":    {"Critical": 2, "High": 18, "Medium": 22, "Low": 124},
+        "total_attacks":     0,
+        "events_dropped":    0,
+        "urgency_counts":    {"Critical": 0, "High": 0, "Medium": 0, "Low": 0},
         "chart_data":        initial_chart_data,
         "chart_step":        CHART_HISTORY_LEN,
         "selected_event_id": None,
@@ -821,84 +823,83 @@ def _init_session():
 
 # ── Simulation Tick Processor ─────────────────────────────────────────────────
 def _process_tick():
-    s         = st.session_state
-    model     = load_model()
-    ref       = s["ref"]
-    bounds    = s["bounds"]
-    pool      = s["pool"]
-    columns   = pool.columns
-    scheduler = s["scheduler"]
-    controller= s["controller"]
-    attrib    = s["attribution"]
-    rng       = s["rng"]
-    surr_off  = s["surr_offsets"]
-    afp_on    = s["afp_on"]
+    s          = st.session_state
+    model      = load_model()
+    ref        = s["ref"]
+    bounds     = s["bounds"]
+    pool       = s["pool"]
+    columns    = pool.columns
+    controller = s["controller"]
+    attrib     = s["attribution"]
+    rng        = s["rng"]
+    surr_off   = s["surr_offsets"]
+    afp_on     = s["afp_on"]
 
-    # Continuous live traffic with balanced realistic mixture:
-    # ~28% attacks arriving via coherent black-box probing campaigns, ~72% benign background traffic
-    ATTACK_MIX_PROB = 0.28
-    n_flows = max(2, rng.poisson(2.5 * s["speed"]))
+    # ── 1. Drain real attacks sent by attacker_app.py ────────────────────────
+    pending_attacks = attack_bridge.drain_attacks()
 
-    active_campaigns = scheduler.active()
-    active_techs = set(c["technique"] for c in active_campaigns)
-    for t in _ATCK_TECHNIQUES:
-        if t not in active_techs:
-            scheduler._spawn(technique=t, n=rng.randint(20, 35))
-    active_campaigns = scheduler.active()
+    # ── 2. Build the flow list for this tick ──────────────────────────────
+    # Each flow is a tuple: (gt_label, vec_tx, source_ip, true_technique, attack_bridge_entry|None)
+    flows: list = []
 
-    for _ in range(n_flows):
-        now            = time.time()
-        campaign       = None
-        gt_label       = 0
-        true_technique = "none"
+    # a) Real attack flows from the attacker – use the attacker’s feature vector
+    for entry in pending_attacks:
+        method      = entry.get("method", "silent_probing")
+        source_ip   = entry.get("source_ip", "192.168.99.10")
+        full_vec    = entry.get("full_vec", {})
+        col_list    = list(columns)
+        # Reconstruct the numpy vector in the correct column order
+        vec_tx = np.array(
+            [float(full_vec.get(c, 0.0)) for c in col_list],
+            dtype=np.float64,
+        )
+        flows.append((1, vec_tx, source_ip, method, entry))
 
-        # Continuous attack sampling from active campaigns
-        if active_campaigns and (rng.random() < ATTACK_MIX_PROB):
-            campaign       = active_campaigns[rng.randint(0, len(active_campaigns))]
-            gt_label       = 1
-            true_technique = campaign["technique"]
+    # b) Benign background flows – always generated; no internally-generated attacks
+    n_benign = max(1, rng.poisson(2.5 * s["speed"]))
+    for _ in range(n_benign):
+        source_ip   = f"10.0.0.{rng.randint(10, 250)}"
+        raw_series, _ = pool.draw(0)          # label=0 ⇒ benign only
+        vec_tx = clamp_validity(raw_series.values.astype(np.float64), bounds, columns)
+        flows.append((0, vec_tx, source_ip, "none", None))
 
-            # Realistic technique-specific pacing and inter-arrival timing
-            if true_technique == "silent_probing":
-                campaign["last_t"] += rng.uniform(1.2, 4.0)
-            elif true_technique == "decision_boundary":
-                campaign["last_t"] += rng.uniform(0.35, 0.65)
-            else:  # surrogate_transfer
-                campaign["last_t"] += rng.uniform(0.04, 0.14)
-            flow_time    = campaign["last_t"]
-            synthetic_ip = campaign["source_ip"]
-        else:
-            flow_time    = now
-            synthetic_ip = f"10.0.0.{rng.randint(10, 250)}"
+    # ── 3. Process every flow through the AFP / attribution / controller ──────
+    for gt_label, vec_tx, synthetic_ip, true_technique, bridge_entry in flows:
+        now = time.time()
 
-        raw_series, _ = pool.draw(gt_label)
-        vec_raw       = raw_series.values.astype(np.float64)
-
-        if campaign is not None:
-            vec_tx = apply_technique(vec_raw, campaign, ref, bounds, columns, rng, surr_off)
-        else:
-            vec_tx = clamp_validity(vec_raw, bounds, columns)
-
-        shadow  = shadow_infer(model, vec_tx, columns, ref, bounds, controller, rng, is_attack=(gt_label == 1))
+        shadow  = shadow_infer(
+            model, vec_tx, columns, ref, bounds, controller, rng,
+            is_attack=(gt_label == 1),
+        )
         path    = shadow["on"] if afp_on else shadow["off"]
+
+        # If the event came from the real attacker, honour the attacker’s
+        # actual bypass outcome so the two consoles stay consistent.
+        if bridge_entry is not None:
+            bypassed_by_attacker = bridge_entry.get("bypassed", False)
+            if bypassed_by_attacker:
+                # Attacker evaded → defender’s AFP missed it
+                path = dict(path)
+                path["pred"]  = 0
+                path["score"] = float(bridge_entry.get("attack_score", path["score"]))
+            else:
+                # Attacker was blocked → AFP caught it
+                path = dict(path)
+                path["pred"]  = 1
+                path["score"] = float(bridge_entry.get("attack_score", path["score"]))
+
         pred    = path["pred"]
         score   = path["score"]
         latency = path["latency_ms"]
         delta   = path.get("delta", {})
         ds      = _derive_defense_state(gt_label, pred)
 
-        attrib.observe(synthetic_ip, flow_time, vec_tx, pred, score)
+        attrib.observe(synthetic_ip, now, vec_tx, pred, score)
         attr_result = attrib.attribute(synthetic_ip)
 
-        controller.record(gt_label, path["pred"])
+        controller.record(gt_label, pred)
 
-        if campaign and campaign["technique"] == "decision_boundary":
-            campaign["db_last_label"] = path["pred"]
-        if campaign:
-            scheduler.advance(campaign)
-            active_campaigns = scheduler.active()
-
-        # Determine SIEM rule_name & urgency matching mockup
+        # Determine SIEM rule_name & urgency
         defense_name = "Adaptive Feature Poisoning"
         if ds == "blocked":
             rule_name = f"{defense_name} Dropped Malicious Probes"
@@ -927,7 +928,7 @@ def _process_tick():
             "urgency":              urgency,
             "ground_truth":         "Attack" if gt_label == 1 else "Benign",
             "true_technique":       true_technique,
-            "campaign_id":          campaign["campaign_id"] if campaign else None,
+            "campaign_id":          bridge_entry.get("probe_id") if bridge_entry else None,
             "prediction":           "Attack" if pred == 1 else "Benign",
             "score":                round(score, 4),
             "defense_state":        ds.upper().replace("_", " "),
@@ -939,7 +940,7 @@ def _process_tick():
         }
         s["events"].appendleft(event)
 
-    # Update real-time controller chart history
+    # ── 4. Update real-time controller chart history ──────────────────────────
     curr_recall = controller.rolling_recall() * 100
     curr_intens = controller.intensity_percent() if afp_on else 0
     s["chart_step"] += 1

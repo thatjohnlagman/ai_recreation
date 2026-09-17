@@ -17,6 +17,8 @@ import pandas as pd
 import streamlit as st
 import altair as alt
 
+import attack_bridge
+
 # ── Page Config ────────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Adversarial Probe Console | Black-Box Attack Simulator",
@@ -350,6 +352,14 @@ def _init_session():
     ref, bounds = load_ref_bounds()
     pool        = AttackRecordPool(X, Y)
     surr_off    = build_surrogate_offsets(pool.X_holdout, pool.Y_holdout, json.dumps(ref))
+    # Generate a stable attacker source IP for this session so the defender
+    # can correlate flows coming from this attacker instance.
+    _rng_ip = np.random.RandomState(int(time.time()) % 10000)
+    session_ip = f"192.168.99.{_rng_ip.randint(10, 99)}"
+
+    # Clear any stale attack entries from a previous session
+    attack_bridge.clear_queue()
+
     st.session_state.update({
         "_atk_initialized":  True,
         "pool":              pool,
@@ -369,6 +379,7 @@ def _init_session():
         "chart_data":        [{"step": i, "Bypass Rate (%)": 0.0} for i in range(15)],
         "chart_step":        15,
         "selected_probe_id": None,
+        "session_ip":        session_ip,
     })
 
 
@@ -382,6 +393,8 @@ def _reset_session():
     s["atk_state"]         = {}
     s["selected_probe_id"] = None
     s["paused"]            = True
+    # Clear the shared queue so the defender stops seeing attacks immediately
+    attack_bridge.clear_queue()
 
 
 # ── Simulation Tick ────────────────────────────────────────────────────────────
@@ -415,8 +428,12 @@ def _process_tick():
                 snippet[col] = round(v, 4)
             if len(snippet) >= 3: break
 
-        s["probe_log"].appendleft({
-            "probe_id":        str(uuid.uuid4())[:8].upper(),
+        probe_id  = str(uuid.uuid4())[:8].upper()
+        full_vec  = {col: float(vec_tx[i]) for i, col in enumerate(columns)}
+        source_ip = s.get("session_ip", "192.168.99.10")
+
+        probe_entry = {
+            "probe_id":        probe_id,
             "timestamp":       now,
             "time_str":        time.strftime("%I:%M:%S %p", time.localtime(now)),
             "method":          method,
@@ -425,8 +442,21 @@ def _process_tick():
             "ids_response":    ids_label,
             "attack_score":    round(score, 4),
             "feature_snippet": snippet,
-            "full_vec":        {col: float(vec_tx[i]) for i, col in enumerate(columns)},
+            "full_vec":        full_vec,
             "probe_number":    s["probes_sent"],
+            "source_ip":       source_ip,
+        }
+        s["probe_log"].appendleft(probe_entry)
+
+        # ── Push to shared bridge so app.py (Defender) sees the attack ──────
+        attack_bridge.write_attack({
+            "probe_id":     probe_id,
+            "timestamp":    now,
+            "method":       method,
+            "bypassed":     bypassed,
+            "attack_score": probe_entry["attack_score"],
+            "source_ip":    source_ip,
+            "full_vec":     full_vec,
         })
 
     s["chart_step"] += 1
