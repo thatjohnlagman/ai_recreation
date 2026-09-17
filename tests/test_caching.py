@@ -491,6 +491,9 @@ def test_cache_builder_silent_probing_round_trip(tmp_path):
         scenario=AttackCacheBuilder.SCENARIO_SILENT_PROBING,
         X_measurement=X, y_measurement=y, eval_positions=eps,
         output_dir=tmp_path / "cache_sp",
+        attack_script_hashes=_SCRIPT_HASHES,
+        attack_parameters=_PARAMS,
+        query_budgets=_BUDGETS,
     )
 
     # X_attacked must be identical to X_input for silent probing
@@ -523,11 +526,17 @@ def test_cache_builder_silent_probing_determinism(tmp_path):
         scenario=AttackCacheBuilder.SCENARIO_SILENT_PROBING,
         X_measurement=X, y_measurement=y, eval_positions=eps,
         output_dir=tmp_path / "det1",
+        attack_script_hashes=_SCRIPT_HASHES,
+        attack_parameters=_PARAMS,
+        query_budgets=_BUDGETS,
     )
     out2 = builder.build(
         scenario=AttackCacheBuilder.SCENARIO_SILENT_PROBING,
         X_measurement=X, y_measurement=y, eval_positions=eps,
         output_dir=tmp_path / "det2",
+        attack_script_hashes=_SCRIPT_HASHES,
+        attack_parameters=_PARAMS,
+        query_budgets=_BUDGETS,
     )
     h1 = calculate_file_hash(out1 / "X_attacked.parquet")
     h2 = calculate_file_hash(out2 / "X_attacked.parquet")
@@ -549,6 +558,9 @@ def test_cache_builder_provider_integration(tmp_path):
         scenario=AttackCacheBuilder.SCENARIO_SILENT_PROBING,
         X_measurement=X, y_measurement=y, eval_positions=eps,
         output_dir=tmp_path / "cache",
+        attack_script_hashes=_SCRIPT_HASHES,
+        attack_parameters=_PARAMS,
+        query_budgets=_BUDGETS,
     )
 
     resolved = make_synthetic_resolved_batches(N500)
@@ -675,7 +687,7 @@ def test_cache_builder_boundary_semantics(tmp_path):
         max_queries=50,
         attack_script_hashes=_SCRIPT_HASHES,
         attack_parameters=_PARAMS,
-        query_budgets=_BUDGETS,
+        query_budgets={"max_queries_per_sample": 50},
     )
     
     import pandas as pd
@@ -687,6 +699,7 @@ def test_cache_builder_boundary_semantics(tmp_path):
     assert status.loc[~status["attempted"], "queries_used"].sum() == 0
     # Attempted have 1 query from our mock
     assert status.loc[status["attempted"], "queries_used"].sum() == 20
+
 
 def test_cache_builder_atomic_write(tmp_path):
     builder = _make_builder()
@@ -702,5 +715,103 @@ def test_cache_builder_atomic_write(tmp_path):
         builder.build(
             scenario=AttackCacheBuilder.SCENARIO_SILENT_PROBING,
             X_measurement=X_meas, y_measurement=y_meas, eval_positions=eps,
-            output_dir=out_dir
+            output_dir=out_dir,
+            attack_script_hashes=_SCRIPT_HASHES,
+            attack_parameters=_PARAMS,
+            query_budgets=_BUDGETS,
+        )
+
+
+def test_cache_builder_rejects_omitted_silent_probing_metadata(tmp_path):
+    builder = _make_builder()
+    rng = np.random.RandomState(0)
+    X_meas = rng.rand(10, 78).astype(np.float32)
+    y_meas = np.ones(10, dtype=int)
+    eps = np.arange(10)
+
+    # Missing attack_script_hashes
+    with pytest.raises(ValueError, match="attack_script_hashes required"):
+        builder.build(
+            scenario=AttackCacheBuilder.SCENARIO_SILENT_PROBING,
+            X_measurement=X_meas, y_measurement=y_meas, eval_positions=eps,
+            output_dir=tmp_path / "c1",
+            attack_script_hashes=None,
+            attack_parameters=_PARAMS,
+            query_budgets=_BUDGETS,
+        )
+
+    # Missing attack_parameters
+    with pytest.raises(ValueError, match="attack_parameters required"):
+        builder.build(
+            scenario=AttackCacheBuilder.SCENARIO_SILENT_PROBING,
+            X_measurement=X_meas, y_measurement=y_meas, eval_positions=eps,
+            output_dir=tmp_path / "c2",
+            attack_script_hashes=_SCRIPT_HASHES,
+            attack_parameters=None,
+            query_budgets=_BUDGETS,
+        )
+
+    # Missing query_budgets
+    with pytest.raises(ValueError, match="query_budgets required"):
+        builder.build(
+            scenario=AttackCacheBuilder.SCENARIO_SILENT_PROBING,
+            X_measurement=X_meas, y_measurement=y_meas, eval_positions=eps,
+            output_dir=tmp_path / "c3",
+            attack_script_hashes=_SCRIPT_HASHES,
+            attack_parameters=_PARAMS,
+            query_budgets=None,
+        )
+
+
+def test_cache_builder_rejects_fabricated_silent_probing_metadata(tmp_path):
+    builder = _make_builder()
+    rng = np.random.RandomState(0)
+    X_meas = rng.rand(10, 78).astype(np.float32)
+    y_meas = np.ones(10, dtype=int)
+    eps = np.arange(10)
+
+    # Fabricated sha256(b"silent_probing")
+    fabricated_hash = hashlib.sha256(b"silent_probing").hexdigest()
+    with pytest.raises(ValueError, match="fabricated from label/filename"):
+        builder.build(
+            scenario=AttackCacheBuilder.SCENARIO_SILENT_PROBING,
+            X_measurement=X_meas, y_measurement=y_meas, eval_positions=eps,
+            output_dir=tmp_path / "c_fab",
+            attack_script_hashes={"silent_probing.py": fabricated_hash},
+            attack_parameters=_PARAMS,
+            query_budgets=_BUDGETS,
+        )
+
+    # Fabricated sha256(b"silent_probing.py")
+    fabricated_hash2 = hashlib.sha256(b"silent_probing.py").hexdigest()
+    with pytest.raises(ValueError, match="fabricated from label/filename"):
+        builder.build(
+            scenario=AttackCacheBuilder.SCENARIO_SILENT_PROBING,
+            X_measurement=X_meas, y_measurement=y_meas, eval_positions=eps,
+            output_dir=tmp_path / "c_fab2",
+            attack_script_hashes={"silent_probing.py": fabricated_hash2},
+            attack_parameters=_PARAMS,
+            query_budgets=_BUDGETS,
+        )
+
+    # Non-zero query budget for silent probing
+    with pytest.raises(ValueError, match="zero query budget"):
+        builder.build(
+            scenario=AttackCacheBuilder.SCENARIO_SILENT_PROBING,
+            X_measurement=X_meas, y_measurement=y_meas, eval_positions=eps,
+            output_dir=tmp_path / "c_budget",
+            attack_script_hashes=_SCRIPT_HASHES,
+            attack_parameters=_PARAMS,
+            query_budgets={"max_queries_per_sample": 10},
+        )
+
+    # modifies_samples=True for silent probing
+    with pytest.raises(ValueError, match="modifies_samples=False"):
+        builder.build(
+            scenario=AttackCacheBuilder.SCENARIO_SILENT_PROBING,
+            X_measurement=X_meas, y_measurement=y_meas, eval_positions=eps,
+            output_dir=tmp_path / "c_mod",
+            attack_script_hashes=_SCRIPT_HASHES,
+            attack_parameters={"modifies_samples": True},
+            query_budgets=_BUDGETS,
         )

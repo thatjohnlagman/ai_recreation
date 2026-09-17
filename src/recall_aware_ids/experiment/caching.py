@@ -104,6 +104,64 @@ def validate_cache_manifest(
         if not isinstance(val, dict) or len(val) == 0:
             raise ValueError(f"Manifest field '{field}' must be a non-empty dict, got {val!r}")
 
+    # Validate attack_script_hashes
+    script_hashes = manifest["attack_script_hashes"]
+    for k, v in script_hashes.items():
+        if not isinstance(k, str) or not k.strip():
+            raise ValueError(f"attack_script_hashes key must be non-empty string, got {k!r}")
+        if not isinstance(v, str) or not _HEX64.match(v):
+            raise ValueError(f"attack_script_hashes[{k!r}] must be a 64-char lowercase hex string, got {v!r}")
+        if v in ("0" * 64, "a" * 64, "b" * 64, "f" * 64) or len(set(v)) <= 2 or any(p in v.lower() for p in ("dummy", "placeholder", "todo", "xxx")):
+            raise ValueError(f"attack_script_hashes[{k!r}] contains dummy/placeholder hash: {v!r}")
+        disallowed_labels = [
+            k, k.lower(), Path(k).name, Path(k).stem,
+            "silent_probing", "silent_probing.py",
+            "surrogate_transfer", "surrogate_transfer.py",
+            "decision_boundary", "decision_boundary.py",
+            "identity", "identity.py",
+            "test", "test.py", "dummy", "placeholder", "attack", "script",
+        ]
+        fabricated_hashes = {hashlib.sha256(lbl.encode("utf-8")).hexdigest() for lbl in disallowed_labels}
+        if v in fabricated_hashes:
+            raise ValueError(f"attack_script_hashes[{k!r}] appears to be fabricated from label/filename: {v!r}")
+
+    # Validate attack_parameters
+    params = manifest["attack_parameters"]
+    try:
+        json.dumps(params)
+    except (TypeError, OverflowError) as e:
+        raise ValueError(f"attack_parameters is not JSON-serializable: {e}")
+    for pk, pv in params.items():
+        if not isinstance(pk, str) or not pk.strip():
+            raise ValueError(f"attack_parameters key must be non-empty string, got {pk!r}")
+        if isinstance(pv, float) and not math.isfinite(pv):
+            raise ValueError(f"attack_parameters[{pk!r}] numeric value must be finite, got {pv!r}")
+
+    # Validate query_budgets
+    budgets = manifest["query_budgets"]
+    try:
+        json.dumps(budgets)
+    except (TypeError, OverflowError) as e:
+        raise ValueError(f"query_budgets is not JSON-serializable: {e}")
+    for bk, bv in budgets.items():
+        if not isinstance(bk, str) or not bk.strip():
+            raise ValueError(f"query_budgets key must be non-empty string, got {bk!r}")
+        if isinstance(bv, bool):
+            raise TypeError(f"query_budgets[{bk!r}] cannot be bool, got {bv!r}")
+        if not isinstance(bv, int) or bv < 0:
+            raise ValueError(f"query_budgets[{bk!r}] must be a non-negative int, got {bv!r}")
+
+    scen = manifest.get("attack_scenario")
+    if scen in ("SilentProbing", "Silent Probing"):
+        if any(v != 0 for v in budgets.values()):
+            raise ValueError(f"Silent Probing explicitly requires a zero query budget, got {budgets}")
+        if params.get("modifies_samples") is not False:
+            raise ValueError(f"Silent Probing explicitly requires modifies_samples=False, got {params.get('modifies_samples')}")
+    elif scen in ("DecisionBoundary", "Decision Boundary"):
+        b_val = budgets.get("max_queries_per_sample", budgets.get("max_queries", budgets.get("queries")))
+        if b_val != 50 and 50 not in budgets.values():
+            raise ValueError(f"Decision Boundary explicitly records the 50-query attack budget, got {budgets}")
+
     if not isinstance(manifest.get("schema_version"), str) or not manifest["schema_version"]:
         raise ValueError("schema_version must be a non-empty string")
 
@@ -279,12 +337,11 @@ class AttackCacheBuilder:
             })
 
         if not attack_script_hashes:
-            import hashlib
-            attack_script_hashes = {"silent_probing.py": hashlib.sha256(b"silent_probing").hexdigest()}
+            raise ValueError("attack_script_hashes required for SilentProbing")
         if not attack_parameters:
-            attack_parameters = {"modifies_samples": False}
+            raise ValueError("attack_parameters required for SilentProbing")
         if not query_budgets:
-            query_budgets = {"max_queries_per_sample": 0}
+            raise ValueError("query_budgets required for SilentProbing")
 
         return self._write_outputs(self.SCENARIO_SILENT_PROBING, X_attacked, statuses, output_dir,
                                    attack_script_hashes, attack_parameters, query_budgets)
@@ -476,10 +533,9 @@ class AttackCacheBuilder:
         attack_script_hashes: dict = None, attack_parameters: dict = None, query_budgets: dict = None,
         screening_metrics: dict = None
     ) -> Path:
-        if scenario in (self.SCENARIO_SURROGATE, self.SCENARIO_BOUNDARY):
-            if not attack_script_hashes: raise ValueError(f"attack_script_hashes required for {scenario}")
-            if not attack_parameters: raise ValueError(f"attack_parameters required for {scenario}")
-            if not query_budgets: raise ValueError(f"query_budgets required for {scenario}")
+        if not attack_script_hashes: raise ValueError(f"attack_script_hashes required for {scenario}")
+        if not attack_parameters: raise ValueError(f"attack_parameters required for {scenario}")
+        if not query_budgets: raise ValueError(f"query_budgets required for {scenario}")
         if output_dir.exists():
             raise FileExistsError(f"Cache output directory already exists (cannot overwrite): {output_dir}")
             

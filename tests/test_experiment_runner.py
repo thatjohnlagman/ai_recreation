@@ -128,7 +128,7 @@ def test_complete_cache_validation(tmp_path):
         "crafting_identity_hash": _d("crafting_identity"),
         "measurement_identity_hash": _d("measurement_identity"),
         "attacks_yaml_hash": _d("attacks_yaml"),
-        "attack_script_hashes": {"script.py": _d("script")},
+        "attack_script_hashes": {"script.py": calculate_file_hash(Path(__file__))},
         "frozen_rf_hash": _d("frozen_rf"),
         "scaler_hash": _d("scaler"),
         "feature_names_hash": _d("feature_names"),

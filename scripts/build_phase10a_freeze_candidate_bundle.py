@@ -105,7 +105,7 @@ def build_bundle():
     hash_comparison = check_external_hashes()
     check_experiment_frozen()
 
-    bundle_path = ROOT / "phase10a_freeze_candidate_bundle_v5.zip"
+    bundle_path = ROOT / "phase10a_freeze_candidate_bundle_v5_1.zip"
     if bundle_path.exists():
         bundle_path.unlink()
     print(f"\nBuilding bundle: {bundle_path.name}")
@@ -257,6 +257,9 @@ def build_bundle():
             else:
                 f.write("Audit Result: All required critical files are present (0 missing files).\n")
 
+        if missing_list:
+            raise RuntimeError(f"Missing critical evidence files: {missing_list}")
+
         # Add generated files
         gen_files = [full_suite_path, pilot_out_path, env_path, git_path, prot_path, missing_path]
 
@@ -279,6 +282,9 @@ def build_bundle():
             if arcname in all_entries:
                 dup_errors.append(arcname)
             all_entries[arcname] = p
+            for forb in FORBIDDEN_PATTERNS:
+                if forb in arcname:
+                    forbidden_errors.append(f"{arcname} (matched {forb})")
 
         dup_scan_path = gen_dir / "DUPLICATE_MEMBERS_SCAN.txt"
         with open(dup_scan_path, "w") as f:
@@ -305,28 +311,48 @@ def build_bundle():
         all_entries["DUPLICATE_MEMBERS_SCAN.txt"] = dup_scan_path
         all_entries["FORBIDDEN_FILES_SCAN.txt"] = forb_scan_path
 
-        # Generate BUNDLE_MANIFEST.txt and FILE_HASHES.sha256
+        # Hard gating: fail immediately before ZIP creation
+        if dup_errors:
+            raise RuntimeError(f"Bundle build failed: duplicate members found: {dup_errors}")
+        if forbidden_errors:
+            raise RuntimeError(f"Bundle build failed: forbidden files found: {forbidden_errors}")
+
+        # Construct final member-name list first
+        final_member_names = sorted(list(all_entries.keys()) + ["BUNDLE_MANIFEST.txt", "FILE_HASHES.sha256"])
+        if len(final_member_names) != len(set(final_member_names)):
+            raise RuntimeError("Duplicate member names found in final member list")
+
+        for arcname in final_member_names:
+            for forb in FORBIDDEN_PATTERNS:
+                if forb in arcname:
+                    raise RuntimeError(f"Forbidden member in final member list: {arcname}")
+
+        # Generate BUNDLE_MANIFEST.txt listing every final ZIP member
         manifest_path = gen_dir / "BUNDLE_MANIFEST.txt"
-        hash_path = gen_dir / "FILE_HASHES.sha256"
-
-        sorted_arcnames = sorted(all_entries.keys())
-        with open(manifest_path, "w") as fm, open(hash_path, "w") as fh:
-            for arcname in sorted_arcnames:
+        with open(manifest_path, "w") as fm:
+            for arcname in final_member_names:
                 fm.write(f"- {arcname}\n")
-                fh.write(f"{calculate_sha256(all_entries[arcname])}  {arcname}\n")
-
         all_entries["BUNDLE_MANIFEST.txt"] = manifest_path
+
+        # Generate FILE_HASHES.sha256 hashing every final member EXCEPT itself (including BUNDLE_MANIFEST.txt)
+        hash_path = gen_dir / "FILE_HASHES.sha256"
+        with open(hash_path, "w") as fh:
+            for arcname in final_member_names:
+                if arcname == "FILE_HASHES.sha256":
+                    continue
+                fh.write(f"{calculate_sha256(all_entries[arcname])}  {arcname}\n")
         all_entries["FILE_HASHES.sha256"] = hash_path
 
-        # Re-verify manifest and hashes entries
-        sorted_arcnames = sorted(all_entries.keys())
+        # Ensure all_entries matches final_member_names exactly
+        if set(all_entries.keys()) != set(final_member_names):
+            raise RuntimeError("Mismatch between all_entries and final_member_names")
 
         # Write ZIP
-        print(f"Writing {len(all_entries)} files to {bundle_path.name}...")
+        print(f"Writing {len(final_member_names)} files to {bundle_path.name}...")
         seen_members: Set[str] = set()
         added_count = 0
         with zipfile.ZipFile(bundle_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            for arcname in sorted_arcnames:
+            for arcname in final_member_names:
                 p = all_entries[arcname]
                 if arcname in seen_members:
                     raise ValueError(f"Duplicate ZIP member attempted: {arcname}")
@@ -344,41 +370,87 @@ def build_bundle():
         print(f"  Members:     {added_count}")
         print(f"  SHA-256:     {bundle_hash}")
 
-        # ZIP Integrity Self-Check
-        print("Testing ZIP integrity (zipfile.testzip)...")
-        with zipfile.ZipFile(bundle_path, "r") as zf:
-            bad_member = zf.testzip()
-            if bad_member:
-                raise ValueError(f"testzip() reported corrupted member: {bad_member}")
-            members_in_zip = zf.namelist()
-            if len(members_in_zip) != len(all_entries):
-                raise ValueError(f"Member count mismatch: expected {len(all_entries)}, got {len(members_in_zip)}")
-
-        print("  [OK] zipfile.testzip() passed with zero CRC or header errors.")
-
-        # Extraction and Byte-for-Byte Verification
-        print("Extracting and verifying bundle contents byte-for-byte...")
+        # Independent Extraction and Rigorous Verification
+        print("Extracting and independently verifying bundle...")
         extract_dir = Path(tempfile.mkdtemp(prefix="bundle_verify_"))
         try:
             with zipfile.ZipFile(bundle_path, "r") as zf:
+                bad_member = zf.testzip()
+                if bad_member:
+                    raise ValueError(f"testzip() reported corrupted member: {bad_member}")
+                zip_namelist = zf.namelist()
                 zf.extractall(extract_dir)
-            
-            for arcname in sorted_arcnames:
-                extracted_file = extract_dir / arcname
-                if not extracted_file.exists():
+
+            # 1. No duplicate members
+            if len(zip_namelist) != len(set(zip_namelist)):
+                raise ValueError("Extracted ZIP namelist contains duplicates")
+
+            # 2. ZIP member set equals manifest member set
+            extracted_manifest_path = extract_dir / "BUNDLE_MANIFEST.txt"
+            if not extracted_manifest_path.exists():
+                raise FileNotFoundError("Extracted BUNDLE_MANIFEST.txt is missing")
+            with open(extracted_manifest_path) as fm:
+                manifest_members = [line.strip().lstrip("- ").strip() for line in fm if line.strip()]
+
+            if set(zip_namelist) != set(manifest_members):
+                raise ValueError(
+                    f"ZIP member set != manifest member set.\n"
+                    f"Difference: {set(zip_namelist) ^ set(manifest_members)}"
+                )
+            if set(zip_namelist) != set(final_member_names):
+                raise ValueError(
+                    f"ZIP member set != expected final member names.\n"
+                    f"Difference: {set(zip_namelist) ^ set(final_member_names)}"
+                )
+
+            # 3. Every non-hash-manifest member has the expected SHA-256
+            extracted_hashes_path = extract_dir / "FILE_HASHES.sha256"
+            if not extracted_hashes_path.exists():
+                raise FileNotFoundError("Extracted FILE_HASHES.sha256 is missing")
+            file_hashes_map = {}
+            with open(extracted_hashes_path) as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    parts = line.split("  ", 1)
+                    if len(parts) == 2:
+                        file_hashes_map[parts[1]] = parts[0]
+
+            expected_hashed = set(final_member_names) - {"FILE_HASHES.sha256"}
+            if set(file_hashes_map.keys()) != expected_hashed:
+                raise ValueError(
+                    f"FILE_HASHES.sha256 coverage mismatch.\n"
+                    f"Difference: {set(file_hashes_map.keys()) ^ expected_hashed}"
+                )
+
+            for arcname, exp_hash in file_hashes_map.items():
+                extracted_member = extract_dir / arcname
+                if not extracted_member.exists():
                     raise FileNotFoundError(f"Extracted member missing: {arcname}")
-                extracted_hash = calculate_sha256(extracted_file)
-                original_hash = calculate_sha256(all_entries[arcname])
-                if extracted_hash != original_hash:
-                    raise ValueError(f"Byte mismatch in member {arcname}!\n  Original:  {original_hash}\n  Extracted: {extracted_hash}")
-            print(f"  [OK] All {len(sorted_arcnames)} extracted members match original sources byte-for-byte.")
+                actual_hash = calculate_sha256(extracted_member)
+                if actual_hash != exp_hash:
+                    raise ValueError(f"Hash mismatch for {arcname}:\n  Expected: {exp_hash}\n  Actual:   {actual_hash}")
+
+            # 4. Zero forbidden members in zip_namelist
+            for arcname in zip_namelist:
+                for forb in FORBIDDEN_PATTERNS:
+                    if forb in arcname:
+                        raise ValueError(f"Forbidden member found in ZIP: {arcname} (matches {forb})")
+
+            print(f"  [OK] zipfile.testzip() passed with zero errors.")
+            print(f"  [OK] ZIP member set ({len(zip_namelist)}) equals manifest member set ({len(manifest_members)}).")
+            print(f"  [OK] Zero duplicates detected.")
+            print(f"  [OK] All {len(file_hashes_map)} non-hash-manifest members verified against FILE_HASHES.sha256.")
+            print(f"  [OK] Zero forbidden members present.")
+
         finally:
             shutil.rmtree(extract_dir, ignore_errors=True)
 
     finally:
         shutil.rmtree(gen_dir, ignore_errors=True)
 
-    print("\nPhase 10A Freeze Candidate Bundle v5 build and verification complete!")
+    print("\nPhase 10A Freeze Candidate Bundle v5.1 build and verification complete!")
     return bundle_path, bundle_hash, bundle_size_bytes, added_count
 
 if __name__ == "__main__":

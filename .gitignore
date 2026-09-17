@@ -17,6 +17,7 @@ htmlcov/
 
 # macOS and editors
 .DS_Store
+**/.DS_Store
 .idea/
 .vscode/
 

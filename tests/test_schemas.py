@@ -288,9 +288,13 @@ def test_attacked_sample_status_accepts_not_applicable():
 # RunSummary — rejection tests
 # ---------------------------------------------------------------------------
 
+_VALID_HASH = "1234567890abcdef" * 4
+_GOOD_CACHE_ID = {k: _VALID_HASH for k in _REQUIRED_PROVENANCE_KEYS}
+
+
 def _valid_run_summary(**overrides):
     defaults = dict(
-        run_id="r", seed=42, attack_scenario="SilentProbing", defense="afp",
+        run_id="r", seed=42, attack_scenario="SurrogateTransfer", defense="afp",
         config_id="Base", total_batches=144,
         tp=18000, fp=18000, tn=18000, fn=18000,
         accuracy=0.5, recall=0.5, precision=0.5, f1=0.5,
@@ -299,16 +303,21 @@ def _valid_run_summary(**overrides):
         total_attempted=72000,
         total_successful=72000,
         total_queries=1000,
-        cache_identity={"some": "hash"},
+        cache_identity=dict(_GOOD_CACHE_ID),
         status_code_counts={"SUCCESS": 72000},
-        l0_summary={"mean": 0.0},
-        l1_summary={"mean": 0.0},
-        l2_summary={"mean": 0.0},
-        linf_summary={"mean": 0.0},
+        l0_summary={"mean": 0.0, "min": 0.0, "max": 0.0, "std": 0.0},
+        l1_summary={"mean": 0.0, "min": 0.0, "max": 0.0, "std": 0.0},
+        l2_summary={"mean": 0.0, "min": 0.0, "max": 0.0, "std": 0.0},
+        linf_summary={"mean": 0.0, "min": 0.0, "max": 0.0, "std": 0.0},
         global_asr=1.0, completed_successfully=True,
     )
     defaults.update(overrides)
     return RunSummary(**defaults)
+
+
+def test_batch_confusion_log_rejects_eligible_gt_500():
+    with pytest.raises(ValueError, match="eligible_count .* > 500"):
+        _valid_confusion_log(eligible_count=501, attempted_count=0, successful_count=0)
 
 
 def test_run_summary_rejects_wrong_batch_count():
@@ -326,13 +335,83 @@ def test_run_summary_rejects_out_of_range_asr():
         _valid_run_summary(global_asr=1.5)
 
 
+def test_run_summary_rejects_silent_probing_with_asr():
+    with pytest.raises(ValueError, match="Silent Probing requires global_asr is None"):
+        _valid_run_summary(attack_scenario="SilentProbing", global_asr=0.0)
+
+
+def test_run_summary_rejects_applicable_with_none_asr():
+    with pytest.raises(ValueError, match="requires a finite global_asr"):
+        _valid_run_summary(attack_scenario="SurrogateTransfer", global_asr=None)
+
+
+def test_run_summary_rejects_applicable_zero_attempts_with_nonzero_asr():
+    with pytest.raises(ValueError, match="Applicable attack with zero attempts requires global_asr == 0.0"):
+        _valid_run_summary(attack_scenario="SurrogateTransfer", total_attempted=0, total_successful=0, global_asr=0.5)
+
+
+def test_run_summary_accepts_applicable_zero_attempts_with_zero_asr():
+    rs = _valid_run_summary(attack_scenario="SurrogateTransfer", total_attempted=0, total_successful=0, global_asr=0.0)
+    assert rs.global_asr == 0.0
+
+
+def test_run_summary_rejects_bool_total_queries():
+    with pytest.raises(TypeError, match="total_queries cannot be bool"):
+        _valid_run_summary(total_queries=True)
+
+
+def test_run_summary_rejects_bool_status_count():
+    with pytest.raises(TypeError, match="cannot be bool"):
+        _valid_run_summary(status_code_counts={"SUCCESS": True})
+
+
+def test_run_summary_rejects_status_counts_not_72000():
+    with pytest.raises(ValueError, match="must sum to exactly 72000"):
+        _valid_run_summary(status_code_counts={"SUCCESS": 71999})
+
+
+def test_run_summary_rejects_cache_identity_missing_keys():
+    with pytest.raises(ValueError, match="cache_identity missing required provenance keys"):
+        _valid_run_summary(cache_identity={"frozen_rf_hash": _VALID_HASH})
+
+
+def test_run_summary_rejects_cache_identity_placeholder():
+    bad_id = dict(_GOOD_CACHE_ID)
+    bad_id["frozen_rf_hash"] = "0" * 64
+    with pytest.raises(ValueError, match="dummy/placeholder"):
+        _valid_run_summary(cache_identity=bad_id)
+
+
+@pytest.mark.parametrize("bad_mag", [
+    {"mean": 0.0, "min": 0.0, "max": 0.0},  # missing std
+    {"mean": 0.5, "min": 0.6, "max": 1.0, "std": 0.1},  # min > mean
+    {"mean": 0.5, "min": 0.0, "max": 0.4, "std": 0.1},  # mean > max
+    {"mean": 0.0, "min": 0.0, "max": 0.0, "std": -0.1},  # std < 0
+    {"mean": -0.1, "min": 0.0, "max": 0.0, "std": 0.0},  # negative mean
+    {"mean": True, "min": 0.0, "max": 0.0, "std": 0.0},  # bool
+])
+def test_run_summary_rejects_malformed_magnitude_summary(bad_mag):
+    with pytest.raises((ValueError, TypeError)):
+        _valid_run_summary(l0_summary=bad_mag)
+
+
+def test_run_summary_rejects_eligible_gt_72000():
+    with pytest.raises(ValueError, match="total_eligible"):
+        _valid_run_summary(total_eligible=72001)
+
+
 def test_run_summary_rejects_attempted_gt_eligible():
     with pytest.raises(ValueError, match="total_attempted"):
         _valid_run_summary(total_eligible=5, total_attempted=10)
 
+
+def test_run_summary_rejects_successful_gt_attempted():
+    with pytest.raises(ValueError, match="total_successful"):
+        _valid_run_summary(total_attempted=5, total_successful=10)
+
+
 def test_run_summary_enforces_exact_72000_sum():
     with pytest.raises(ValueError, match="must sum to exactly 72000"):
-        # Sum = 10 + 0 + 90 + 0 = 100 (not 72000)
         _valid_run_summary(tp=10, fp=0, tn=90, fn=0)
 
 

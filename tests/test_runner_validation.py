@@ -517,3 +517,85 @@ def test_scrambled_eval_position_join(tmp_path):
         assert log_cf["tn"] == tn
         assert log_cf["fp"] == fp
         assert log_cf["fn"] == fn
+
+
+def test_runner_applicable_zero_attempts_asr_zero(runner_deps):
+    resolved, lp, out = runner_deps
+    runner = ExperimentRunner(
+        resolved_batches=resolved,
+        label_provider=lp,
+        attack_cache=MockCacheProvider(),
+        defense_adapter=MockDefenseAdapter(),
+        policy_controller=MockPolicy(requires_feedback=False),
+        output_dir=out,
+        run_id="run_zero_attempt_asr",
+        seed=42,
+        attack_scenario="SurrogateTransfer",
+        defense_name="afp",
+        config_id="Base",
+        provenance_hashes=_GOOD_PROV,
+    )
+    runner.execute_run()
+
+    run_dir = out / "run_zero_attempt_asr"
+    assert run_dir.exists()
+    assert (run_dir / "completion.json").exists()
+
+    with open(run_dir / "run_summary.json") as f:
+        summary = json.load(f)
+
+    assert summary["attack_scenario"] == "SurrogateTransfer"
+    assert summary["total_attempted"] == 0
+    assert summary["total_successful"] == 0
+    assert summary["global_asr"] == 0.0
+
+
+def test_runner_quarantines_on_malformed_serialized_output(monkeypatch, runner_deps):
+    resolved, lp, out = runner_deps
+    import recall_aware_ids.experiment.runner as runner_mod
+
+    orig_validate = runner_mod._validate_run_outputs
+
+    def corrupting_validate(run_tmp_dir, summary):
+        # Corrupt scores.json with malformed contents before calling validator
+        with open(run_tmp_dir / "scores.json", "w") as f:
+            f.write("{invalid json content}")
+        orig_validate(run_tmp_dir, summary)
+
+    monkeypatch.setattr(runner_mod, "_validate_run_outputs", corrupting_validate)
+
+    runner = ExperimentRunner(
+        resolved_batches=resolved,
+        label_provider=lp,
+        attack_cache=MockCacheProvider(),
+        defense_adapter=MockDefenseAdapter(),
+        policy_controller=MockPolicy(requires_feedback=False),
+        output_dir=out,
+        run_id="run_corrupt_output",
+        seed=42,
+        attack_scenario="SurrogateTransfer",
+        defense_name="afp",
+        config_id="Base",
+        provenance_hashes=_GOOD_PROV,
+    )
+
+    with pytest.raises(ValueError, match="scores.json is not valid JSON"):
+        runner.execute_run()
+
+    # Final run dir must NOT exist
+    assert not (out / "run_corrupt_output").exists()
+
+    # Quarantine directory must exist
+    quarantined_dirs = list(out.glob("run_corrupt_output_failed_quarantined_*"))
+    assert len(quarantined_dirs) == 1
+    q_dir = quarantined_dirs[0]
+
+    # completion.json must NOT exist in quarantine directory
+    assert not (q_dir / "completion.json").exists()
+
+    # quarantined_failure.json must exist and record failure
+    assert (q_dir / "quarantined_failure.json").exists()
+    with open(q_dir / "quarantined_failure.json") as f:
+        fail_data = json.load(f)
+    assert fail_data["run_id"] == "run_corrupt_output"
+    assert "scores.json is not valid JSON" in fail_data["error_message"]

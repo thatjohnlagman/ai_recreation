@@ -313,6 +313,8 @@ class BatchConfusionLog:
             if not math.isfinite(self.asr) or not (0.0 <= self.asr <= 1.0):
                 raise ValueError(f"asr must be in [0,1], got {self.asr}")
         # Count relationships
+        if self.eligible_count > 500:
+            raise ValueError(f"eligible_count ({self.eligible_count}) > 500")
         if self.attempted_count > self.eligible_count:
             raise ValueError(f"attempted_count ({self.attempted_count}) > eligible_count ({self.eligible_count})")
         if self.successful_count > self.attempted_count:
@@ -378,37 +380,84 @@ class RunSummary:
             val = getattr(self, name)
             if not math.isfinite(val) or not (0.0 <= val <= 1.0):
                 raise ValueError(f"{name} must be in [0,1], got {val}")
-        if self.global_asr is not None:
+
+        # ASR validation based on scenario
+        canonical_scenario = self.attack_scenario.replace(" ", "")
+        if canonical_scenario == "SilentProbing":
+            if self.global_asr is not None:
+                raise ValueError(f"Silent Probing requires global_asr is None, got {self.global_asr}")
+        elif canonical_scenario in ("SurrogateTransfer", "DecisionBoundary"):
+            if self.global_asr is None:
+                raise ValueError(f"{self.attack_scenario} requires a finite global_asr in [0,1], got None")
             if not math.isfinite(self.global_asr) or not (0.0 <= self.global_asr <= 1.0):
                 raise ValueError(f"global_asr must be in [0,1], got {self.global_asr}")
+            if self.total_attempted == 0 and self.global_asr != 0.0:
+                raise ValueError(f"Applicable attack with zero attempts requires global_asr == 0.0, got {self.global_asr}")
+        else:
+            raise ValueError(f"Unknown attack_scenario: {self.attack_scenario}")
+
         if not isinstance(self.completed_successfully, bool):
             raise TypeError("completed_successfully must be bool")
+        if self.total_eligible > 72000:
+            raise ValueError(f"total_eligible ({self.total_eligible}) > 72000")
         if self.total_attempted > self.total_eligible:
             raise ValueError("total_attempted > total_eligible")
         if self.total_successful > self.total_attempted:
             raise ValueError("total_successful > total_attempted")
-            
-        if self.total_eligible > 72000:
-            raise ValueError("total_eligible > 72000 (measurement_count)")
-            
+
+        # total_queries: reject bool, non-negative int
+        if isinstance(self.total_queries, bool):
+            raise TypeError("total_queries cannot be bool")
         if not isinstance(self.total_queries, int) or self.total_queries < 0:
             raise ValueError("total_queries must be non-negative int")
-            
-        if not isinstance(self.cache_identity, dict):
-            raise TypeError("cache_identity must be dict")
+
+        # status_code_counts: reject bool, non-negative int, sum to 72000
         if not isinstance(self.status_code_counts, dict):
             raise TypeError("status_code_counts must be dict")
-        
         for k, v in self.status_code_counts.items():
             if k not in _ALLOWED_STATUS_CODES:
                 raise ValueError(f"Unknown status code in status_code_counts: {k}")
+            if isinstance(v, bool):
+                raise TypeError(f"status count for {k} cannot be bool")
             if not isinstance(v, int) or v < 0:
-                raise ValueError("status counts must be non-negative ints")
-                
+                raise ValueError(f"status count for {k} must be a non-negative int")
+        total_status = sum(self.status_code_counts.values())
+        if total_status != 72000:
+            raise ValueError(f"status_code_counts must sum to exactly 72000, got {total_status}")
+
+        # cache_identity validation
+        if not isinstance(self.cache_identity, dict):
+            raise TypeError("cache_identity must be dict")
+        missing_prov = _REQUIRED_PROVENANCE_KEYS - set(self.cache_identity.keys())
+        if missing_prov:
+            raise ValueError(f"cache_identity missing required provenance keys: {sorted(missing_prov)}")
+        for pk in _REQUIRED_PROVENANCE_KEYS:
+            pval = self.cache_identity[pk]
+            if not isinstance(pval, str) or not _is_hex64(pval):
+                raise ValueError(f"cache_identity[{pk!r}] must be a 64-char lowercase hex string, got {pval!r}")
+            if pval in ("0" * 64, "a" * 64, "b" * 64) or any(p in pval.lower() for p in ("dummy", "placeholder", "todo", "xxx")):
+                raise ValueError(f"cache_identity[{pk!r}] contains dummy/placeholder hash: {pval!r}")
+
+        # Magnitude summaries: mean, min, max, std, finite, non-negative, min <= mean <= max, std >= 0
         for m_name in ("l0_summary", "l1_summary", "l2_summary", "linf_summary"):
             m_dict = getattr(self, m_name)
             if not isinstance(m_dict, dict):
                 raise TypeError(f"{m_name} must be dict")
+            expected_keys = {"mean", "min", "max", "std"}
+            if set(m_dict.keys()) != expected_keys:
+                raise ValueError(f"{m_name} must contain exactly {expected_keys}, got {set(m_dict.keys())}")
+            for k in expected_keys:
+                mv = m_dict[k]
+                if isinstance(mv, bool):
+                    raise TypeError(f"{m_name}[{k!r}] cannot be bool")
+                if not isinstance(mv, (int, float)) or not math.isfinite(mv):
+                    raise ValueError(f"{m_name}[{k!r}] must be finite numeric, got {mv!r}")
+                if mv < 0.0:
+                    raise ValueError(f"{m_name}[{k!r}] cannot be negative, got {mv}")
+            if not (m_dict["min"] <= m_dict["mean"] + 1e-9 and m_dict["mean"] <= m_dict["max"] + 1e-9):
+                raise ValueError(f"{m_name} violates min <= mean <= max: min={m_dict['min']}, mean={m_dict['mean']}, max={m_dict['max']}")
+            if m_dict["std"] < 0.0:
+                raise ValueError(f"{m_name} std cannot be negative, got {m_dict['std']}")
 
         total = self.tp + self.fp + self.tn + self.fn
         if total != 72000:

@@ -1,4 +1,4 @@
-# Phase 10A Protocol Freeze Readiness Report
+# Phase 10A Protocol Freeze Readiness Report (v5.1 Final Correction)
 
 **Project**: Recall-Aware Intrusion Detection System (Thesis Implementation)  
 **Host Machine**: MacBook Air (Mac16,12), Apple M4, 16 GB RAM, macOS 27.0.0, Python 3.9.6 (arm64)  
@@ -9,7 +9,7 @@
 
 ## 1. Executive Summary
 
-Phase 10A red-green integration repair has been successfully executed, validated, and verified on the native Apple Silicon M4 platform. All 174 automated unit and integration tests across the repository pass with zero failures. A 5,000-row training-derived runtime and memory pilot was executed without errors, demonstrating stable memory utilization (peak RSS 469.19 MB) and confirming computational feasibility. All three protected artifacts remain bit-for-bit identical to their frozen authoritative hashes. No evaluation records were loaded or inspected, no official attack caches were generated, and the formal freeze date remains unset pending external review.
+Phase 10A v5.1 final review corrections have been successfully completed, validated, and verified on the native Apple Silicon M4 platform. All 196 automated unit and integration tests across the repository pass with zero failures (including 22 new focused tests covering run-level ASR, strengthened `RunSummary` validations, Silent Probing metadata provenance, and output reopening/quarantine). A 5,000-row training-derived runtime and memory pilot was executed without errors, demonstrating stable memory utilization (peak RSS 472.23 MB) and confirming computational feasibility. All three protected artifacts remain bit-for-bit identical to their frozen authoritative hashes. No evaluation records were loaded or inspected, no official attack caches were generated, and the formal freeze date remains unset pending external review.
 
 ---
 
@@ -22,84 +22,92 @@ Phase 10A red-green integration repair has been successfully executed, validated
 
 ---
 
-## 3. Component Repairs and Validation Summary
+## 3. Final Review Corrections (v5.1)
 
-### 3.1 Attack Cache Validation and Building
-- **Schema & Manifest Integrity**: Enforced strict 64-character lowercase hex string validation for all provenance and file hashes. Prohibited placeholder strings (`"0"*64`, `"a"*64`, `"dummy"`). Required non-empty dictionary structures for `attack_script_hashes`, `attack_parameters`, and `query_budgets`.
-- **Type Rigor**: Unconditional enforcement of strict boolean types for status flags (`eligible`, `attempted`, `successful`), rejecting integer coercion. Enforced integer dtypes for `queries_used`, rejecting boolean values. Enforced floating-point types for all 78 feature columns.
-- **Semantic Constraints**: Silent Probing strictly validated to have zero queries, zero attempted samples, and uniform `NOT_APPLICABLE` status codes.
-- **Oracle Routing**: Routed screening queries in both `AttackCacheBuilder` and pilot scripts through `BlackBoxOracle` to prevent uncounted target model predictions.
-- **Atomic Operations & Quarantine**: Cache builder writes to `.tmp` staging directories, re-validates written Parquets and manifests through the strict provider, and quarantines incomplete or failed artifacts.
+### 3.1 Run-Level Attack Success Rate (ASR) Semantics
+- **Runner Correction**: In `src/recall_aware_ids/experiment/runner.py`, updated `global_asr` calculation:
+  - Silent Probing: `global_asr = None` (attack not applicable).
+  - Applicable attack with attempts: `global_asr = float(successful / attempted)`.
+  - Applicable attack with zero attempts: `global_asr = 0.0`.
+- **Validation**: Added focused test `test_runner_applicable_zero_attempts_asr_zero` verifying serialized `run_summary.json` contains `0.0`.
 
-### 3.2 Decision Boundary Target Selection
-- Reordered selection logic to prioritize integer type validation, followed by checking candidate eligibility counts, and enforcing exactly 200 attack targets globally across the 72,000 measurement pool in official mode.
+### 3.2 Strengthened `RunSummary` and `BatchConfusionLog` Contracts
+- **Batch Confusion**: Enforced `eligible_count <= 500` in `BatchConfusionLog`.
+- **RunSummary Contract**:
+  - Scenario-specific deterministic ASR validation: Silent Probing requires `global_asr is None`; Surrogate Transfer and Decision Boundary require finite `[0,1]`; zero-attempt applicable runs require `global_asr == 0.0`.
+  - Type strictness: `total_queries` and individual values in `status_code_counts` strictly reject `bool`.
+  - Status counts sum: Total across all status codes in `status_code_counts` must sum to exactly 72,000.
+  - Complete `cache_identity`: Must contain all 11 required provenance keys (`_REQUIRED_PROVENANCE_KEYS`) without missing, malformed, or dummy/placeholder hashes (`"0"*64`, `"a"*64`, `"dummy"`).
+  - Magnitude summaries: Each summary (`l0`, `l1`, `l2`, `linf`) must contain exactly `{"mean", "min", "max", "std"}`, all non-negative finite numeric values, satisfying `min <= mean <= max` and `std >= 0`.
+  - Count hierarchy: `total_eligible <= 72000`, `total_attempted <= total_eligible`, and `total_successful <= total_attempted`.
 
-### 3.3 Evaluation Matrix and Controller Constraints
-- Enforced strict whitelist for controller configurations (`C1` through `C7`). Explicitly reject unauthorized configurations (`C8`).
-- Confirmed experimental matrix dimensions: 252 unique executions, 36,288 batch records, and 84 unique RS runs across primary and sensitivity references.
+### 3.3 Elimination of Fabricated Silent Probing Provenance
+- **AttackCacheBuilder**: Removed all fabricated `sha256(b"silent_probing")` and default metadata fallbacks from `_build_silent_probing()`.
+- **Explicit Metadata Requirement**: All three scenarios unconditionally require explicit, non-empty `attack_script_hashes`, `attack_parameters`, and `query_budgets`.
+- **Manifest Integrity**:
+  - Every script hash validated as a lowercase 64-character SHA-256.
+  - Placeholder, all-zero, or repeated dummy hashes rejected.
+  - Caller-computed file hash enforcement: Hashes generated from labels or filenames (e.g. `b"silent_probing"`, `b"silent_probing.py"`, script names) are explicitly detected and rejected.
+  - Parameter and budget keys must be non-empty strings, values must be JSON-serializable, numeric values must be finite.
+  - Query budget values must be non-negative integers; `bool` values are rejected with `TypeError`.
+  - Silent Probing explicitly requires zero query budgets and `modifies_samples=False`.
+  - Decision Boundary explicitly records the 50-query attack budget.
 
-### 3.4 Schemas and Serialization
-- Enforced ISO 8601 timestamp validation in `CompletionMarker` and `FailureRecord`.
-- Re-ordered `CompletionMarker` post-init validation to verify provenance hashes prior to parsing timestamp strings.
-- Enforced exact confusion matrix totals: exactly 500 per batch and 72,000 per official run.
+### 3.4 Pre-Completion Output Reopening and Validation
+- **Reopening Gate**: Before creating `completion.json`, `ExperimentRunner` reopens and inspects:
+  - `config.json` (144 valid `BatchConfigLog` records, batch IDs `0..143`).
+  - `confusion.json` (144 valid `BatchConfusionLog` records, batch IDs `0..143`).
+  - `scores.json` (144 score records, batch IDs `0..143`, exactly 500 aligned elements per batch for `scores`, `predictions`, and `labels`, binary predictions and labels, finite scores in `[0,1]`, total elements exactly 72,000).
+  - `run_summary.json` (reconstructs valid `RunSummary`).
+- **Cross-Record Recomputation**:
+  - Reconstructed totals from 144 confusion records verified to sum to 72,000 and match `RunSummary` fields (`tp, fp, tn, fn, total_eligible, total_attempted, total_successful`).
+  - Global PR-AUC recomputed across all 72,000 concatenated scores and labels, verified to match `RunSummary.pr_auc_average_precision` within `1e-7`.
+- **Quarantine Invariant**: Any corruption or mismatch aborts before `completion.json` is written, renaming staging directory to `_failed_quarantined_*` with a `quarantined_failure.json` record. Verified by `test_runner_quarantines_on_malformed_serialized_output`.
 
-### 3.5 Test Suite Isolation
-- Removed legacy dependencies on official evaluation data (`X_eval.parquet`, `metadata_eval.parquet`) from all tests (`test_preprocess_dataset.py`, `test_evaluation_batches.py`). Replaced them with synthetic or training-derived fixtures.
+### 3.5 Bundle Gating and Accounting Repairs
+- **Untracked `.DS_Store`**: Removed `src/recall_aware_ids/.DS_Store` from tracking and added `**/.DS_Store` to `.gitignore`.
+- **Hard Bundle Gating**: The bundle builder immediately aborts before ZIP creation if `forbidden_errors` is non-empty, `dup_errors` is non-empty, any test/pilot exit code is non-zero, or required evidence files are missing.
+- **Two-Phase Member Accounting**:
+  - Final member-name list constructed first.
+  - `BUNDLE_MANIFEST.txt` generated listing every final member (including `BUNDLE_MANIFEST.txt` and `FILE_HASHES.sha256`).
+  - `FILE_HASHES.sha256` generated hashing every member except itself (including the hash of `BUNDLE_MANIFEST.txt`).
+- **Independent Post-Extraction Verification**: Extracted archive tested with `zipfile.testzip()`, checked for zero duplicates, verified that ZIP member set equals manifest member set, verified every non-hash-manifest member against `FILE_HASHES.sha256`, and confirmed zero forbidden members.
 
 ---
 
 ## 4. Test Suite Execution Evidence
 
-### 4.1 Focused Phase 10A Suite (`tests/test_phase10a_v5.py`)
+### 4.1 Full Repository Test Suite
 ```text
-tests/test_phase10a_v5.py::test_v5_provider_rejects_malformed_identity[] PASSED
-tests/test_phase10a_v5.py::test_v5_provider_rejects_malformed_identity[unknown] PASSED
-tests/test_phase10a_v5.py::test_v5_provider_rejects_malformed_identity[aaaaaaaa...] PASSED
-tests/test_phase10a_v5.py::test_v5_provider_rejects_malformed_identity[00000000...] PASSED
-tests/test_phase10a_v5.py::test_v5_provider_rejects_malformed_identity[not-a-hash] PASSED
-tests/test_phase10a_v5.py::test_v5_provider_rejects_malformed_identity[None] PASSED
-tests/test_phase10a_v5.py::test_v5_provider_rejects_empty_nested_identity[attack_script_hashes] PASSED
-tests/test_phase10a_v5.py::test_v5_provider_rejects_empty_nested_identity[attack_parameters] PASSED
-tests/test_phase10a_v5.py::test_v5_provider_rejects_empty_nested_identity[query_budgets] PASSED
-tests/test_phase10a_v5.py::test_v5_provider_rejects_query_types[True] PASSED
-tests/test_phase10a_v5.py::test_v5_provider_rejects_query_types[0.5] PASSED
-tests/test_phase10a_v5.py::test_v5_provider_rejects_query_types[nan] PASSED
-tests/test_phase10a_v5.py::test_v5_provider_rejects_query_types[1] PASSED
-tests/test_phase10a_v5.py::test_v5_provider_rejects_scrambled_identity PASSED
-tests/test_phase10a_v5.py::test_v5_provider_rejects_string_features PASSED
-tests/test_phase10a_v5.py::test_v5_provider_rejects_silent_success PASSED
-tests/test_phase10a_v5.py::test_v5_provider_cannot_disable_boolean_validation PASSED
-tests/test_phase10a_v5.py::test_v5_builder_rejects_incomplete_provenance PASSED
-tests/test_phase10a_v5.py::test_v5_boundary_official_target_count PASSED
-tests/test_phase10a_v5.py::test_v5_completion_timestamp[] PASSED
-tests/test_phase10a_v5.py::test_v5_completion_timestamp[yesterday] PASSED
-tests/test_phase10a_v5.py::test_v5_completion_timestamp[2026-99-99T25:00:00Z] PASSED
-tests/test_phase10a_v5.py::test_v5_matrix_rejects_c8_replacing_c7 PASSED
-tests/test_phase10a_v5.py::test_v5_no_untracked_target_calls[src/recall_aware_ids/experiment/caching.py] PASSED
-tests/test_phase10a_v5.py::test_v5_no_untracked_target_calls[scripts/run_m2_pilot.py] PASSED
-Results: 25 passed in 0.61s
+Total collected: 196 test items across 17 test modules
+Status: 196 passed, 0 failed, 0 warnings in 5.55s
 ```
 
-### 4.2 Full Repository Test Suite
-```text
-Total collected: 174 test items across 17 test modules
-Status: 174 passed, 0 failed, 0 warnings in 4.48s
-```
+### 4.2 Key Test Module Results
+- `tests/test_phase10a_v5.py`: 25 passed
+- `tests/test_schemas.py`: 58 passed (all `RunSummary` and `BatchConfusionLog` validations)
+- `tests/test_caching.py`: 20 passed (all builder/provider validations, omitted/fabricated metadata rejections)
+- `tests/test_runner_validation.py`: 17 passed (all timing invariants, zero-attempt ASR, output reopening/quarantine)
+- `tests/test_experiment_runner.py`: 9 passed
+- `tests/test_matrix.py`: 4 passed
+- `tests/test_controller.py`: 12 passed
+- `tests/test_defenses.py`: 18 passed
+- `tests/test_attacks.py`: 7 passed
 
 ---
 
 ## 5. M4 Training-Derived Pilot Results
 
 Executed exclusively on 5,000 deterministic records from `X_train.parquet` / `metadata_train.parquet`:
-- **AFP**: 0.0984s (final invalid cells: 0, protected modified: 0, projected cells: 102,445)
-- **FS**: 0.0806s (effective bit-depth: 4, final invalid cells: 0, protected modified: 0)
-- **RS**: 8.3327s (positive vote fraction range: [0.000, 1.000], protected modified: 0)
-- **Surrogate Transfer**: 8.5486s (1,000 crafting queries, 652 eval queries, 76 eligible, 76 attempted, 1 success)
-- **Decision Boundary**: 17.9009s (1,274 oracle queries, 98 eligible, 98 attempted, 98 successes)
+- **AFP**: 0.1372s (final invalid cells: 0, protected modified: 0, projected cells: 102,445)
+- **FS**: 0.0913s (effective bit-depth: 4, final invalid cells: 0, protected modified: 0)
+- **RS**: 9.1437s (positive vote fraction range: [0.000, 1.000], protected modified: 0)
+- **Surrogate Transfer**: 8.5713s (1,000 crafting queries, 652 eval queries, 76 eligible, 76 attempted, 1 success)
+- **Decision Boundary**: 17.9244s (1,274 oracle queries, 98 eligible, 98 attempted, 98 successes)
 - **Memory Profile**:
-  - Absolute Peak RSS: 469.19 MB (well below 16 GB host RAM / 8 GB conservative ceiling)
-  - Incremental RSS: 315.88 MB
-- **Scaling Projection**: Randomized Smoothing represents the primary runtime bottleneck ($11 \text{ RF inferences} \times 72,000 \text{ samples} \times 84 \text{ runs} \approx 66.5\text{M RF calls}$).
+  - Absolute Peak RSS: 472.23 MB (well below 16 GB host RAM / 8 GB conservative ceiling)
+  - Incremental RSS: 318.58 MB
+- **Exit Code**: 0 (Clean termination)
 
 ---
 
@@ -113,7 +121,13 @@ Executed exclusively on 5,000 deterministic records from `X_train.parquet` / `me
 
 ---
 
-## 7. Protocol Freeze Recommendation
+## 7. Working Tree and Bundle Status
 
-1. **Readiness**: Phase 10A implementation repairs are complete. All contracts, timing invariants, and schema validations are fully satisfied.
-2. **Next Steps**: Package the v5 freeze candidate bundle for external stakeholder sign-off. Upon approval, formal timestamping of `experiment.date_frozen` and execution of official Phase 10 evaluation may commence.
+- **Tracked Git Status**: Clean (all changes committed in `Fix final Phase 10A v5 review blockers`).
+- **Untracked / Ignored Artifacts**:
+  - `RED_TEST_OUTPUT.txt` (local diagnostic log)
+  - Prior review bundles (`phase10a_freeze_candidate_bundle_v2.zip`, `_v3.zip`, `_v4.zip`, `_v5.zip`)
+- **Bundle File**: `phase10a_freeze_candidate_bundle_v5_1.zip`
+- **Forbidden Files Scan**: 0 forbidden files found.
+- **Duplicate Members Scan**: 0 duplicate members found.
+- **Protocol Freeze Status**: `experiment.date_frozen` remains `null`. Official evaluation data (`X_eval.parquet`, `metadata_eval.parquet`) and official attack caches were NOT accessed.

@@ -16,6 +16,7 @@ completion.json is written last and only after all others succeed.
 """
 from __future__ import annotations
 
+import math
 import numpy as np
 import pandas as pd
 import json
@@ -37,6 +38,140 @@ _PLACEHOLDER_STRINGS = frozenset({"dummy", "hash", "placeholder", "todo", "none"
 
 def _now_iso() -> str:
     return datetime.datetime.utcnow().isoformat() + "Z"
+
+
+def _validate_run_outputs(run_tmp_dir: Path, summary: RunSummary) -> None:
+    """
+    Reopen and validate serialized outputs before completion.json is created.
+    """
+    config_path = run_tmp_dir / "config.json"
+    confusion_path = run_tmp_dir / "confusion.json"
+    scores_path = run_tmp_dir / "scores.json"
+    summary_path = run_tmp_dir / "run_summary.json"
+
+    for p, name in [
+        (config_path, "config.json"),
+        (confusion_path, "confusion.json"),
+        (scores_path, "scores.json"),
+        (summary_path, "run_summary.json"),
+    ]:
+        if not p.exists():
+            raise FileNotFoundError(f"Run output missing before completion: {name}")
+
+    try:
+        with open(config_path, "r") as f:
+            config_data = json.load(f)
+    except Exception as e:
+        raise ValueError(f"config.json is not valid JSON: {e}")
+
+    try:
+        with open(confusion_path, "r") as f:
+            confusion_data = json.load(f)
+    except Exception as e:
+        raise ValueError(f"confusion.json is not valid JSON: {e}")
+
+    try:
+        with open(scores_path, "r") as f:
+            scores_data = json.load(f)
+    except Exception as e:
+        raise ValueError(f"scores.json is not valid JSON: {e}")
+
+    try:
+        with open(summary_path, "r") as f:
+            summary_dict = json.load(f)
+        reconstructed_summary = RunSummary(**summary_dict)
+    except Exception as e:
+        raise ValueError(f"run_summary.json validation failed: {e}")
+
+    if len(config_data) != 144:
+        raise ValueError(f"config.json must have 144 records, got {len(config_data)}")
+    if len(confusion_data) != 144:
+        raise ValueError(f"confusion.json must have 144 records, got {len(confusion_data)}")
+    if len(scores_data) != 144:
+        raise ValueError(f"scores.json must have 144 records, got {len(scores_data)}")
+
+    expected_batch_ids = list(range(144))
+    if [c.get("batch_id") for c in config_data] != expected_batch_ids:
+        raise ValueError("config.json batch_ids must be exactly 0..143 in order")
+    if [c.get("batch_id") for c in confusion_data] != expected_batch_ids:
+        raise ValueError("confusion.json batch_ids must be exactly 0..143 in order")
+    if [s.get("batch_id") for s in scores_data] != expected_batch_ids:
+        raise ValueError("scores.json batch_ids must be exactly 0..143 in order")
+
+    # Reconstruct every configuration and confusion record
+    for c in config_data:
+        BatchConfigLog(**c)
+    for cf in confusion_data:
+        BatchConfusionLog(**cf)
+
+    # Scores, predictions, labels contain 500 aligned elements per batch
+    all_scores = []
+    all_labels = []
+    all_preds = []
+    total_elements = 0
+
+    for s_rec in scores_data:
+        b_id = s_rec.get("batch_id")
+        b_scores = s_rec.get("scores")
+        b_preds = s_rec.get("predictions", s_rec.get("preds"))
+        b_labels = s_rec.get("labels", s_rec.get("y_true"))
+
+        if not isinstance(b_scores, list) or len(b_scores) != 500:
+            raise ValueError(f"Batch {b_id} scores must be a list of 500 elements")
+        if not isinstance(b_preds, list) or len(b_preds) != 500:
+            raise ValueError(f"Batch {b_id} predictions must be a list of 500 elements")
+        if not isinstance(b_labels, list) or len(b_labels) != 500:
+            raise ValueError(f"Batch {b_id} labels must be a list of 500 elements")
+
+        for sc in b_scores:
+            if isinstance(sc, bool) or not isinstance(sc, (int, float)) or not math.isfinite(sc) or not (0.0 <= sc <= 1.0):
+                raise ValueError(f"Batch {b_id} contains invalid score: {sc!r}")
+        for pr in b_preds:
+            if isinstance(pr, bool) or pr not in (0, 1):
+                raise ValueError(f"Batch {b_id} contains non-binary prediction: {pr!r}")
+        for lb in b_labels:
+            if isinstance(lb, bool) or lb not in (0, 1):
+                raise ValueError(f"Batch {b_id} contains non-binary label: {lb!r}")
+
+        total_elements += 500
+        all_scores.extend(b_scores)
+        all_preds.extend(b_preds)
+        all_labels.extend(b_labels)
+
+    if total_elements != 72000:
+        raise ValueError(f"Concatenated records total {total_elements} != 72000")
+
+    # Reconstructed global totals match RunSummary
+    recon_tp = sum(c["tp"] for c in confusion_data)
+    recon_fp = sum(c["fp"] for c in confusion_data)
+    recon_tn = sum(c["tn"] for c in confusion_data)
+    recon_fn = sum(c["fn"] for c in confusion_data)
+    recon_eligible = sum(c["eligible_count"] for c in confusion_data)
+    recon_attempted = sum(c["attempted_count"] for c in confusion_data)
+    recon_successful = sum(c["successful_count"] for c in confusion_data)
+
+    if recon_tp + recon_fp + recon_tn + recon_fn != 72000:
+        raise ValueError(f"Reconstructed confusion sum != 72000: {recon_tp + recon_fp + recon_tn + recon_fn}")
+
+    if (summary.tp != recon_tp or
+        summary.fp != recon_fp or
+        summary.tn != recon_tn or
+        summary.fn != recon_fn or
+        summary.total_eligible != recon_eligible or
+        summary.total_attempted != recon_attempted or
+        summary.total_successful != recon_successful):
+        raise ValueError("Reconstructed global totals from confusion records do not match RunSummary")
+
+    # Global PR-AUC recomputation matches the stored value
+    if len(np.unique(all_labels)) > 1:
+        recomputed_pr_auc = float(average_precision_score(all_labels, all_scores))
+    else:
+        recomputed_pr_auc = 0.0
+
+    if not math.isclose(summary.pr_auc_average_precision, recomputed_pr_auc, rel_tol=1e-7, abs_tol=1e-7):
+        raise ValueError(
+            f"Recomputed global PR-AUC {recomputed_pr_auc} does not match RunSummary {summary.pr_auc_average_precision}"
+        )
 
 
 def _validate_provenance(hashes: Dict[str, str]):
@@ -176,8 +311,10 @@ class ExperimentRunner:
 
                 # Audit aggregations
                 total_queries += int(np.sum(cache_data.get("queries", 0)))
-                
-                for code in cache_data.get("status_codes", []):
+                status_codes = cache_data.get("status_codes")
+                if status_codes is None:
+                    status_codes = ["NOT_APPLICABLE"] * 500
+                for code in status_codes:
                     status_counts[code] = status_counts.get(code, 0) + 1
                     
                 success_mask = cache_data["successful"]
@@ -288,10 +425,10 @@ class ExperimentRunner:
                 cf_log = BatchConfusionLog(
                     run_id=self.run_id,
                     batch_id=batch_id,
-                    tp=int(batch_metrics["tp"]),
+                    tp=int(tp),
                     fp=int(batch_metrics["fp"]),
                     tn=int(batch_metrics["tn"]),
-                    fn=int(batch_metrics["fn"]),
+                    fn=int(fn),
                     accuracy=float(batch_metrics["accuracy"]),
                     recall=float(batch_metrics["recall"]),
                     precision=float(batch_metrics["precision"]),
@@ -310,8 +447,10 @@ class ExperimentRunner:
                 score_records.append({
                     "batch_id": batch_id,
                     "y_true": y_batch.tolist(),
+                    "labels": y_batch.tolist(),
                     "scores": defended_scores.tolist(),
                     "preds": defended_preds.tolist(),
+                    "predictions": defended_preds.tolist(),
                     "defense_final_invalid_count": (
                         defense_result.final_nan_count + defense_result.final_inf_count
                         + defense_result.final_bounds_violation_count
@@ -366,9 +505,10 @@ class ExperimentRunner:
             else:
                 global_pr_auc = 0.0
 
-            global_asr = (
-                float(agg_successful / agg_attempted) if asr_applicable and agg_attempted > 0 else None
-            )
+            if asr_applicable:
+                global_asr = float(agg_successful / agg_attempted) if agg_attempted > 0 else 0.0
+            else:
+                global_asr = None
 
             def summarize_mag(arr_list):
                 if not arr_list:
@@ -383,7 +523,7 @@ class ExperimentRunner:
                     "std": float(np.std(arr)),
                 }
                 
-            cache_identity = getattr(self.attack_cache, "cache_identity", {})
+            cache_identity = getattr(self.attack_cache, "cache_identity", None) or dict(self.provenance_hashes)
 
             summary = RunSummary(
                 run_id=self.run_id,
@@ -418,6 +558,9 @@ class ExperimentRunner:
 
             with open(run_tmp_dir / "run_summary.json", "w") as f:
                 json.dump(dataclasses.asdict(summary), f, indent=2)
+
+            # Reopen and validate serialized outputs before writing completion marker
+            _validate_run_outputs(run_tmp_dir, summary)
 
             # 5. completion.json — written LAST
             marker = CompletionMarker(
