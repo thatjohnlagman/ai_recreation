@@ -546,17 +546,39 @@ def validate_evaluation_partition_alignment(
     Strict validation of evaluation partition alignment for official execution mode.
 
     Guarantees:
-      - exactly 90,000 aligned X_eval and metadata rows;
-      - exact 78-feature order matching frozen feature names;
+      - df_meta_eval contains _source_file, _raw_row_idx, and y_binary;
+      - evaluation_roles.csv contains eval_position, _source_file, _raw_row_idx, y_binary, and role;
+      - exactly 90,000 aligned X_eval, metadata_eval, and evaluation_roles rows;
+      - exactly 72,000 evaluation_batches rows;
+      - exact 78-feature schema matching frozen feature names (no extra, missing, or reordered columns);
       - zero NaN and infinite feature values;
-      - eval_position values are unique and in range 0..89999;
+      - evaluation positions in X, metadata, and roles are unique and equal exactly 0..89999;
       - feature and metadata positions align;
-      - composite identities match the authoritative roles manifest;
-      - exactly 18,000 crafting and 72,000 measurement identities;
-      - crafting and measurement identities are disjoint;
-      - measurement-to-batch mapping is exactly 144 batches of 500.
+      - roles sorted by eval_position have exactly the same (_source_file, _raw_row_idx) sequence as metadata;
+      - y_binary in roles exactly equals metadata y_binary;
+      - attack_family in roles matches metadata attack_family if present in both;
+      - role values consist only of 'crafting' and 'measurement';
+      - exactly 18,000 crafting and 72,000 measurement roles;
+      - crafting and measurement composite identities are disjoint;
+      - evaluation_batches.csv positions are unique and equal exactly the 72,000 measurement positions;
+      - each measurement position occurs exactly once in one batch across 144 batches of 500.
     """
-    # 1. Row counts
+    # 1. Required columns in metadata_eval
+    for col in ["_source_file", "_raw_row_idx", "y_binary"]:
+        if col not in df_meta_eval.columns:
+            raise ValueError(f"metadata_eval missing required column: '{col}'")
+
+    # 2. Required columns in evaluation_roles
+    for col in ["eval_position", "_source_file", "_raw_row_idx", "y_binary", "role"]:
+        if col not in df_roles.columns:
+            raise ValueError(f"evaluation_roles missing required column: '{col}'")
+
+    # 3. Required columns in evaluation_batches
+    for col in ["eval_position", "batch_id"]:
+        if col not in df_batches.columns:
+            raise ValueError(f"evaluation_batches missing required column: '{col}'")
+
+    # 4. Row counts
     if len(df_x_eval) != 90000:
         raise ValueError(f"X_eval row count mismatch: expected 90,000, got {len(df_x_eval):,}")
     if len(df_meta_eval) != 90000:
@@ -566,30 +588,85 @@ def validate_evaluation_partition_alignment(
     if len(df_batches) != 72000:
         raise ValueError(f"evaluation_batches row count mismatch: expected 72,000, got {len(df_batches):,}")
 
-    # 2. Features order and names
-    if list(df_x_eval.columns[:len(expected_feature_names)]) != expected_feature_names:
-        raise ValueError("X_eval feature column names or order mismatch vs frozen feature_names.json")
+    # 5. Exact feature schema equality
+    if list(df_x_eval.columns) != expected_feature_names:
+        if len(df_x_eval.columns) != len(expected_feature_names):
+            raise ValueError(
+                f"X_eval column count mismatch: expected {len(expected_feature_names)}, "
+                f"got {len(df_x_eval.columns)}"
+            )
+        raise ValueError("X_eval feature columns do not exactly match frozen feature_names.json in name and order")
 
-    # 3. Finite float values
+    # 6. Finite float values
     x_vals = df_x_eval[expected_feature_names].values
     if not np.isfinite(x_vals).all():
         raise ValueError("X_eval contains non-finite (NaN or Inf) feature values")
 
-    # 4. Position alignment
+    # 7. Evaluation positions extraction
     if "eval_position" in df_x_eval.columns:
-        eps_x = df_x_eval["eval_position"].values
+        eps_x = df_x_eval["eval_position"].to_numpy()
     else:
-        eps_x = df_x_eval.index.values
+        eps_x = df_x_eval.index.to_numpy()
 
     if "eval_position" in df_meta_eval.columns:
-        eps_meta = df_meta_eval["eval_position"].values
+        eps_meta = df_meta_eval["eval_position"].to_numpy()
     else:
-        eps_meta = df_meta_eval.index.values
+        eps_meta = df_meta_eval.index.to_numpy()
 
+    eps_roles = df_roles["eval_position"].to_numpy()
+
+    expected_0_to_89999 = np.arange(90000, dtype=int)
+
+    # Position checks for X_eval
+    if len(np.unique(eps_x)) != 90000:
+        raise ValueError("X_eval eval_position values contain duplicates")
+    if not np.array_equal(np.sort(eps_x), expected_0_to_89999):
+        raise ValueError("X_eval eval_position values must equal exactly 0..89999 with no gaps or out-of-range values")
+
+    # Position checks for metadata_eval
+    if len(np.unique(eps_meta)) != 90000:
+        raise ValueError("metadata_eval eval_position values contain duplicates")
+    if not np.array_equal(np.sort(eps_meta), expected_0_to_89999):
+        raise ValueError("metadata_eval eval_position values must equal exactly 0..89999 with no gaps or out-of-range values")
+
+    # Position checks for evaluation_roles
+    if len(np.unique(eps_roles)) != 90000:
+        raise ValueError("evaluation_roles eval_position values contain duplicates")
+    if not np.array_equal(np.sort(eps_roles), expected_0_to_89999):
+        raise ValueError("evaluation_roles eval_position values must equal exactly 0..89999 with no gaps or out-of-range values")
+
+    # Alignment between X_eval and metadata_eval
     if not np.array_equal(eps_x, eps_meta):
-        raise ValueError("X_eval and metadata_eval eval_position indices do not align")
+        raise ValueError("X_eval and metadata_eval eval_position sequence do not align")
 
-    # 5. Roles partition disjointness and counts
+    # 8. Sort metadata and roles by eval_position to verify aligned sequence
+    if "eval_position" in df_meta_eval.columns:
+        meta_sorted = df_meta_eval.sort_values("eval_position").reset_index(drop=True)
+    else:
+        meta_sorted = df_meta_eval.sort_index().reset_index(drop=True)
+
+    roles_sorted = df_roles.sort_values("eval_position").reset_index(drop=True)
+
+    # Composite identities sequence check: roles sorted by eval_position must match metadata
+    roles_comp_ids = list(zip(roles_sorted["_source_file"], roles_sorted["_raw_row_idx"]))
+    meta_comp_ids = list(zip(meta_sorted["_source_file"], meta_sorted["_raw_row_idx"]))
+    if roles_comp_ids != meta_comp_ids:
+        raise ValueError("evaluation_roles and metadata_eval composite identity (_source_file, _raw_row_idx) sequence mismatch")
+
+    # y_binary in roles exactly equals metadata y_binary
+    if not np.array_equal(roles_sorted["y_binary"].values, meta_sorted["y_binary"].values):
+        raise ValueError("y_binary in evaluation_roles does not equal metadata_eval y_binary")
+
+    # attack_family matching if present in both
+    if "attack_family" in roles_sorted.columns and "attack_family" in meta_sorted.columns:
+        if not np.array_equal(roles_sorted["attack_family"].astype(str).values, meta_sorted["attack_family"].astype(str).values):
+            raise ValueError("attack_family in evaluation_roles does not equal metadata_eval attack_family")
+
+    # 9. Role values validation
+    role_vals = set(df_roles["role"].unique())
+    if role_vals != {"crafting", "measurement"}:
+        raise ValueError(f"evaluation_roles role values must consist only of 'crafting' and 'measurement', found: {role_vals}")
+
     crafting_mask = (df_roles["role"] == "crafting")
     measurement_mask = (df_roles["role"] == "measurement")
 
@@ -605,17 +682,30 @@ def validate_evaluation_partition_alignment(
         overlap = crafting_eps.intersection(measurement_eps)
         raise ValueError(f"Crafting and measurement roles overlap by {len(overlap)} positions")
 
-    # 6. Batches alignment
+    # Crafting and measurement composite identities are disjoint
+    crafting_ids = set(zip(df_roles.loc[crafting_mask, "_source_file"], df_roles.loc[crafting_mask, "_raw_row_idx"]))
+    measurement_ids = set(zip(df_roles.loc[measurement_mask, "_source_file"], df_roles.loc[measurement_mask, "_raw_row_idx"]))
+    if len(crafting_ids) != 18000:
+        raise ValueError(f"Expected 18,000 unique crafting composite identities, got {len(crafting_ids):,}")
+    if len(measurement_ids) != 72000:
+        raise ValueError(f"Expected 72,000 unique measurement composite identities, got {len(measurement_ids):,}")
+    if not crafting_ids.isdisjoint(measurement_ids):
+        overlap_ids = crafting_ids.intersection(measurement_ids)
+        raise ValueError(f"Crafting and measurement composite identities overlap by {len(overlap_ids)} items")
+
+    # 10. Batches alignment
+    batch_eps = df_batches["eval_position"].to_numpy()
+    if len(np.unique(batch_eps)) != 72000:
+        raise ValueError("evaluation_batches eval_position values contain duplicates or do not total 72,000")
+    if set(batch_eps) != measurement_eps:
+        raise ValueError("evaluation_batches eval_positions do not exactly match the 72,000 measurement role positions")
+
     unique_batches = df_batches["batch_id"].nunique()
     if unique_batches != 144:
         raise ValueError(f"Expected 144 unique batches, found {unique_batches}")
     batch_counts = df_batches["batch_id"].value_counts()
     if not (batch_counts == 500).all():
         raise ValueError("Each evaluation batch must contain exactly 500 records")
-
-    batch_eps = set(df_batches["eval_position"].values)
-    if batch_eps != measurement_eps:
-        raise ValueError("evaluation_batches eval_positions do not exactly match measurement role positions")
 
 
 # ---------------------------------------------------------------------------
@@ -632,7 +722,7 @@ def verify_reproducible_execution_state(
     reproducible state.
 
     Rejects execution if:
-      - Any tracked file is modified or dirty.
+      - Any tracked file is modified or dirty (all non-empty porcelain status codes other than '??').
       - Any required Phase 10B source, test, configuration, or documentation file is untracked.
       - src/ has any diff relative to phase10-protocol-freeze.
       - Any frozen config or protocol file differs by a single byte from freeze tag.
@@ -686,16 +776,19 @@ def verify_reproducible_execution_state(
         if not line.strip():
             continue
         code = line[:2]
-        path_str = line[3:].strip()
-        if code in (" M", "M ", "D ", "A ", "R ", "C "):
-            dirty_tracked.append(path_str)
-        elif code == "??":
-            # Forbid untracked source, test, config, or documentation files
+        path_str = line[3:].strip().strip('"')
+        if code == "??":
+            # Untracked files: forbid untracked code, test, script, config, or doc files
             if (
                 path_str.startswith(("src/", "tests/", "configs/", "scripts/", "docs/"))
-                or path_str.endswith((".py", ".yaml", ".md"))
+                or path_str.endswith((".py", ".yaml", ".yml", ".md", ".toml", ".txt"))
             ):
-                untracked_code.append(path_str)
+                # Historical zip archives or log files are allowed, but no source/test/config/doc files
+                if not (path_str.endswith(".zip") or path_str.endswith(".log")):
+                    untracked_code.append(path_str)
+        else:
+            # Treat every non-empty git status --porcelain entry other than "??" as a tracked working-tree change
+            dirty_tracked.append(f"{code}:{path_str}")
 
     if dirty_tracked:
         raise RuntimeError(

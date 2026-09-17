@@ -683,6 +683,9 @@ def test_independent_cache_reuse_rejects_earlier_orchestration_commit(tmp_path, 
 # ===========================================================================
 # 14. Reproducible Execution State Verification Tests
 # ===========================================================================
+# ===========================================================================
+# 14. Reproducible Execution State Verification Tests
+# ===========================================================================
 def test_reproducible_state_enforcement_passes_clean():
     """verify_reproducible_execution_state passes when working tree is clean."""
     real_check_output = subprocess.check_output
@@ -706,8 +709,8 @@ def test_reproducible_state_enforcement_passes_clean():
     assert len(head) == 40 or len(head) == 64
 
 
-def test_reproducible_state_rejects_dirty_tracked_files():
-    """verify_reproducible_execution_state rejects if tracked files are modified."""
+def test_reproducible_state_rejects_unstaged_tracked_modification():
+    """verify_reproducible_execution_state rejects unstaged tracked modification (' M')."""
     real_check_output = subprocess.check_output
 
     def mock_check_output(cmd, *args, **kwargs):
@@ -728,8 +731,74 @@ def test_reproducible_state_rejects_dirty_tracked_files():
             )
 
 
-def test_reproducible_state_rejects_untracked_code_files():
-    """verify_reproducible_execution_state rejects if untracked code/test files exist."""
+def test_reproducible_state_rejects_staged_modification():
+    """verify_reproducible_execution_state rejects staged modification ('M ')."""
+    real_check_output = subprocess.check_output
+
+    def mock_check_output(cmd, *args, **kwargs):
+        cmd_str = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
+        if "--porcelain" in cmd_str:
+            return "M  scripts/build_evaluation_caches.py\n"
+        if "diff" in cmd_str and "src/" in cmd_str:
+            return ""
+        return real_check_output(cmd, *args, **kwargs)
+
+    with patch("subprocess.check_output", side_effect=mock_check_output):
+        with pytest.raises(RuntimeError, match="tracked files are modified"):
+            verify_reproducible_execution_state(
+                repo_root=REPO_ROOT,
+                configs_dir=CONFIGS_DIR,
+                artifacts_dir=ARTIFACTS_DIR,
+                data_dir=DATA_DIR,
+            )
+
+
+def test_reproducible_state_rejects_staged_and_unstaged_modification():
+    """verify_reproducible_execution_state rejects combined staged and unstaged modification ('MM')."""
+    real_check_output = subprocess.check_output
+
+    def mock_check_output(cmd, *args, **kwargs):
+        cmd_str = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
+        if "--porcelain" in cmd_str:
+            return "MM scripts/build_evaluation_caches.py\n"
+        if "diff" in cmd_str and "src/" in cmd_str:
+            return ""
+        return real_check_output(cmd, *args, **kwargs)
+
+    with patch("subprocess.check_output", side_effect=mock_check_output):
+        with pytest.raises(RuntimeError, match="tracked files are modified"):
+            verify_reproducible_execution_state(
+                repo_root=REPO_ROOT,
+                configs_dir=CONFIGS_DIR,
+                artifacts_dir=ARTIFACTS_DIR,
+                data_dir=DATA_DIR,
+            )
+
+
+def test_reproducible_state_rejects_staged_addition():
+    """verify_reproducible_execution_state rejects staged additions ('A ')."""
+    real_check_output = subprocess.check_output
+
+    def mock_check_output(cmd, *args, **kwargs):
+        cmd_str = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
+        if "--porcelain" in cmd_str:
+            return "A  tests/test_new_feature.py\n"
+        if "diff" in cmd_str and "src/" in cmd_str:
+            return ""
+        return real_check_output(cmd, *args, **kwargs)
+
+    with patch("subprocess.check_output", side_effect=mock_check_output):
+        with pytest.raises(RuntimeError, match="tracked files are modified"):
+            verify_reproducible_execution_state(
+                repo_root=REPO_ROOT,
+                configs_dir=CONFIGS_DIR,
+                artifacts_dir=ARTIFACTS_DIR,
+                data_dir=DATA_DIR,
+            )
+
+
+def test_reproducible_state_rejects_untracked_code_file():
+    """verify_reproducible_execution_state rejects untracked code/test files ('??')."""
     real_check_output = subprocess.check_output
 
     def mock_check_output(cmd, *args, **kwargs):
@@ -750,21 +819,54 @@ def test_reproducible_state_rejects_untracked_code_files():
             )
 
 
+def test_reproducible_state_allows_historical_untracked_zip_archive():
+    """verify_reproducible_execution_state allows historical untracked ZIP archives."""
+    real_check_output = subprocess.check_output
+
+    def mock_check_output(cmd, *args, **kwargs):
+        cmd_str = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
+        if "--porcelain" in cmd_str:
+            return "?? phase10a_freeze_candidate_bundle_v2.zip\n?? phase10a_freeze_candidate_bundle_v5_2.zip\n"
+        if "diff" in cmd_str and "src/" in cmd_str:
+            return ""
+        return real_check_output(cmd, *args, **kwargs)
+
+    with patch("subprocess.check_output", side_effect=mock_check_output):
+        head = verify_reproducible_execution_state(
+            repo_root=REPO_ROOT,
+            configs_dir=CONFIGS_DIR,
+            artifacts_dir=ARTIFACTS_DIR,
+            data_dir=DATA_DIR,
+        )
+    assert isinstance(head, str)
+    assert len(head) == 40 or len(head) == 64
+
+
 # ===========================================================================
 # 15. Evaluation Partition Alignment Validation Tests
 # ===========================================================================
-def test_partition_alignment_validation_passes_valid(synthetic_data):
-    """Validation passes for exactly 90,000 aligned rows, 18k craft, 72k meas, 144 batches of 500."""
+@pytest.fixture
+def synthetic_90k_data(synthetic_data):
+    """Generates aligned synthetic 90k data structures for partition alignment validation."""
     fnames = synthetic_data["feature_names"]
     n_total = 90000
     n_craft = 18000
     n_meas = 72000
 
-    # Build synthetic 90k dataframes
     df_x = pd.DataFrame(np.ones((n_total, len(fnames)), dtype=np.float32), columns=fnames)
-    df_meta = pd.DataFrame({"eval_position": np.arange(n_total, dtype=int), "y_binary": 0})
+    df_meta = pd.DataFrame({
+        "eval_position": np.arange(n_total, dtype=int),
+        "_source_file": [f"file_{i % 10}.csv" for i in range(n_total)],
+        "_raw_row_idx": np.arange(n_total, dtype=int),
+        "y_binary": np.zeros(n_total, dtype=int),
+        "attack_family": ["Benign"] * n_total,
+    })
     df_roles = pd.DataFrame({
         "eval_position": np.arange(n_total, dtype=int),
+        "_source_file": [f"file_{i % 10}.csv" for i in range(n_total)],
+        "_raw_row_idx": np.arange(n_total, dtype=int),
+        "y_binary": np.zeros(n_total, dtype=int),
+        "attack_family": ["Benign"] * n_total,
         "role": ["crafting"] * n_craft + ["measurement"] * n_meas,
     })
     meas_eps = np.arange(n_craft, n_total, dtype=int)
@@ -773,84 +875,196 @@ def test_partition_alignment_validation_passes_valid(synthetic_data):
         "eval_position": meas_eps,
         "batch_id": batch_ids,
     })
+    return {
+        "df_x": df_x,
+        "df_meta": df_meta,
+        "df_roles": df_roles,
+        "df_batches": df_batches,
+        "feature_names": fnames,
+    }
 
-    # Must pass cleanly without error
+
+def test_partition_alignment_validation_passes_valid(synthetic_90k_data):
+    """Validation passes for exactly 90,000 aligned rows, 18k craft, 72k meas, 144 batches of 500."""
     validate_evaluation_partition_alignment(
-        df_x_eval=df_x,
-        df_meta_eval=df_meta,
-        df_roles=df_roles,
-        df_batches=df_batches,
-        expected_feature_names=fnames,
+        df_x_eval=synthetic_90k_data["df_x"],
+        df_meta_eval=synthetic_90k_data["df_meta"],
+        df_roles=synthetic_90k_data["df_roles"],
+        df_batches=synthetic_90k_data["df_batches"],
+        expected_feature_names=synthetic_90k_data["feature_names"],
     )
 
 
-def test_partition_alignment_rejects_row_count_mismatch(synthetic_data):
-    """Validation rejects if X_eval has anything other than 90,000 rows."""
-    fnames = synthetic_data["feature_names"]
-    df_x_bad = pd.DataFrame(np.ones((89999, len(fnames)), dtype=np.float32), columns=fnames)
-    with pytest.raises(ValueError, match="X_eval row count mismatch"):
+def test_partition_alignment_rejects_shuffled_metadata_composite_identities(synthetic_90k_data):
+    """Validation rejects when metadata composite identities are shuffled relative to roles."""
+    df_meta = synthetic_90k_data["df_meta"].copy()
+    # Swap first two rows of raw row indices
+    tmp = df_meta.loc[0, "_raw_row_idx"]
+    df_meta.loc[0, "_raw_row_idx"] = df_meta.loc[1, "_raw_row_idx"]
+    df_meta.loc[1, "_raw_row_idx"] = tmp
+
+    with pytest.raises(ValueError, match="composite identity.*sequence mismatch"):
         validate_evaluation_partition_alignment(
-            df_x_eval=df_x_bad,
-            df_meta_eval=pd.DataFrame(),
-            df_roles=pd.DataFrame(),
-            df_batches=pd.DataFrame(),
-            expected_feature_names=fnames,
+            df_x_eval=synthetic_90k_data["df_x"],
+            df_meta_eval=df_meta,
+            df_roles=synthetic_90k_data["df_roles"],
+            df_batches=synthetic_90k_data["df_batches"],
+            expected_feature_names=synthetic_90k_data["feature_names"],
         )
 
 
-def test_partition_alignment_rejects_nan_or_inf(synthetic_data):
+def test_partition_alignment_rejects_modified_raw_row_idx(synthetic_90k_data):
+    """Validation rejects when a single _raw_row_idx is modified."""
+    df_meta = synthetic_90k_data["df_meta"].copy()
+    df_meta.loc[0, "_raw_row_idx"] += 999999
+
+    with pytest.raises(ValueError, match="composite identity.*sequence mismatch"):
+        validate_evaluation_partition_alignment(
+            df_x_eval=synthetic_90k_data["df_x"],
+            df_meta_eval=df_meta,
+            df_roles=synthetic_90k_data["df_roles"],
+            df_batches=synthetic_90k_data["df_batches"],
+            expected_feature_names=synthetic_90k_data["feature_names"],
+        )
+
+
+def test_partition_alignment_rejects_modified_source_file(synthetic_90k_data):
+    """Validation rejects when a single _source_file is modified."""
+    df_meta = synthetic_90k_data["df_meta"].copy()
+    df_meta.loc[0, "_source_file"] = "tampered_file.csv"
+
+    with pytest.raises(ValueError, match="composite identity.*sequence mismatch"):
+        validate_evaluation_partition_alignment(
+            df_x_eval=synthetic_90k_data["df_x"],
+            df_meta_eval=df_meta,
+            df_roles=synthetic_90k_data["df_roles"],
+            df_batches=synthetic_90k_data["df_batches"],
+            expected_feature_names=synthetic_90k_data["feature_names"],
+        )
+
+
+def test_partition_alignment_rejects_duplicated_evaluation_position(synthetic_90k_data):
+    """Validation rejects when eval_position contains duplicates."""
+    df_meta = synthetic_90k_data["df_meta"].copy()
+    df_meta.loc[1, "eval_position"] = 0
+
+    with pytest.raises(ValueError, match="metadata_eval eval_position values contain duplicates"):
+        validate_evaluation_partition_alignment(
+            df_x_eval=synthetic_90k_data["df_x"],
+            df_meta_eval=df_meta,
+            df_roles=synthetic_90k_data["df_roles"],
+            df_batches=synthetic_90k_data["df_batches"],
+            expected_feature_names=synthetic_90k_data["feature_names"],
+        )
+
+
+def test_partition_alignment_rejects_missing_or_out_of_range_position(synthetic_90k_data):
+    """Validation rejects when eval_position has out-of-range values or gaps."""
+    df_roles = synthetic_90k_data["df_roles"].copy()
+    df_roles.loc[89999, "eval_position"] = 90000
+
+    with pytest.raises(ValueError, match="evaluation_roles eval_position values must equal exactly 0..89999"):
+        validate_evaluation_partition_alignment(
+            df_x_eval=synthetic_90k_data["df_x"],
+            df_meta_eval=synthetic_90k_data["df_meta"],
+            df_roles=df_roles,
+            df_batches=synthetic_90k_data["df_batches"],
+            expected_feature_names=synthetic_90k_data["feature_names"],
+        )
+
+
+def test_partition_alignment_rejects_mismatched_y_binary(synthetic_90k_data):
+    """Validation rejects when y_binary in roles does not match metadata_eval."""
+    df_roles = synthetic_90k_data["df_roles"].copy()
+    df_roles.loc[0, "y_binary"] = 1  # meta is 0
+
+    with pytest.raises(ValueError, match="y_binary in evaluation_roles does not equal metadata_eval y_binary"):
+        validate_evaluation_partition_alignment(
+            df_x_eval=synthetic_90k_data["df_x"],
+            df_meta_eval=synthetic_90k_data["df_meta"],
+            df_roles=df_roles,
+            df_batches=synthetic_90k_data["df_batches"],
+            expected_feature_names=synthetic_90k_data["feature_names"],
+        )
+
+
+def test_partition_alignment_rejects_overlapping_composite_identities(synthetic_90k_data):
+    """Validation rejects when crafting and measurement composite identities are not disjoint."""
+    df_roles = synthetic_90k_data["df_roles"].copy()
+    df_meta = synthetic_90k_data["df_meta"].copy()
+    # Overlap composite identity of measurement row 18000 with crafting row 0
+    df_roles.loc[18000, "_source_file"] = df_roles.loc[0, "_source_file"]
+    df_roles.loc[18000, "_raw_row_idx"] = df_roles.loc[0, "_raw_row_idx"]
+    df_meta.loc[18000, "_source_file"] = df_roles.loc[0, "_source_file"]
+    df_meta.loc[18000, "_raw_row_idx"] = df_roles.loc[0, "_raw_row_idx"]
+
+    with pytest.raises(ValueError, match="Crafting and measurement composite identities overlap"):
+        validate_evaluation_partition_alignment(
+            df_x_eval=synthetic_90k_data["df_x"],
+            df_meta_eval=df_meta,
+            df_roles=df_roles,
+            df_batches=synthetic_90k_data["df_batches"],
+            expected_feature_names=synthetic_90k_data["feature_names"],
+        )
+
+
+def test_partition_alignment_rejects_extra_trailing_feature_column(synthetic_90k_data):
+    """Validation rejects when X_eval has an additional feature column (79 instead of 78)."""
+    df_x = synthetic_90k_data["df_x"].copy()
+    df_x["extra_trailing_col"] = 0.0
+
+    with pytest.raises(ValueError, match="X_eval column count mismatch: expected 78, got 79"):
+        validate_evaluation_partition_alignment(
+            df_x_eval=df_x,
+            df_meta_eval=synthetic_90k_data["df_meta"],
+            df_roles=synthetic_90k_data["df_roles"],
+            df_batches=synthetic_90k_data["df_batches"],
+            expected_feature_names=synthetic_90k_data["feature_names"],
+        )
+
+
+def test_partition_alignment_rejects_reordered_feature_columns(synthetic_90k_data):
+    """Validation rejects when feature columns are reordered."""
+    cols = list(synthetic_90k_data["df_x"].columns)
+    cols[0], cols[1] = cols[1], cols[0]
+    df_x_reordered = synthetic_90k_data["df_x"][cols]
+
+    with pytest.raises(ValueError, match="X_eval feature columns do not exactly match frozen feature_names.json in name and order"):
+        validate_evaluation_partition_alignment(
+            df_x_eval=df_x_reordered,
+            df_meta_eval=synthetic_90k_data["df_meta"],
+            df_roles=synthetic_90k_data["df_roles"],
+            df_batches=synthetic_90k_data["df_batches"],
+            expected_feature_names=synthetic_90k_data["feature_names"],
+        )
+
+
+def test_partition_alignment_rejects_incomplete_measurement_to_batch_coverage(synthetic_90k_data):
+    """Validation rejects when evaluation_batches does not have exactly 72,000 records."""
+    df_batches = synthetic_90k_data["df_batches"].iloc[:-1]
+
+    with pytest.raises(ValueError, match="evaluation_batches row count mismatch: expected 72,000, got 71,999"):
+        validate_evaluation_partition_alignment(
+            df_x_eval=synthetic_90k_data["df_x"],
+            df_meta_eval=synthetic_90k_data["df_meta"],
+            df_roles=synthetic_90k_data["df_roles"],
+            df_batches=df_batches,
+            expected_feature_names=synthetic_90k_data["feature_names"],
+        )
+
+
+def test_partition_alignment_rejects_nan_or_inf(synthetic_90k_data):
     """Validation rejects if X_eval contains NaN or infinite feature values."""
-    fnames = synthetic_data["feature_names"]
-    n_total = 90000
-    x_mat = np.ones((n_total, len(fnames)), dtype=np.float32)
-    x_mat[10, 5] = np.nan
-    df_x = pd.DataFrame(x_mat, columns=fnames)
-    df_meta = pd.DataFrame({"eval_position": np.arange(n_total, dtype=int)})
-    df_roles = pd.DataFrame({
-        "eval_position": np.arange(n_total, dtype=int),
-        "role": ["crafting"] * 18000 + ["measurement"] * 72000,
-    })
-    df_batches = pd.DataFrame({
-        "eval_position": np.arange(18000, n_total, dtype=int),
-        "batch_id": np.repeat(np.arange(144), 500),
-    })
+    df_x = synthetic_90k_data["df_x"].copy()
+    df_x.iloc[10, 5] = np.nan
 
     with pytest.raises(ValueError, match="non-finite"):
         validate_evaluation_partition_alignment(
             df_x_eval=df_x,
-            df_meta_eval=df_meta,
-            df_roles=df_roles,
-            df_batches=df_batches,
-            expected_feature_names=fnames,
-        )
-
-
-def test_partition_alignment_rejects_overlapping_roles(synthetic_data):
-    """Validation rejects if crafting and measurement partitions are not strictly disjoint."""
-    fnames = synthetic_data["feature_names"]
-    n_total = 90000
-    df_x = pd.DataFrame(np.ones((n_total, len(fnames)), dtype=np.float32), columns=fnames)
-    df_meta = pd.DataFrame({"eval_position": np.arange(n_total, dtype=int)})
-    roles = ["crafting"] * 18000 + ["measurement"] * 72000
-    # Overlap position 18000 with 0 so crafting has {0..17999} and measurement has {0, 18001..89999}
-    eps = list(range(n_total))
-    eps[18000] = 0
-    roles_df = pd.DataFrame({
-        "eval_position": eps,
-        "role": roles,
-    })
-    df_batches = pd.DataFrame({
-        "eval_position": eps[18000:],
-        "batch_id": np.repeat(np.arange(144), 500),
-    })
-
-    with pytest.raises(ValueError, match="roles overlap"):
-        validate_evaluation_partition_alignment(
-            df_x_eval=df_x,
-            df_meta_eval=df_meta,
-            df_roles=roles_df,
-            df_batches=df_batches,
-            expected_feature_names=fnames,
+            df_meta_eval=synthetic_90k_data["df_meta"],
+            df_roles=synthetic_90k_data["df_roles"],
+            df_batches=synthetic_90k_data["df_batches"],
+            expected_feature_names=synthetic_90k_data["feature_names"],
         )
 
 

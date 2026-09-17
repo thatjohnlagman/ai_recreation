@@ -164,5 +164,5 @@ Every provenance hash must be a valid 64-character lowercase hex string. Missing
 
 ## 8. Separation of Training Smoke Test
 
-- **Synthetic Unit Suite** (`tests/test_build_evaluation_caches.py`): Contains 18 focused tests using purely synthetic fixtures. Does not load any parquet dataset files.
-- **Training-Derived Smoke Test** (`tests/test_training_smoke.py`): Contains an end-to-end smoke test using a small deterministic 60-row slice of `data/processed/X_train.parquet` and `metadata_train.parquet`. Writes to a temporary directory in `tmp_path` (completely outside `artifacts/caches`). Strictly asserts that `X_eval.parquet` and `metadata_eval.parquet` are never opened.
+- **Synthetic Unit Suite** (`tests/test_build_evaluation_caches.py`): Contains 45 focused tests using purely synthetic fixtures. Does not load any parquet dataset files.
+- **Training-Derived Smoke Test** (`tests/test_training_smoke.py`): Contains 1 end-to-end smoke test using a small deterministic 60-row slice of `data/processed/X_train.parquet` and `metadata_train.parquet`. Writes to a temporary directory in `tmp_path` (completely outside `artifacts/caches`). Strictly asserts that `X_eval.parquet` and `metadata_eval.parquet` are never opened.

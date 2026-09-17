@@ -106,7 +106,7 @@ def build_bundle():
     hash_comparison = check_external_hashes()
     check_protocol_freeze()
 
-    bundle_path = ROOT / "phase10b_cache_orchestration_review_bundle_v2.zip"
+    bundle_path = ROOT / "phase10b_cache_orchestration_review_bundle_v2_1.zip"
     if bundle_path.exists():
         bundle_path.unlink()
 
@@ -183,7 +183,7 @@ def build_bundle():
                 f.write("\n=== STDERR ===\n" + res_focused.stderr)
         if res_focused.returncode != 0:
             raise RuntimeError(f"Focused tests failed! Exit code: {res_focused.returncode}")
-        print("  [OK] Focused tests captured cleanly (34 passed: 33 synthetic/unit, 1 training smoke).")
+        print("  [OK] Focused tests captured cleanly (46 passed: 45 synthetic/unit, 1 training smoke).")
 
         # C. Full Test Suite Output
         print("\nRunning complete test suite for report capture...")
@@ -198,7 +198,7 @@ def build_bundle():
                 f.write("\n=== STDERR ===\n" + res_full.stderr)
         if res_full.returncode != 0:
             raise RuntimeError(f"Full suite failed! Exit code: {res_full.returncode}")
-        print("  [OK] Full test suite captured cleanly (234 passed).")
+        print("  [OK] Full test suite captured cleanly (246 passed).")
 
         # D. Git Evidence Report
         git_path = gen_dir / "GIT_EVIDENCE.txt"
@@ -354,7 +354,7 @@ def build_bundle():
 
         # I. MANIFEST.txt lists every final member exactly once
         with open(manifest_path, "w") as f:
-            f.write("=== Phase 10B v2 Cache Orchestration Review Bundle Manifest ===\n")
+            f.write("=== Phase 10B v2.1 Cache Orchestration Review Bundle Manifest ===\n")
             f.write(f"Freeze Tag:    {FREEZE_TAG}\n")
             f.write(f"Freeze Commit: {FREEZE_COMMIT}\n")
             f.write(f"Total Members: {len(final_zip_members)}\n\n")
@@ -443,7 +443,7 @@ def build_bundle():
         bundle_size_mb = bundle_size_bytes / (1024 * 1024)
 
         print("\n" + "=" * 78)
-        print("PHASE 10B V2 REVIEW BUNDLE VERIFICATION SUCCESSFUL")
+        print("PHASE 10B V2.1 REVIEW BUNDLE VERIFICATION SUCCESSFUL")
         print("=" * 78)
         print(f"Bundle File:    {bundle_path.name}")
         print(f"File Size:      {bundle_size_mb:.2f} MB ({bundle_size_bytes:,} bytes)")

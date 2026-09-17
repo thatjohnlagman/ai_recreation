@@ -84,8 +84,8 @@ From these 252 runs, exactly **15 distinct canonical `(scenario, seed)` pairs** 
 
 ## 3. Test Suite Verification
 
-### 3.1 Focused Phase 10B Tests (34 Passed)
-The focused suite comprises 33 tests in `tests/test_build_evaluation_caches.py` and 1 dedicated training-derived smoke test in `tests/test_training_smoke.py`:
+### 3.1 Focused Phase 10B Tests (46 Passed)
+The focused suite comprises 45 tests in `tests/test_build_evaluation_caches.py` and 1 dedicated training-derived smoke test in `tests/test_training_smoke.py`:
 
 | Test Module & Case | Description | Result |
 |---|---|---|
@@ -109,12 +109,24 @@ The focused suite comprises 33 tests in `tests/test_build_evaluation_caches.py` 
 | `test_independent_cache_reuse_rejects_altered_manifest_and_completion` | Independent validation rejects cache whose manifest and completion altered together | **PASSED** |
 | `test_independent_cache_reuse_rejects_earlier_orchestration_commit` | Independent validation rejects cache from earlier orchestration commit | **PASSED** |
 | `test_reproducible_state_enforcement_passes_clean` | Enforces reproducible execution state when working tree is clean | **PASSED** |
-| `test_reproducible_state_rejects_dirty_tracked_files` | Refuses execution if tracked files are modified | **PASSED** |
-| `test_reproducible_state_rejects_untracked_code_files` | Refuses execution if untracked code/test/config files exist | **PASSED** |
+| `test_reproducible_state_rejects_unstaged_tracked_modification` | Refuses execution if tracked files have unstaged modifications (' M') | **PASSED** |
+| `test_reproducible_state_rejects_staged_modification` | Refuses execution if tracked files have staged modifications ('M ') | **PASSED** |
+| `test_reproducible_state_rejects_staged_and_unstaged_modification` | Refuses execution if tracked files have combined staged/unstaged changes ('MM') | **PASSED** |
+| `test_reproducible_state_rejects_staged_addition` | Refuses execution if tracked files have staged additions ('A ') | **PASSED** |
+| `test_reproducible_state_rejects_untracked_code_file` | Refuses execution if untracked code/test/config files exist ('??') | **PASSED** |
+| `test_reproducible_state_allows_historical_untracked_zip_archive` | Allows historical untracked ZIP archives and logs | **PASSED** |
 | `test_partition_alignment_validation_passes_valid` | Validates 90k aligned rows, 18k craft, 72k meas, 144 batches of 500 | **PASSED** |
-| `test_partition_alignment_rejects_row_count_mismatch` | Rejects row count mismatches in evaluation parquets | **PASSED** |
+| `test_partition_alignment_rejects_shuffled_metadata_composite_identities` | Rejects shuffled metadata composite identities vs roles | **PASSED** |
+| `test_partition_alignment_rejects_modified_raw_row_idx` | Rejects even a single modified `_raw_row_idx` | **PASSED** |
+| `test_partition_alignment_rejects_modified_source_file` | Rejects even a single modified `_source_file` | **PASSED** |
+| `test_partition_alignment_rejects_duplicated_evaluation_position` | Rejects duplicated eval_position values in X, meta, or roles | **PASSED** |
+| `test_partition_alignment_rejects_missing_or_out_of_range_position` | Rejects out-of-range positions or gaps vs 0..89999 | **PASSED** |
+| `test_partition_alignment_rejects_mismatched_y_binary` | Rejects mismatched y_binary between roles and metadata | **PASSED** |
+| `test_partition_alignment_rejects_overlapping_composite_identities` | Rejects overlapping crafting and measurement composite identities | **PASSED** |
+| `test_partition_alignment_rejects_extra_trailing_feature_column` | Rejects extra trailing feature columns (exact schema equality) | **PASSED** |
+| `test_partition_alignment_rejects_reordered_feature_columns` | Rejects reordered feature columns | **PASSED** |
+| `test_partition_alignment_rejects_incomplete_measurement_to_batch_coverage` | Rejects non-72000 measurement rows or incomplete batch mapping | **PASSED** |
 | `test_partition_alignment_rejects_nan_or_inf` | Rejects non-finite (NaN or Inf) feature values | **PASSED** |
-| `test_partition_alignment_rejects_overlapping_roles` | Rejects overlapping crafting and measurement partitions | **PASSED** |
 | `test_surrogate_fitting_labels_originate_from_oracle_not_ground_truth` | Proves surrogate training labels come from oracle, not ground truth | **PASSED** |
 | `test_surrogate_candidate_generation_does_not_receive_labels` | Proves surrogate candidate generation takes no labels | **PASSED** |
 | `test_decision_boundary_reference_selection_uses_model_predictions` | Proves DB reference selection uses model predictions on crafting rows, not true labels | **PASSED** |
@@ -124,19 +136,19 @@ The focused suite comprises 33 tests in `tests/test_build_evaluation_caches.py` 
 | `test_deterministic_pair_ordering` | Verifies deterministic ordering of 15 pairs | **PASSED** |
 | `test_training_smoke_uses_only_training_partition_and_tmp_dir` | Separated smoke test uses only training slice in temp dir | **PASSED** |
 
-**Focused Results**: 34 passed (100%).
+**Focused Results**: 46 passed (100%).
 
 ### 3.2 Full Project Regression Suite
-- Total Tests: **234 passed** (0 failed, 0 errors across all test modules).
+- Total Tests: **246 passed** (0 failed, 0 errors across all test modules).
 - Clean regression across all project modules.
 
 ---
 
 ## 4. Review Bundle Verification
 
-The review bundle `phase10b_cache_orchestration_review_bundle_v2.zip` is constructed by `scripts/build_phase10b_review_bundle.py` strictly after committing all tracked Phase 10B source, test, configuration, and documentation changes:
+The review bundle `phase10b_cache_orchestration_review_bundle_v2_1.zip` is constructed by `scripts/build_phase10b_review_bundle.py` strictly after committing all tracked Phase 10B source, test, configuration, and documentation changes:
 
-- **Target Bundle Filename**: `phase10b_cache_orchestration_review_bundle_v2.zip`
+- **Target Bundle Filename**: `phase10b_cache_orchestration_review_bundle_v2_1.zip`
 - **Integrity Guarantee**:
   - The final member list is constructed exactly once.
   - `MANIFEST.txt` lists every final member exactly once.
