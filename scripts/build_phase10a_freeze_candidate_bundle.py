@@ -105,7 +105,7 @@ def build_bundle():
     hash_comparison = check_external_hashes()
     check_experiment_frozen()
 
-    bundle_path = ROOT / "phase10a_freeze_candidate_bundle_v5_1.zip"
+    bundle_path = ROOT / "phase10a_freeze_candidate_bundle_v5_2.zip"
     if bundle_path.exists():
         bundle_path.unlink()
     print(f"\nBuilding bundle: {bundle_path.name}")

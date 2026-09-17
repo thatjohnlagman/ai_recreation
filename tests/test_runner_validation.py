@@ -599,3 +599,202 @@ def test_runner_quarantines_on_malformed_serialized_output(monkeypatch, runner_d
         fail_data = json.load(f)
     assert fail_data["run_id"] == "run_corrupt_output"
     assert "scores.json is not valid JSON" in fail_data["error_message"]
+
+
+def test_runner_quarantines_when_serialized_run_summary_altered(monkeypatch, runner_deps):
+    resolved, lp, out = runner_deps
+    import recall_aware_ids.experiment.runner as runner_mod
+
+    orig_validate = runner_mod._validate_run_outputs
+
+    def corrupting_validate(run_tmp_dir, summary):
+        # Alter run_summary.json to a different but still schema-valid summary
+        with open(run_tmp_dir / "run_summary.json", "r") as f:
+            summary_dict = json.load(f)
+        # Modify a field: seed=9999 is still valid int, but differs from canonical summary
+        summary_dict["seed"] = 9999
+        with open(run_tmp_dir / "run_summary.json", "w") as f:
+            json.dump(summary_dict, f, indent=2)
+        orig_validate(run_tmp_dir, summary)
+
+    monkeypatch.setattr(runner_mod, "_validate_run_outputs", corrupting_validate)
+
+    runner = ExperimentRunner(
+        resolved_batches=resolved,
+        label_provider=lp,
+        attack_cache=MockCacheProvider(),
+        defense_adapter=MockDefenseAdapter(),
+        policy_controller=MockPolicy(requires_feedback=False),
+        output_dir=out,
+        run_id="run_altered_summary",
+        seed=42,
+        attack_scenario="SurrogateTransfer",
+        defense_name="afp",
+        config_id="Base",
+        provenance_hashes=_GOOD_PROV,
+    )
+
+    with pytest.raises(ValueError, match="canonical representation does not match in-memory summary"):
+        runner.execute_run()
+
+    assert not (out / "run_altered_summary").exists()
+    q_dirs = list(out.glob("run_altered_summary_failed_quarantined_*"))
+    assert len(q_dirs) == 1
+    assert not (q_dirs[0] / "completion.json").exists()
+    assert (q_dirs[0] / "quarantined_failure.json").exists()
+    with open(q_dirs[0] / "quarantined_failure.json") as f:
+        fail_data = json.load(f)
+    assert "canonical representation does not match" in fail_data["error_message"]
+
+
+def test_runner_quarantines_when_confusion_record_disagrees_with_predictions(monkeypatch, runner_deps):
+    resolved, lp, out = runner_deps
+    import recall_aware_ids.experiment.runner as runner_mod
+
+    orig_validate = runner_mod._validate_run_outputs
+
+    def corrupting_validate(run_tmp_dir, summary):
+        # Alter a confusion record while maintaining sum==500 and schema validity
+        with open(run_tmp_dir / "confusion.json", "r") as f:
+            confusion_data = json.load(f)
+        rec0 = confusion_data[0]
+        # Shift 1 count between TP and FP/FN/TN while keeping sum == 500
+        if rec0["fn"] > 0:
+            rec0["tp"] += 1
+            rec0["fn"] -= 1
+        elif rec0["fp"] > 0:
+            rec0["tp"] += 1
+            rec0["fp"] -= 1
+        else:
+            rec0["tp"] += 1
+            rec0["tn"] -= 1
+        with open(run_tmp_dir / "confusion.json", "w") as f:
+            json.dump(confusion_data, f, indent=2)
+        orig_validate(run_tmp_dir, summary)
+
+    monkeypatch.setattr(runner_mod, "_validate_run_outputs", corrupting_validate)
+
+    runner = ExperimentRunner(
+        resolved_batches=resolved,
+        label_provider=lp,
+        attack_cache=MockCacheProvider(),
+        defense_adapter=MockDefenseAdapter(),
+        policy_controller=MockPolicy(requires_feedback=False),
+        output_dir=out,
+        run_id="run_confusion_disagrees",
+        seed=42,
+        attack_scenario="SurrogateTransfer",
+        defense_name="afp",
+        config_id="Base",
+        provenance_hashes=_GOOD_PROV,
+    )
+
+    with pytest.raises(ValueError, match="do not match recomputed counts from reopened labels and predictions"):
+        runner.execute_run()
+
+    assert not (out / "run_confusion_disagrees").exists()
+    q_dirs = list(out.glob("run_confusion_disagrees_failed_quarantined_*"))
+    assert len(q_dirs) == 1
+    assert not (q_dirs[0] / "completion.json").exists()
+    assert (q_dirs[0] / "quarantined_failure.json").exists()
+    with open(q_dirs[0] / "quarantined_failure.json") as f:
+        fail_data = json.load(f)
+    assert "do not match recomputed counts" in fail_data["error_message"]
+
+
+def test_runner_quarantines_when_predictions_disagree_with_confusion(monkeypatch, runner_deps):
+    resolved, lp, out = runner_deps
+    import recall_aware_ids.experiment.runner as runner_mod
+
+    orig_validate = runner_mod._validate_run_outputs
+
+    def corrupting_validate(run_tmp_dir, summary):
+        # Alter predictions in scores.json (structurally valid binary ints, 500 elements)
+        with open(run_tmp_dir / "scores.json", "r") as f:
+            scores_data = json.load(f)
+        # Flip first prediction in batch 0
+        scores_data[0]["predictions"][0] = 1 - scores_data[0]["predictions"][0]
+        scores_data[0]["preds"][0] = scores_data[0]["predictions"][0]
+        with open(run_tmp_dir / "scores.json", "w") as f:
+            json.dump(scores_data, f)
+        orig_validate(run_tmp_dir, summary)
+
+    monkeypatch.setattr(runner_mod, "_validate_run_outputs", corrupting_validate)
+
+    runner = ExperimentRunner(
+        resolved_batches=resolved,
+        label_provider=lp,
+        attack_cache=MockCacheProvider(),
+        defense_adapter=MockDefenseAdapter(),
+        policy_controller=MockPolicy(requires_feedback=False),
+        output_dir=out,
+        run_id="run_preds_disagree",
+        seed=42,
+        attack_scenario="SurrogateTransfer",
+        defense_name="afp",
+        config_id="Base",
+        provenance_hashes=_GOOD_PROV,
+    )
+
+    with pytest.raises(ValueError, match="do not match recomputed counts from reopened labels and predictions"):
+        runner.execute_run()
+
+    assert not (out / "run_preds_disagree").exists()
+    q_dirs = list(out.glob("run_preds_disagree_failed_quarantined_*"))
+    assert len(q_dirs) == 1
+    assert not (q_dirs[0] / "completion.json").exists()
+    assert (q_dirs[0] / "quarantined_failure.json").exists()
+    with open(q_dirs[0] / "quarantined_failure.json") as f:
+        fail_data = json.load(f)
+    assert "do not match recomputed counts" in fail_data["error_message"]
+
+
+def test_runner_quarantines_when_scores_disagree_with_metrics(monkeypatch, tmp_path):
+    resolved = make_resolved_batches()
+    y = np.zeros(N_BATCHES * BATCH_SIZE, dtype=int)
+    y[0] = 1  # Non-trivial PR-AUC in batch 0
+    lp = LabelProvider(y)
+    out = tmp_path
+    import recall_aware_ids.experiment.runner as runner_mod
+
+    orig_validate = runner_mod._validate_run_outputs
+
+    def corrupting_validate(run_tmp_dir, summary):
+        # Alter scores in scores.json (structurally valid floats in [0, 1])
+        with open(run_tmp_dir / "scores.json", "r") as f:
+            scores_data = json.load(f)
+        # Modify scores of batch 0 (still valid floats in [0, 1])
+        # Set scores[0] to 0.999 which changes average precision (PR-AUC)
+        scores_data[0]["scores"][0] = 0.999
+        with open(run_tmp_dir / "scores.json", "w") as f:
+            json.dump(scores_data, f)
+        orig_validate(run_tmp_dir, summary)
+
+    monkeypatch.setattr(runner_mod, "_validate_run_outputs", corrupting_validate)
+
+    runner = ExperimentRunner(
+        resolved_batches=resolved,
+        label_provider=lp,
+        attack_cache=MockCacheProvider(),
+        defense_adapter=MockDefenseAdapter(),
+        policy_controller=MockPolicy(requires_feedback=False),
+        output_dir=out,
+        run_id="run_scores_disagree",
+        seed=42,
+        attack_scenario="SurrogateTransfer",
+        defense_name="afp",
+        config_id="Base",
+        provenance_hashes=_GOOD_PROV,
+    )
+
+    with pytest.raises(ValueError, match="does not match"):
+        runner.execute_run()
+
+    assert not (out / "run_scores_disagree").exists()
+    q_dirs = list(out.glob("run_scores_disagree_failed_quarantined_*"))
+    assert len(q_dirs) == 1
+    assert not (q_dirs[0] / "completion.json").exists()
+    assert (q_dirs[0] / "quarantined_failure.json").exists()
+    with open(q_dirs[0] / "quarantined_failure.json") as f:
+        fail_data = json.load(f)
+    assert "does not match" in fail_data["error_message"]

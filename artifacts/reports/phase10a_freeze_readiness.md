@@ -123,11 +123,11 @@ Executed exclusively on 5,000 deterministic records from `X_train.parquet` / `me
 
 ## 7. Working Tree and Bundle Status
 
-- **Tracked Git Status**: Clean (all changes committed in `Fix final Phase 10A v5 review blockers`).
+- **Tracked Git Status**: Clean (all changes committed in `Fix final serialized-output consistency gate`).
 - **Untracked / Ignored Artifacts**:
   - `RED_TEST_OUTPUT.txt` (local diagnostic log)
-  - Prior review bundles (`phase10a_freeze_candidate_bundle_v2.zip`, `_v3.zip`, `_v4.zip`, `_v5.zip`)
-- **Bundle File**: `phase10a_freeze_candidate_bundle_v5_1.zip`
+  - Prior review bundles (`phase10a_freeze_candidate_bundle_v2.zip`, `_v3.zip`, `_v4.zip`, `_v5.zip`, `_v5_1.zip`)
+- **Bundle File**: `phase10a_freeze_candidate_bundle_v5_2.zip`
 - **Forbidden Files Scan**: 0 forbidden files found.
 - **Duplicate Members Scan**: 0 duplicate members found.
 - **Protocol Freeze Status**: `experiment.date_frozen` remains `null`. Official evaluation data (`X_eval.parquet`, `metadata_eval.parquet`) and official attack caches were NOT accessed.

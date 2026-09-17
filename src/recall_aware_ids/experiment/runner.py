@@ -43,6 +43,7 @@ def _now_iso() -> str:
 def _validate_run_outputs(run_tmp_dir: Path, summary: RunSummary) -> None:
     """
     Reopen and validate serialized outputs before completion.json is created.
+    All consistency checks are performed against reconstructed_summary.
     """
     config_path = run_tmp_dir / "config.json"
     confusion_path = run_tmp_dir / "confusion.json"
@@ -83,26 +84,22 @@ def _validate_run_outputs(run_tmp_dir: Path, summary: RunSummary) -> None:
     except Exception as e:
         raise ValueError(f"run_summary.json validation failed: {e}")
 
-    if len(config_data) != 144:
-        raise ValueError(f"config.json must have 144 records, got {len(config_data)}")
-    if len(confusion_data) != 144:
-        raise ValueError(f"confusion.json must have 144 records, got {len(confusion_data)}")
-    if len(scores_data) != 144:
-        raise ValueError(f"scores.json must have 144 records, got {len(scores_data)}")
+    # Canonical comparison with original in-memory summary
+    orig_summary_dict = dataclasses.asdict(summary)
+    recon_summary_dict = dataclasses.asdict(reconstructed_summary)
+    if orig_summary_dict != recon_summary_dict:
+        raise ValueError(
+            "Serialized run_summary.json canonical representation does not match in-memory summary"
+        )
 
-    expected_batch_ids = list(range(144))
-    if [c.get("batch_id") for c in config_data] != expected_batch_ids:
-        raise ValueError("config.json batch_ids must be exactly 0..143 in order")
-    if [c.get("batch_id") for c in confusion_data] != expected_batch_ids:
-        raise ValueError("confusion.json batch_ids must be exactly 0..143 in order")
-    if [s.get("batch_id") for s in scores_data] != expected_batch_ids:
-        raise ValueError("scores.json batch_ids must be exactly 0..143 in order")
+    if not isinstance(config_data, list) or len(config_data) != 144:
+        raise ValueError(f"config.json must have 144 records, got {len(config_data) if isinstance(config_data, list) else type(config_data)}")
+    if not isinstance(confusion_data, list) or len(confusion_data) != 144:
+        raise ValueError(f"confusion.json must have 144 records, got {len(confusion_data) if isinstance(confusion_data, list) else type(confusion_data)}")
+    if not isinstance(scores_data, list) or len(scores_data) != 144:
+        raise ValueError(f"scores.json must have 144 records, got {len(scores_data) if isinstance(scores_data, list) else type(scores_data)}")
 
-    # Reconstruct every configuration and confusion record
-    for c in config_data:
-        BatchConfigLog(**c)
-    for cf in confusion_data:
-        BatchConfusionLog(**cf)
+    expected_run_id = reconstructed_summary.run_id
 
     # Scores, predictions, labels contain 500 aligned elements per batch
     all_scores = []
@@ -110,28 +107,115 @@ def _validate_run_outputs(run_tmp_dir: Path, summary: RunSummary) -> None:
     all_preds = []
     total_elements = 0
 
-    for s_rec in scores_data:
-        b_id = s_rec.get("batch_id")
+    for i in range(144):
+        c_rec = config_data[i]
+        cf_rec = confusion_data[i]
+        s_rec = scores_data[i]
+
+        if not isinstance(c_rec, dict):
+            raise TypeError(f"Batch {i} config record must be a dict")
+        if not isinstance(cf_rec, dict):
+            raise TypeError(f"Batch {i} confusion record must be a dict")
+        if not isinstance(s_rec, dict):
+            raise TypeError(f"Batch {i} score record must be a dict")
+
+        # Verify matching batch IDs across config, confusion, and score records
+        if c_rec.get("batch_id") != i:
+            raise ValueError(f"Batch {i} config batch_id mismatch: {c_rec.get('batch_id')}")
+        if cf_rec.get("batch_id") != i:
+            raise ValueError(f"Batch {i} confusion batch_id mismatch: {cf_rec.get('batch_id')}")
+        if s_rec.get("batch_id") != i:
+            raise ValueError(f"Batch {i} score batch_id mismatch: {s_rec.get('batch_id')}")
+
+        # Verify matching run IDs across config, confusion, and score records
+        if c_rec.get("run_id") != expected_run_id:
+            raise ValueError(f"Batch {i} config run_id mismatch: expected {expected_run_id}, got {c_rec.get('run_id')}")
+        if cf_rec.get("run_id") != expected_run_id:
+            raise ValueError(f"Batch {i} confusion run_id mismatch: expected {expected_run_id}, got {cf_rec.get('run_id')}")
+        if s_rec.get("run_id") != expected_run_id:
+            raise ValueError(f"Batch {i} score run_id mismatch: expected {expected_run_id}, got {s_rec.get('run_id')}")
+
+        # Reconstruct schema objects to validate schema constraints
+        try:
+            BatchConfigLog(**c_rec)
+        except Exception as e:
+            raise ValueError(f"Batch {i} config record failed schema validation: {e}")
+
+        try:
+            cf_obj = BatchConfusionLog(**cf_rec)
+        except Exception as e:
+            raise ValueError(f"Batch {i} confusion record failed schema validation: {e}")
+
         b_scores = s_rec.get("scores")
         b_preds = s_rec.get("predictions", s_rec.get("preds"))
         b_labels = s_rec.get("labels", s_rec.get("y_true"))
 
         if not isinstance(b_scores, list) or len(b_scores) != 500:
-            raise ValueError(f"Batch {b_id} scores must be a list of 500 elements")
+            raise ValueError(f"Batch {i} scores must be a list of 500 elements")
         if not isinstance(b_preds, list) or len(b_preds) != 500:
-            raise ValueError(f"Batch {b_id} predictions must be a list of 500 elements")
+            raise ValueError(f"Batch {i} predictions must be a list of 500 elements")
         if not isinstance(b_labels, list) or len(b_labels) != 500:
-            raise ValueError(f"Batch {b_id} labels must be a list of 500 elements")
+            raise ValueError(f"Batch {i} labels must be a list of 500 elements")
 
         for sc in b_scores:
             if isinstance(sc, bool) or not isinstance(sc, (int, float)) or not math.isfinite(sc) or not (0.0 <= sc <= 1.0):
-                raise ValueError(f"Batch {b_id} contains invalid score: {sc!r}")
+                raise ValueError(f"Batch {i} contains invalid score: {sc!r}")
         for pr in b_preds:
             if isinstance(pr, bool) or pr not in (0, 1):
-                raise ValueError(f"Batch {b_id} contains non-binary prediction: {pr!r}")
+                raise ValueError(f"Batch {i} contains non-binary prediction: {pr!r}")
         for lb in b_labels:
             if isinstance(lb, bool) or lb not in (0, 1):
-                raise ValueError(f"Batch {b_id} contains non-binary label: {lb!r}")
+                raise ValueError(f"Batch {i} contains non-binary label: {lb!r}")
+
+        # Recompute TP, FP, TN, and FN directly from the reopened 500 labels and 500 predictions
+        y_true = np.array(b_labels, dtype=int)
+        y_pred = np.array(b_preds, dtype=int)
+        b_scores_arr = np.array(b_scores, dtype=float)
+
+        recomputed_tp = int(np.sum((y_true == 1) & (y_pred == 1)))
+        recomputed_fp = int(np.sum((y_true == 0) & (y_pred == 1)))
+        recomputed_tn = int(np.sum((y_true == 0) & (y_pred == 0)))
+        recomputed_fn = int(np.sum((y_true == 1) & (y_pred == 0)))
+
+        # Compare those recomputed counts with the corresponding reopened BatchConfusionLog
+        if (cf_obj.tp != recomputed_tp or
+            cf_obj.fp != recomputed_fp or
+            cf_obj.tn != recomputed_tn or
+            cf_obj.fn != recomputed_fn):
+            raise ValueError(
+                f"Batch {i} confusion counts (TP={cf_obj.tp}, FP={cf_obj.fp}, TN={cf_obj.tn}, FN={cf_obj.fn}) "
+                f"do not match recomputed counts from reopened labels and predictions "
+                f"(TP={recomputed_tp}, FP={recomputed_fp}, TN={recomputed_tn}, FN={recomputed_fn})"
+            )
+
+        # Using the existing authoritative metric functions, recompute and compare every stored batch metric
+        # that is derivable from labels, predictions, and scores.
+        derivable_metrics = calculate_metrics(y_true, y_pred, b_scores_arr, asr_applicable=False)
+        for m_name in ("accuracy", "recall", "precision", "f1", "balanced_accuracy", "pr_auc_average_precision"):
+            stored_val = getattr(cf_obj, m_name)
+            calc_val = derivable_metrics[m_name]
+            if not math.isfinite(stored_val) or not math.isfinite(calc_val):
+                raise ValueError(f"Batch {i} metric {m_name} is not finite")
+            if not math.isclose(stored_val, calc_val, rel_tol=1e-7, abs_tol=1e-7):
+                raise ValueError(
+                    f"Batch {i} stored metric {m_name} ({stored_val}) does not match "
+                    f"recomputed metric ({calc_val})"
+                )
+
+        if cf_obj.asr_applicable:
+            if cf_obj.attempted_count > 0:
+                expected_asr = float(cf_obj.successful_count / cf_obj.attempted_count)
+            else:
+                expected_asr = 0.0
+            if cf_obj.asr is None or not math.isfinite(cf_obj.asr):
+                raise ValueError(f"Batch {i} asr is not finite")
+            if not math.isclose(cf_obj.asr, expected_asr, rel_tol=1e-7, abs_tol=1e-7):
+                raise ValueError(
+                    f"Batch {i} stored asr ({cf_obj.asr}) does not match expected asr ({expected_asr})"
+                )
+        else:
+            if cf_obj.asr is not None:
+                raise ValueError(f"Batch {i} asr must be None when asr_applicable=False")
 
         total_elements += 500
         all_scores.extend(b_scores)
@@ -141,7 +225,7 @@ def _validate_run_outputs(run_tmp_dir: Path, summary: RunSummary) -> None:
     if total_elements != 72000:
         raise ValueError(f"Concatenated records total {total_elements} != 72000")
 
-    # Reconstructed global totals match RunSummary
+    # Aggregate the reopened batch records and compare all applicable totals and global metrics with reconstructed_summary
     recon_tp = sum(c["tp"] for c in confusion_data)
     recon_fp = sum(c["fp"] for c in confusion_data)
     recon_tn = sum(c["tn"] for c in confusion_data)
@@ -153,24 +237,89 @@ def _validate_run_outputs(run_tmp_dir: Path, summary: RunSummary) -> None:
     if recon_tp + recon_fp + recon_tn + recon_fn != 72000:
         raise ValueError(f"Reconstructed confusion sum != 72000: {recon_tp + recon_fp + recon_tn + recon_fn}")
 
-    if (summary.tp != recon_tp or
-        summary.fp != recon_fp or
-        summary.tn != recon_tn or
-        summary.fn != recon_fn or
-        summary.total_eligible != recon_eligible or
-        summary.total_attempted != recon_attempted or
-        summary.total_successful != recon_successful):
-        raise ValueError("Reconstructed global totals from confusion records do not match RunSummary")
+    if (reconstructed_summary.tp != recon_tp or
+        reconstructed_summary.fp != recon_fp or
+        reconstructed_summary.tn != recon_tn or
+        reconstructed_summary.fn != recon_fn or
+        reconstructed_summary.total_eligible != recon_eligible or
+        reconstructed_summary.total_attempted != recon_attempted or
+        reconstructed_summary.total_successful != recon_successful):
+        raise ValueError("Reconstructed global totals from confusion records do not match reconstructed_summary")
 
-    # Global PR-AUC recomputation matches the stored value
-    if len(np.unique(all_labels)) > 1:
-        recomputed_pr_auc = float(average_precision_score(all_labels, all_scores))
+    # Global derivable metrics from aggregated confusion totals
+    denom = recon_tp + recon_fp + recon_tn + recon_fn
+    global_acc = (recon_tp + recon_tn) / denom if denom > 0 else 0.0
+    global_rec = recon_tp / (recon_tp + recon_fn) if (recon_tp + recon_fn) > 0 else 0.0
+    global_prec = recon_tp / (recon_tp + recon_fp) if (recon_tp + recon_fp) > 0 else 0.0
+    if (global_prec + global_rec) > 0:
+        global_f1 = 2 * (global_prec * global_rec) / (global_prec + global_rec)
+    else:
+        global_f1 = 0.0
+    global_spec = recon_tn / (recon_tn + recon_fp) if (recon_tn + recon_fp) > 0 else 0.0
+    global_bacc = (global_rec + global_spec) / 2.0
+
+    for m_name, calc_gval, summ_gval in [
+        ("accuracy", global_acc, reconstructed_summary.accuracy),
+        ("recall", global_rec, reconstructed_summary.recall),
+        ("precision", global_prec, reconstructed_summary.precision),
+        ("f1", global_f1, reconstructed_summary.f1),
+        ("balanced_accuracy", global_bacc, reconstructed_summary.balanced_accuracy),
+    ]:
+        if not math.isfinite(summ_gval) or not math.isfinite(calc_gval):
+            raise ValueError(f"Global metric {m_name} is not finite")
+        if not math.isclose(summ_gval, calc_gval, rel_tol=1e-7, abs_tol=1e-7):
+            raise ValueError(
+                f"Recomputed global {m_name} ({calc_gval}) does not match reconstructed_summary ({summ_gval})"
+            )
+
+    # ASR semantics
+    batch_asr_flags = [c["asr_applicable"] for c in confusion_data]
+    if len(set(batch_asr_flags)) != 1:
+        raise ValueError("Inconsistent asr_applicable flags across batch confusion records")
+    asr_applicable = batch_asr_flags[0]
+
+    is_silent_probing = reconstructed_summary.attack_scenario.lower().replace(" ", "").replace("_", "") == "silentprobing"
+    if is_silent_probing:
+        if asr_applicable is not False:
+            raise ValueError(f"{reconstructed_summary.attack_scenario} must have asr_applicable=False")
+    else:
+        if asr_applicable is not True:
+            raise ValueError(f"Attack scenario {reconstructed_summary.attack_scenario} must have asr_applicable=True")
+
+    if asr_applicable:
+        if reconstructed_summary.global_asr is None:
+            raise ValueError("reconstructed_summary.global_asr is None for attack with asr_applicable=True")
+        if not math.isfinite(reconstructed_summary.global_asr):
+            raise ValueError("reconstructed_summary.global_asr is not finite")
+        if recon_attempted > 0:
+            expected_global_asr = float(recon_successful / recon_attempted)
+        else:
+            expected_global_asr = 0.0
+        if not math.isclose(reconstructed_summary.global_asr, expected_global_asr, rel_tol=1e-7, abs_tol=1e-7):
+            raise ValueError(
+                f"reconstructed_summary.global_asr ({reconstructed_summary.global_asr}) does not match "
+                f"expected global ASR ({expected_global_asr})"
+            )
+    else:
+        if reconstructed_summary.global_asr is not None:
+            raise ValueError(
+                f"reconstructed_summary.global_asr must be None for asr_applicable=False, got {reconstructed_summary.global_asr}"
+            )
+
+    # Global PR-AUC recomputation matches reconstructed_summary
+    agg_labels = np.array(all_labels, dtype=int)
+    agg_scores = np.array(all_scores, dtype=float)
+    if len(np.unique(agg_labels)) > 1:
+        recomputed_pr_auc = float(average_precision_score(agg_labels, agg_scores))
     else:
         recomputed_pr_auc = 0.0
 
-    if not math.isclose(summary.pr_auc_average_precision, recomputed_pr_auc, rel_tol=1e-7, abs_tol=1e-7):
+    if not math.isfinite(reconstructed_summary.pr_auc_average_precision) or not math.isfinite(recomputed_pr_auc):
+        raise ValueError("Global PR-AUC is not finite")
+
+    if not math.isclose(reconstructed_summary.pr_auc_average_precision, recomputed_pr_auc, rel_tol=1e-7, abs_tol=1e-7):
         raise ValueError(
-            f"Recomputed global PR-AUC {recomputed_pr_auc} does not match RunSummary {summary.pr_auc_average_precision}"
+            f"Recomputed global PR-AUC {recomputed_pr_auc} does not match reconstructed_summary {reconstructed_summary.pr_auc_average_precision}"
         )
 
 
@@ -445,6 +594,7 @@ class ExperimentRunner:
                 config_logs.append(dataclasses.asdict(c_log))
                 confusion_logs.append(dataclasses.asdict(cf_log))
                 score_records.append({
+                    "run_id": self.run_id,
                     "batch_id": batch_id,
                     "y_true": y_batch.tolist(),
                     "labels": y_batch.tolist(),
