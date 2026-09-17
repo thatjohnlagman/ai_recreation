@@ -17,8 +17,8 @@
 *   **Phase 6 (Evaluation Roles & Batches):** ✅ **Completed**. 90,000-record `X_eval` securely partitioned into an 18k Crafting Pool and a 72k Measurement Pool. Exactly 144 immutable measurement batches created.
 *   **Phase 7 (Attack Implementation & Repair):** ✅ **Completed**. `BlackBoxOracle` strictly forces batch duplicate limits. Repaired all bounds math and rewrote complete synthetic suite. Tests passed perfectly. No final caches created. Zero evaluation data loaded.
 *   **Phase 8 (Defense Implementation & Calibration):** ✅ **Completed**. AFP calibrated at `epsilon_base=0.0003`, `alpha=0.5` (recall `0.8122`); RS calibrated at `sigma=0.0002` (recall `0.8217`); FS calibrated at `intensity=2` (recall `0.9403`).
-*   **Phase 10A (Integration, Execution-Path Validation, & Protocol Freeze Readiness):** ✅ **Completed**. Red-green integration repair and final review corrections validated on native M4 hardware (`.venv-m4`). 196/196 tests passing. 5,000-sample training-derived pilot validated (peak RSS 469.19 MB). Strict schema, cache provider/builder, output reopening/validation, and controller contracts verified. Protected artifacts remain bit-for-bit identical. `experiment.date_frozen` remains `null`.
-*   **Phase 10B+ (Official Evaluation & Statistical Analysis):** ⏳ **Pending External Review**. Official runs (252 executions) will commence once freeze candidate bundle v5.1 is approved.
+*   **Phase 10A (Integration, Execution-Path Validation, & Protocol Freeze Readiness):** ✅ **Completed**. Red-green integration repair and final review corrections validated on native M4 hardware (`.venv-m4`). 200/200 tests passing. 5,000-sample training-derived pilot validated (peak RSS 469.67 MB). Strict schema, cache provider/builder, output reopening/validation, and controller contracts verified. Protected artifacts remain bit-for-bit identical. Freeze candidate bundle v5.2 passed external technical review.
+*   **Phase 10B+ (Official Evaluation & Statistical Analysis):** 🔒 **Protocol Frozen**. The evaluation protocol is formally frozen (`experiment.date_frozen: "2026-09-17T21:23:51+08:00"`). Official evaluation runs (252 unique executions across 36,288 batches) are ready to begin. **Note:** Empirical effectiveness remains strictly unknown until official evaluation is conducted.
 
 ---
 
@@ -26,7 +26,7 @@
 
 1. **Learning Curve Stratification:** The subsets used in the Phase 5 learning curve were constructed via deterministic nested random selection. While their observed class proportions remained highly representative of the full training distribution, they were not strictly enforced to be perfectly stratified down to the integer.
 2. **Evaluation Batch Counts:** Any earlier references to "180 batches" only described the theoretical mathematical divisibility of the *unsplit* 90,000-row evaluation partition. After enforcing the frozen 20% crafting reservation (18,000 records), the final experimental measurement pool is 72,000 records, yielding exactly **144 measurement batches of 500**.
-3. **Configuration Freeze Date:** The `experiment.date_frozen` field has deliberately not been set yet. The final configuration-freeze date will be established after defense calibration and controller parameter selection, immediately before Phase 10 final runs.
+3. **Configuration Freeze Date:** The `experiment.date_frozen` field has been formally set to `"2026-09-17T21:23:51+08:00"`. The experimental protocol, model, data splits, attack rules, defense parameters, controller parameters, and matrix definitions are completely frozen.
 
 ## 3. Phase 3 Bugs Discovered and Resolved
 
@@ -58,8 +58,8 @@ The dataset audit generated the following final artifacts in the canonical root:
 
 ## 5. Instructions for the Next Agent
 
-1. **Phase 10A is Complete**: Integration semantics, cache builder/provider contracts, runner atomic invariants, and matrix validation are fully repaired and verified (174/174 tests passing, training-derived pilot validated).
-2. **Canonical Root**: Always use the canonical project root at `recall-aware-ids/`.
-3. **Execution**: The next task is Phase 10B (Official Evaluation Matrix Execution) upon formal external sign-off on the v5.1 freeze candidate bundle. The official frozen RF model is serialized in `artifacts/models/frozen_rf.joblib` and must not be retrained.
-4. **Configuration Freeze Date**: Keep `experiment.date_frozen` as `null` until formal external review approves protocol freeze.
+1. **Phase 10A is Complete and Protocol is Frozen**: All Phase 10A tasks are complete, the candidate bundle v5.2 has passed external review, and the evaluation protocol is formally frozen (`experiment.date_frozen: "2026-09-17T21:23:51+08:00"`).
+2. **Empirical Effectiveness Unknown**: Empirical effectiveness of Recall-Aware control remains strictly unknown until official evaluation is executed. No official runs or official attack caches have been created.
+3. **Execution**: The next task is Phase 10B (Official Evaluation Matrix Execution — 252 unique runs across 36,288 batches). The official frozen RF model is serialized in `artifacts/models/frozen_rf.joblib` and must not be retrained.
+4. **Protocol Integrity**: Do not change any experimental parameter, seed, split, attack rule, defense bound, controller value, model, feature mask, or evaluation assignment.
 5. **Constraints**: Maintain hardware memory constraints (8 GB RAM limit). Keep the data chunked if processing entire ensembles. Do not inspect evaluation records prematurely.

@@ -7,7 +7,7 @@ experiment:
   name: "Recall-Aware IDS Experiment"
   thesis_title: "Performance of Recall-Aware Control for Perturbation Defenses in Intrusion Detection Systems Against Black-Box Probing Attacks"
   version: "1.0.0"
-  date_frozen: null  # Set when protocol is frozen
+  date_frozen: "2026-09-17T21:23:51+08:00"  # Protocol frozen
 
 # Dataset
 dataset:
