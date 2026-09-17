@@ -116,15 +116,33 @@ def test_complete_cache_validation(tmp_path):
     x_hash = calculate_file_hash(artifact_path)
     s_hash = calculate_file_hash(status_path)
     
+    import hashlib
+    def _d(name: str) -> str:
+        return hashlib.sha256(name.encode()).hexdigest()
+
     good_manifest = {
-        "X_eval_hash": "a", "metadata_eval_hash": "b", "evaluation_roles_hash": "c", "evaluation_batches_hash": "d",
-        "crafting_identity_hash": "e", "measurement_identity_hash": "f",
-        "attacks_yaml_hash": "g", "attack_script_hashes": {"script.py": "h"},
-        "frozen_rf_hash": "i", "scaler_hash": "j", "feature_names_hash": "k", "feature_mask_hash": "l", "training_bounds_hash": "m",
-        "attack_parameters": {"param": 1}, "query_budgets": {"queries": 50},
-        "attack_scenario": "Surrogate", "effective_seed": 42,
-        "schema_version": "1.0", "row_count": 72000,
-        "X_attacked_sha256": x_hash, "status_sha256": s_hash, "output_sha256": x_hash,
+        "X_eval_hash": _d("X_eval"),
+        "metadata_eval_hash": _d("metadata_eval"),
+        "evaluation_roles_hash": _d("evaluation_roles"),
+        "evaluation_batches_hash": _d("evaluation_batches"),
+        "crafting_identity_hash": _d("crafting_identity"),
+        "measurement_identity_hash": _d("measurement_identity"),
+        "attacks_yaml_hash": _d("attacks_yaml"),
+        "attack_script_hashes": {"script.py": _d("script")},
+        "frozen_rf_hash": _d("frozen_rf"),
+        "scaler_hash": _d("scaler"),
+        "feature_names_hash": _d("feature_names"),
+        "feature_mask_hash": _d("feature_mask"),
+        "training_bounds_hash": _d("training_bounds"),
+        "attack_parameters": {"param": 1},
+        "query_budgets": {"queries": 50},
+        "attack_scenario": "SurrogateTransfer",
+        "effective_seed": 42,
+        "schema_version": "1.0",
+        "row_count": 72000,
+        "X_attacked_sha256": x_hash,
+        "status_sha256": s_hash,
+        "output_sha256": x_hash,
     }
     
     with open(manifest_path, "w") as f:

@@ -36,6 +36,12 @@ def generate_evaluation_matrix(configs_dir: Path) -> pd.DataFrame:
     defenses = ['afp', 'feature_squeezing', 'randomized_smoothing']
     
     # Controllers from YAML
+    yaml_ctrl_keys = set(controllers_yaml.get("controller_configurations", {}).keys())
+    expected_ctrl_keys = {"C1", "C2", "C3", "C4", "C5", "C6", "C7"}
+    if yaml_ctrl_keys != expected_ctrl_keys:
+        raise ValueError(
+            f"controller_configurations must be exactly C1..C7 (no C8 permitted), got: {yaml_ctrl_keys}"
+        )
     controllers = list(controllers_yaml["controller_configurations"].keys())
     controllers.append("Base")
     

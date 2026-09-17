@@ -29,10 +29,11 @@ import preprocess_dataset
 def test_processed_dataset_integrity():
     PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
     
-    # Load metadata
+    # Load metadata (training & calibration partitions + evaluation manifest)
+    # (Phase 10A tests must never load official metadata_eval.parquet)
     meta_train = pd.read_parquet(PROCESSED_DIR / "metadata_train.parquet")
-    meta_eval = pd.read_parquet(PROCESSED_DIR / "metadata_eval.parquet")
     meta_cal = pd.read_parquet(PROCESSED_DIR / "metadata_calibration.parquet")
+    meta_eval = pd.read_csv(PROJECT_ROOT / "data" / "manifests" / "evaluation_roles.csv")
     
     # 1. Exact sizes
     len_train = len(meta_train)

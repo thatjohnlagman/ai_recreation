@@ -85,7 +85,12 @@ class MockCacheProvider(AttackCacheProvider):
             "eligible": np.zeros(BATCH_SIZE, dtype=bool),
             "attempted": np.zeros(BATCH_SIZE, dtype=bool),
             "successful": np.zeros(BATCH_SIZE, dtype=bool),
+            "status_codes": ["NOT_APPLICABLE"] * BATCH_SIZE,
             "queries": np.zeros(BATCH_SIZE, dtype=int),
+            "l0": np.zeros(BATCH_SIZE, dtype=float),
+            "l1": np.zeros(BATCH_SIZE, dtype=float),
+            "l2": np.zeros(BATCH_SIZE, dtype=float),
+            "linf": np.zeros(BATCH_SIZE, dtype=float),
         }
 
 

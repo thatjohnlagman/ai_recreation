@@ -6,6 +6,7 @@ from __future__ import annotations
 import math
 import json
 import re
+import datetime
 from dataclasses import dataclass, field
 from typing import Dict, Any, List, Optional
 
@@ -61,6 +62,17 @@ def _check_metric_range(val, name: str):
         raise ValueError(f"{name} must be finite")
     if not (0.0 <= val <= 1.0):
         raise ValueError(f"{name} must be in [0,1], got {val}")
+
+def _validate_iso_timestamp(ts: Any, name: str = "timestamp"):
+    if not isinstance(ts, str):
+        raise TypeError(f"{name} must be a string, got {type(ts)}")
+    if not ts:
+        raise ValueError(f"{name} must be a non-empty string")
+    try:
+        iso_str = ts[:-1] + "+00:00" if ts.endswith("Z") else ts
+        datetime.datetime.fromisoformat(iso_str)
+    except Exception as exc:
+        raise ValueError(f"{name} is not a valid ISO 8601 timestamp: {ts!r}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -436,6 +448,7 @@ class CompletionMarker:
             json.dumps(self.provenance_hashes)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"provenance_hashes must be JSON-serialisable: {exc}")
+        _validate_iso_timestamp(self.timestamp, "timestamp")
 
 
 # ---------------------------------------------------------------------------
@@ -452,6 +465,7 @@ class FailureRecord:
     def __post_init__(self):
         if not self.run_id:
             raise ValueError("run_id must be nonempty")
+        _validate_iso_timestamp(self.timestamp, "timestamp")
         if self.failed_at_batch is not None:
             if isinstance(self.failed_at_batch, bool):
                 raise TypeError("failed_at_batch cannot be bool")

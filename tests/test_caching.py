@@ -13,8 +13,13 @@ from recall_aware_ids.experiment.caching import (
     AttackCacheBuilder, calculate_file_hash,
 )
 
+import hashlib
+
 # 64-char hex used for provenance in tests
-_H = "b" * 64
+_H = hashlib.sha256(b"authoritative_test_seed").hexdigest()
+_SCRIPT_HASHES = {"generator.py": _H}
+_PARAMS = {"modifies_samples": False}
+_BUDGETS = {"max_queries_per_sample": 0}
 
 _SYNTH_PROV = {
     "frozen_rf_hash": _H,
@@ -73,31 +78,20 @@ def test_validate_cache_manifest_passes(tmp_path):
         "X_eval_hash": _H, "metadata_eval_hash": _H,
         "evaluation_roles_hash": _H, "evaluation_batches_hash": _H,
         "crafting_identity_hash": _H, "measurement_identity_hash": _H,
-        "attacks_yaml_hash": _H, "attack_script_hashes": {},
+        "attacks_yaml_hash": _H, "attack_script_hashes": _SCRIPT_HASHES,
         "frozen_rf_hash": _H, "scaler_hash": _H,
         "feature_names_hash": _H, "feature_mask_hash": _H, "training_bounds_hash": _H,
-        "attack_parameters": {}, "query_budgets": {},
+        "controllers_yaml_hash": _H, "defenses_yaml_hash": _H, "experiment_yaml_hash": _H,
+        "attack_parameters": _PARAMS, "query_budgets": _BUDGETS,
         "attack_scenario": "SilentProbing", "effective_seed": 42,
-        "schema_version": "1.0", "row_count": 72000,
+        "schema_version": "1.0", "row_count": N,
         "X_attacked_sha256": x_hash, "status_sha256": s_hash, "output_sha256": x_hash,
     }
     with open(m_path, "w") as f:
         json.dump(manifest, f)
 
-    manifest_expected = {
-        "X_eval_hash": _H, "metadata_eval_hash": _H,
-        "evaluation_roles_hash": _H, "evaluation_batches_hash": _H,
-        "crafting_identity_hash": _H, "measurement_identity_hash": _H,
-        "attacks_yaml_hash": _H, "attack_script_hashes": {},
-        "frozen_rf_hash": _H, "scaler_hash": _H,
-        "feature_names_hash": _H, "feature_mask_hash": _H, "training_bounds_hash": _H,
-        "controllers_yaml_hash": _H, "defenses_yaml_hash": _H, "experiment_yaml_hash": _H,
-        "attack_parameters": {}, "query_budgets": {},
-        "attack_scenario": "SilentProbing", "effective_seed": 42,
-        "schema_version": "1.0", "row_count": N,
-        "X_attacked_sha256": x_hash, "status_sha256": s_hash, "output_sha256": x_hash,
-    }
-    assert validate_cache_manifest(m_path, x_path, manifest_expected, status_path=s_path) is True
+    manifest_expected = dict(manifest)
+    assert validate_cache_manifest(m_path, x_path, manifest_expected, status_path=s_path, expected_row_count=N) is True
 
 
 def test_validate_cache_manifest_fails_corrupted_artifact(tmp_path):
@@ -116,10 +110,10 @@ def test_validate_cache_manifest_fails_corrupted_artifact(tmp_path):
         "X_eval_hash": _H, "metadata_eval_hash": _H,
         "evaluation_roles_hash": _H, "evaluation_batches_hash": _H,
         "crafting_identity_hash": _H, "measurement_identity_hash": _H,
-        "attacks_yaml_hash": _H, "attack_script_hashes": {},
+        "attacks_yaml_hash": _H, "attack_script_hashes": _SCRIPT_HASHES,
         "frozen_rf_hash": _H, "scaler_hash": _H,
         "feature_names_hash": _H, "feature_mask_hash": _H, "training_bounds_hash": _H,
-        "attack_parameters": {}, "query_budgets": {},
+        "attack_parameters": _PARAMS, "query_budgets": _BUDGETS,
         "attack_scenario": "SilentProbing", "effective_seed": 42,
         "schema_version": "1.0", "row_count": 72000,
         "X_attacked_sha256": x_hash, "status_sha256": s_hash, "output_sha256": x_hash,
@@ -174,10 +168,10 @@ def _write_valid_cache(cache_dir: Path, n_rows: int = N):
 
     status_df = pd.DataFrame({
         "eval_position": np.arange(n_rows, dtype=int),
-        "eligible": np.ones(n_rows, dtype=bool),
-        "attempted": np.ones(n_rows, dtype=bool),
+        "eligible": np.zeros(n_rows, dtype=bool),
+        "attempted": np.zeros(n_rows, dtype=bool),
         "successful": np.zeros(n_rows, dtype=bool),
-        "status_code": ["TARGET_REJECTION"] * n_rows,
+        "status_code": ["NOT_APPLICABLE"] * n_rows,
         "queries_used": np.zeros(n_rows, dtype=int),
         "l0": 0.0, "l1": 0.0, "l2": 0.0, "linf": 0.0,
     })
@@ -199,11 +193,11 @@ def test_concrete_cache_provider_valid(tmp_path):
         "X_eval_hash": _H, "metadata_eval_hash": _H,
         "evaluation_roles_hash": _H, "evaluation_batches_hash": _H,
         "crafting_identity_hash": _H, "measurement_identity_hash": _H,
-        "attacks_yaml_hash": _H, "attack_script_hashes": {},
+        "attacks_yaml_hash": _H, "attack_script_hashes": _SCRIPT_HASHES,
         "frozen_rf_hash": _H, "scaler_hash": _H,
         "feature_names_hash": _H, "feature_mask_hash": _H, "training_bounds_hash": _H,
         "controllers_yaml_hash": _H, "defenses_yaml_hash": _H, "experiment_yaml_hash": _H,
-        "attack_parameters": {}, "query_budgets": {},
+        "attack_parameters": _PARAMS, "query_budgets": _BUDGETS,
         "attack_scenario": "SilentProbing", "effective_seed": 42,
         "schema_version": "1.0", "row_count": 500,
         "X_attacked_sha256": x_hash, "status_sha256": s_hash, "output_sha256": x_hash,
@@ -250,11 +244,11 @@ def test_concrete_cache_provider_rejects_non_bool_status(tmp_path):
         "X_eval_hash": _H, "metadata_eval_hash": _H,
         "evaluation_roles_hash": _H, "evaluation_batches_hash": _H,
         "crafting_identity_hash": _H, "measurement_identity_hash": _H,
-        "attacks_yaml_hash": _H, "attack_script_hashes": {},
+        "attacks_yaml_hash": _H, "attack_script_hashes": _SCRIPT_HASHES,
         "frozen_rf_hash": _H, "scaler_hash": _H,
         "feature_names_hash": _H, "feature_mask_hash": _H, "training_bounds_hash": _H,
         "controllers_yaml_hash": _H, "defenses_yaml_hash": _H, "experiment_yaml_hash": _H,
-        "attack_parameters": {}, "query_budgets": {},
+        "attack_parameters": _PARAMS, "query_budgets": _BUDGETS,
         "attack_scenario": "SilentProbing", "effective_seed": 42,
         "schema_version": "1.0", "row_count": 500,
         "X_attacked_sha256": x_hash, "status_sha256": s_hash, "output_sha256": x_hash,
@@ -291,11 +285,11 @@ def test_concrete_cache_provider_rejects_wrong_row_count(tmp_path):
         "X_eval_hash": _H, "metadata_eval_hash": _H,
         "evaluation_roles_hash": _H, "evaluation_batches_hash": _H,
         "crafting_identity_hash": _H, "measurement_identity_hash": _H,
-        "attacks_yaml_hash": _H, "attack_script_hashes": {},
+        "attacks_yaml_hash": _H, "attack_script_hashes": _SCRIPT_HASHES,
         "frozen_rf_hash": _H, "scaler_hash": _H,
         "feature_names_hash": _H, "feature_mask_hash": _H, "training_bounds_hash": _H,
         "controllers_yaml_hash": _H, "defenses_yaml_hash": _H, "experiment_yaml_hash": _H,
-        "attack_parameters": {}, "query_budgets": {},
+        "attack_parameters": _PARAMS, "query_budgets": _BUDGETS,
         "attack_scenario": "SilentProbing", "effective_seed": 42,
         "schema_version": "1.0", "row_count": 50,
         "X_attacked_sha256": x_hash, "status_sha256": s_hash, "output_sha256": x_hash,
@@ -344,11 +338,11 @@ def test_concrete_cache_provider_rejects_wrong_column_count(tmp_path):
         "X_eval_hash": _H, "metadata_eval_hash": _H,
         "evaluation_roles_hash": _H, "evaluation_batches_hash": _H,
         "crafting_identity_hash": _H, "measurement_identity_hash": _H,
-        "attacks_yaml_hash": _H, "attack_script_hashes": {},
+        "attacks_yaml_hash": _H, "attack_script_hashes": _SCRIPT_HASHES,
         "frozen_rf_hash": _H, "scaler_hash": _H,
         "feature_names_hash": _H, "feature_mask_hash": _H, "training_bounds_hash": _H,
         "controllers_yaml_hash": _H, "defenses_yaml_hash": _H, "experiment_yaml_hash": _H,
-        "attack_parameters": {}, "query_budgets": {},
+        "attack_parameters": _PARAMS, "query_budgets": _BUDGETS,
         "attack_scenario": "SilentProbing", "effective_seed": 42,
         "schema_version": "1.0", "row_count": N,
         "X_attacked_sha256": x_hash, "status_sha256": s_hash, "output_sha256": x_hash,
@@ -398,11 +392,11 @@ def test_concrete_cache_provider_rejects_mismatched_provenance(tmp_path):
         "X_eval_hash": _H, "metadata_eval_hash": _H,
         "evaluation_roles_hash": _H, "evaluation_batches_hash": _H,
         "crafting_identity_hash": _H, "measurement_identity_hash": _H,
-        "attacks_yaml_hash": _H, "attack_script_hashes": {},
+        "attacks_yaml_hash": _H, "attack_script_hashes": _SCRIPT_HASHES,
         "frozen_rf_hash": _H, "scaler_hash": _H,
         "feature_names_hash": _H, "feature_mask_hash": _H, "training_bounds_hash": _H,
         "controllers_yaml_hash": _H, "defenses_yaml_hash": _H, "experiment_yaml_hash": _H,
-        "attack_parameters": {}, "query_budgets": {},
+        "attack_parameters": _PARAMS, "query_budgets": _BUDGETS,
         "attack_scenario": "SilentProbing", "effective_seed": 42,
         "schema_version": "1.0", "row_count": 500,
         "X_attacked_sha256": x_hash, "status_sha256": s_hash, "output_sha256": x_hash,
@@ -437,11 +431,11 @@ def test_concrete_cache_provider_cache_identity_exposure(tmp_path):
         "X_eval_hash": _H, "metadata_eval_hash": _H,
         "evaluation_roles_hash": _H, "evaluation_batches_hash": _H,
         "crafting_identity_hash": _H, "measurement_identity_hash": _H,
-        "attacks_yaml_hash": _H, "attack_script_hashes": {},
+        "attacks_yaml_hash": _H, "attack_script_hashes": _SCRIPT_HASHES,
         "frozen_rf_hash": _H, "scaler_hash": _H,
         "feature_names_hash": _H, "feature_mask_hash": _H, "training_bounds_hash": _H,
         "controllers_yaml_hash": _H, "defenses_yaml_hash": _H, "experiment_yaml_hash": _H,
-        "attack_parameters": {}, "query_budgets": {},
+        "attack_parameters": _PARAMS, "query_budgets": _BUDGETS,
         "attack_scenario": "SilentProbing", "effective_seed": 42,
         "schema_version": "1.0", "row_count": 500,
         "X_attacked_sha256": x_hash, "status_sha256": s_hash, "output_sha256": x_hash,
@@ -457,7 +451,7 @@ def test_concrete_cache_provider_cache_identity_exposure(tmp_path):
 
     provider = ConcreteAttackCacheProvider(
         cache_dir, resolved, expected_row_count=500,
-        expected_cache_identity=_SYNTH_PROV, expected_feature_names=real_features
+        expected_cache_identity=manifest, expected_feature_names=real_features
     )
     
     assert provider.cache_identity == manifest
@@ -641,7 +635,10 @@ def test_cache_builder_surrogate_semantics(tmp_path):
         output_dir=tmp_path / "surrogate_cache",
         X_crafting=X_craft, y_crafting=y_craft,
         oracle_or_predict_fn=mock_predict,
-        surrogate_attack=surrogate
+        surrogate_attack=surrogate,
+        attack_script_hashes=_SCRIPT_HASHES,
+        attack_parameters=_PARAMS,
+        query_budgets=_BUDGETS,
     )
     
     # Prove it fits only on crafting pool
@@ -676,7 +673,9 @@ def test_cache_builder_boundary_semantics(tmp_path):
         benign_reference_pool=X_meas,
         n_boundary_targets=20,
         max_queries=50,
-        attack_script_hashes={"mock": "hash"}
+        attack_script_hashes=_SCRIPT_HASHES,
+        attack_parameters=_PARAMS,
+        query_budgets=_BUDGETS,
     )
     
     import pandas as pd

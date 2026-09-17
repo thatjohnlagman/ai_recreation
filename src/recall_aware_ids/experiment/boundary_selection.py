@@ -15,11 +15,14 @@ def select_boundary_targets(eligible_mask: np.ndarray, seed: int, n_attack_sampl
         
     if isinstance(n_attack_samples, bool) or not isinstance(n_attack_samples, (int, np.integer)) or n_attack_samples <= 0:
         raise TypeError("n_attack_samples must be a positive integer")
-        
+
     eligible_indices = np.where(eligible_mask)[0]
     
     if len(eligible_indices) < n_attack_samples:
         raise ValueError(f"Insufficient eligible samples for Boundary Attack. Found {len(eligible_indices)}, require {n_attack_samples}.")
+
+    if official_mode and n_attack_samples != 200:
+        raise ValueError(f"Official mode requires exactly 200 attack targets, got {n_attack_samples}")
         
     rng = np.random.RandomState(int(seed))
     

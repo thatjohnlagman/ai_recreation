@@ -145,7 +145,7 @@ def run_pilot():
     surrogate_candidates = []
 
     for i in range(len(target_subset_X)):
-        orig_pred = int(predict_wrapper(target_subset_X[i:i+1])[0])
+        orig_pred = int(surrogate_target_oracle.predict(target_subset_X[i:i+1], sample_ids=[f"pilot_screening_{i}"], stage="screening")[0])
         true_label = int(target_subset_y[i])
         if orig_pred != 1 or true_label != 1:
             continue
@@ -178,6 +178,7 @@ def run_pilot():
     attack_pool_y = y[is_attack][:100]
     benign_pool_X = X[is_benign][:500]
 
+    boundary_screening_oracle = BlackBoxOracle(predict_wrapper, max_queries_per_sample=None)
     boundary_oracle = BlackBoxOracle(predict_wrapper, max_queries_per_sample=50)
 
     t0 = time.time()
@@ -187,7 +188,7 @@ def run_pilot():
     boundary_results = []
 
     for i in range(len(attack_pool_X)):
-        orig_pred = int(predict_wrapper(attack_pool_X[i:i+1])[0])
+        orig_pred = int(boundary_screening_oracle.predict(attack_pool_X[i:i+1], sample_ids=[f"pilot_screening_{i}"], stage="screening")[0])
         true_label = int(attack_pool_y[i])
         if orig_pred != 1 or true_label != 1:
             continue

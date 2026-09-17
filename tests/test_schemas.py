@@ -374,6 +374,6 @@ def test_json_roundtrip_all_schemas():
     assert loaded_rs["completed_successfully"] is True
 
     # CompletionMarker
-    cm = CompletionMarker(run_id="r", timestamp="t", provenance_hashes=_GOOD_PROV)
+    cm = CompletionMarker(run_id="r", timestamp="2026-09-17T00:00:00Z", provenance_hashes=_GOOD_PROV)
     loaded_cm = json.loads(json.dumps(dataclasses.asdict(cm)))
     assert loaded_cm["run_id"] == "r"

@@ -175,17 +175,17 @@ class ExperimentRunner:
                     raise ValueError("X_attacked contains non-finite values")
 
                 # Audit aggregations
-                total_queries += int(np.sum(cache_data["queries"]))
+                total_queries += int(np.sum(cache_data.get("queries", 0)))
                 
-                for code in cache_data["status_codes"]:
+                for code in cache_data.get("status_codes", []):
                     status_counts[code] = status_counts.get(code, 0) + 1
                     
                 success_mask = cache_data["successful"]
                 if np.any(success_mask):
-                    all_l0.append(cache_data["l0"][success_mask])
-                    all_l1.append(cache_data["l1"][success_mask])
-                    all_l2.append(cache_data["l2"][success_mask])
-                    all_linf.append(cache_data["linf"][success_mask])
+                    if "l0" in cache_data: all_l0.append(cache_data["l0"][success_mask])
+                    if "l1" in cache_data: all_l1.append(cache_data["l1"][success_mask])
+                    if "l2" in cache_data: all_l2.append(cache_data["l2"][success_mask])
+                    if "linf" in cache_data: all_linf.append(cache_data["linf"][success_mask])
 
                 # ---- 3. Defense + model predict on defended output ----
                 defended_preds, defense_result, defended_scores = self.defense_adapter.defend_batch(

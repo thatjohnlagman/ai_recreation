@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 .venv/
+.venv-m4/
 venv/
 
 # Python caches and tooling

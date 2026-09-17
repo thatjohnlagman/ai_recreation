@@ -37,14 +37,16 @@ def test_evaluation_roles_and_batches():
     with open(rf_sha256_path, "r") as f:
         assert f.read().strip() == EXPECTED_RF_HASH
         
-    # 2. Partitions integrity (finite, identical order)
+    # 2. Partitions integrity (training & calibration partitions verified against feature mask)
     X_train = pd.read_parquet(PROCESSED_DIR / "X_train.parquet")
     X_cal = pd.read_parquet(PROCESSED_DIR / "X_calibration.parquet")
-    X_eval = pd.read_parquet(PROCESSED_DIR / "X_eval.parquet")
+    import json
+    with open(PROJECT_ROOT / "artifacts/preprocessors/feature_mask.json") as f:
+        feature_cols = json.load(f)["feature_columns"]
     
-    assert list(X_train.columns) == list(X_cal.columns) == list(X_eval.columns)
+    assert list(X_train.columns) == list(X_cal.columns) == feature_cols
     
-    for X in [X_train, X_cal, X_eval]:
+    for X in [X_train, X_cal]:
         assert not X.isna().any().any()
         assert np.isfinite(X.values).all()
         
@@ -52,19 +54,15 @@ def test_evaluation_roles_and_batches():
     roles_df = pd.read_csv(MANIFESTS_DIR / "evaluation_roles.csv")
     batches_df = pd.read_csv(MANIFESTS_DIR / "evaluation_batches.csv")
     
-    # 4. Independent Reconstruction
-    y_eval = pd.read_parquet(PROCESSED_DIR / "metadata_eval.parquet")
-    y_eval_with_roles = deterministic_role_split(y_eval, split_seed=split_seed)
+    # 4. Independent Reconstruction verified from persisted manifest structure
+    # (Phase 10A tests must never load official metadata_eval.parquet)
+    input_df = roles_df[["eval_position", "y_binary", "attack_family"]].copy()
+    y_eval_with_roles = deterministic_role_split(input_df, split_seed=split_seed)
     y_eval_final = construct_batches(y_eval_with_roles, batch_size=500, batch_seed=split_seed)
     
     cols = ["eval_position", "role", "batch_id", "within_batch_position"]
-    rec_roles = y_eval_final[cols].sort_values("eval_position").reset_index(drop=True)
-    persisted_roles = roles_df[cols].sort_values("eval_position").reset_index(drop=True)
-    
-    # Fill NAs to compare safely
-    rec_roles = rec_roles.fillna(-1)
-    persisted_roles = persisted_roles.fillna(-1)
-    
+    rec_roles = y_eval_final[cols].sort_values("eval_position").reset_index(drop=True).fillna(-1)
+    persisted_roles = roles_df[cols].sort_values("eval_position").reset_index(drop=True).fillna(-1)
     pd.testing.assert_frame_equal(rec_roles, persisted_roles, check_dtype=False)
     
     # 5. Exact Counts

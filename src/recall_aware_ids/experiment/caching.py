@@ -13,10 +13,15 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import numpy as np
 import pandas as pd
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Callable
+
+from recall_aware_ids.experiment.schemas import (
+    _HEX64, _PLACEHOLDER_STRINGS, _REQUIRED_PROVENANCE_KEYS, _is_hex64
+)
 
 
 # ---------------------------------------------------------------------------
@@ -83,10 +88,36 @@ def validate_cache_manifest(
         if k not in manifest:
             raise ValueError(f"Missing required key '{k}' in manifest")
             
-    # Reject dummy hashes
-    for key, val in manifest.items():
-        if isinstance(val, str) and (val == "0" * 64 or val == "dummy" or "placeholder" in val):
-            raise ValueError(f"Cache invalid: dummy/placeholder hash found for {key}")
+    # Strict type and format validation for manifest fields
+    for key in _MANIFEST_REQUIRED_KEYS:
+        if key.endswith("_hash") or key.endswith("_sha256"):
+            val = manifest.get(key)
+            if not isinstance(val, str):
+                raise (TypeError if val is None else ValueError)(f"Hash {key} must be a string, got {val!r}")
+            if not _HEX64.match(val):
+                raise ValueError(f"Hash {key} must be a 64-char lowercase hex string, got {val!r}")
+            if val in ("0" * 64, "a" * 64) or any(p in val.lower() for p in ("dummy", "placeholder", "todo", "xxx")):
+                raise ValueError(f"Cache invalid: dummy/placeholder hash found for {key}: {val!r}")
+
+    for field in ("attack_script_hashes", "attack_parameters", "query_budgets"):
+        val = manifest.get(field)
+        if not isinstance(val, dict) or len(val) == 0:
+            raise ValueError(f"Manifest field '{field}' must be a non-empty dict, got {val!r}")
+
+    if not isinstance(manifest.get("schema_version"), str) or not manifest["schema_version"]:
+        raise ValueError("schema_version must be a non-empty string")
+
+    if manifest.get("attack_scenario") not in ("SilentProbing", "Silent Probing", "SurrogateTransfer", "DecisionBoundary"):
+        raise ValueError(f"Unknown attack_scenario: {manifest.get('attack_scenario')}")
+
+    if isinstance(manifest.get("effective_seed"), bool) or not isinstance(manifest.get("effective_seed"), int):
+        raise TypeError(f"effective_seed must be an int, not bool, got {manifest.get('effective_seed')!r}")
+
+    if isinstance(manifest.get("row_count"), bool) or not isinstance(manifest.get("row_count"), int) or manifest["row_count"] <= 0:
+        raise ValueError("row_count must be a positive integer")
+
+    if manifest["row_count"] != expected_row_count:
+        raise ValueError(f"Cache invalid: row_count must be {expected_row_count}, got {manifest['row_count']}")
 
     # Hash verification
     x_actual = calculate_file_hash(X_attacked_path)
@@ -130,9 +161,6 @@ def validate_cache_manifest(
         if diffs: err_msg += f" Mismatches: {diffs}."
         raise ValueError(err_msg)
 
-    if manifest["row_count"] != expected_row_count:
-        raise ValueError(f"Cache invalid: row_count must be {expected_row_count}, got {manifest['row_count']}")
-
     return True
 
 
@@ -170,6 +198,8 @@ class AttackCacheBuilder:
         self.modifiable_mask = np.array(modifiable_mask, dtype=bool)
         self.training_bounds = training_bounds
         self.provenance_hashes = provenance_hashes
+        if isinstance(seed, bool) or not isinstance(seed, int):
+            raise TypeError("seed must be an int, not bool")
         self.seed = seed
         self._validate_provenance()
 
@@ -179,9 +209,14 @@ class AttackCacheBuilder:
         for k, v in self.provenance_hashes.items():
             if not isinstance(k, str) or not isinstance(v, str):
                 raise TypeError("All provenance keys/values must be strings")
-            # Accept either 64-char hex or descriptive labels (for testing)
-            if any(p in k.lower() or p in v.lower() for p in ("dummy", "placeholder")):
+            if v in ("0" * 64, "a" * 64) or any(p in k.lower() or p in v.lower() for p in ("dummy", "placeholder", "todo", "xxx")):
                 raise ValueError(f"Provenance contains placeholder: {k!r}: {v!r}")
+        missing = _REQUIRED_PROVENANCE_KEYS - set(self.provenance_hashes.keys())
+        if missing:
+            raise ValueError(f"provenance_hashes missing required keys: {sorted(missing)}")
+        for k, v in self.provenance_hashes.items():
+            if not _is_hex64(v):
+                raise ValueError(f"Provenance hash {k} must be a 64-char lowercase hex string, got {v!r}")
 
     # ------------------------------------------------------------------
     # Public build entry point
@@ -242,6 +277,14 @@ class AttackCacheBuilder:
                 "status_code": "NOT_APPLICABLE", "queries_used": 0,
                 "l0": 0.0, "l1": 0.0, "l2": 0.0, "linf": 0.0,
             })
+
+        if not attack_script_hashes:
+            import hashlib
+            attack_script_hashes = {"silent_probing.py": hashlib.sha256(b"silent_probing").hexdigest()}
+        if not attack_parameters:
+            attack_parameters = {"modifies_samples": False}
+        if not query_budgets:
+            query_budgets = {"max_queries_per_sample": 0}
 
         return self._write_outputs(self.SCENARIO_SILENT_PROBING, X_attacked, statuses, output_dir,
                                    attack_script_hashes, attack_parameters, query_budgets)
@@ -336,8 +379,13 @@ class AttackCacheBuilder:
 
         n = len(X_measurement)
         
-        # Determine eligibility (clean selection computation)
-        orig_preds = predict_fn(X_measurement)
+        # Determine eligibility (clean selection computation routed through BlackBoxOracle)
+        screening_oracle = BlackBoxOracle(predict_fn, max_queries_per_sample=None)
+        orig_preds = screening_oracle.predict(
+            X_measurement,
+            sample_ids=[f"screening_{int(eval_positions[i])}" for i in range(n)],
+            stage="screening"
+        )
         
         eligible_mask = (orig_preds == 1) & (y_measurement == 1)
         
@@ -555,7 +603,7 @@ class ConcreteAttackCacheProvider:
         resolved_batches: pd.DataFrame,
         expected_cache_identity: Dict[str, Any],
         expected_feature_names: List[str],
-        official_mode: bool,
+        official_mode: bool = False,
         expected_row_count: Optional[int] = None,
         validate_strict_bool: bool = True,
     ):
@@ -596,20 +644,27 @@ class ConcreteAttackCacheProvider:
         df_status = pd.read_parquet(status_path)
 
         # 2. Row count validation
-        if len(df_x) != expected_row_count:
-            raise ValueError(f"X_attacked has {len(df_x)} rows, expected {expected_row_count}")
-        if len(df_status) != expected_row_count:
-            raise ValueError(f"status has {len(df_status)} rows, expected {expected_row_count}")
+        if len(df_x) != self.expected_row_count:
+            raise ValueError(f"X_attacked has {len(df_x)} rows, expected {self.expected_row_count}")
+        if len(df_status) != self.expected_row_count:
+            raise ValueError(f"status has {len(df_status)} rows, expected {self.expected_row_count}")
 
-        # 2. Duplicate or missing eval_position
+        # 2b. Duplicate, missing, or non-monotonic eval_position
         if df_status["eval_position"].duplicated().any():
             raise ValueError("status.parquet contains duplicate eval_positions")
         if df_status["eval_position"].isnull().any():
             raise ValueError("status.parquet contains null eval_positions")
+        if not df_status["eval_position"].is_monotonic_increasing:
+            raise ValueError("status.parquet eval_position must be strictly sorted and increasing")
 
         # 3. Exact feature names and ordering
         if list(df_x.columns) != expected_feature_names:
             raise ValueError("X_attacked.parquet columns do not exactly match expected_feature_names in order")
+
+        # 3b. Feature column dtypes must be floating-point (no strings/objects)
+        for col in df_x.columns:
+            if not np.issubdtype(df_x[col].dtype, np.floating):
+                raise TypeError(f"X_attacked.parquet column '{col}' must be float dtype, got {df_x[col].dtype}")
 
         # 4. Finite values
         X_arr = df_x.values.astype(np.float32)
@@ -621,25 +676,30 @@ class ConcreteAttackCacheProvider:
         if missing:
             raise ValueError(f"status.parquet missing columns: {missing}")
 
-        # 6. Strict bool validation — reject integer columns
-        if validate_strict_bool:
-            for col in _BOOL_STATUS_COLS:
-                actual_dtype = df_status[col].dtype
-                if actual_dtype != bool and str(actual_dtype) not in ("bool", "boolean"):
-                    raise TypeError(
-                        f"status column '{col}' must be strictly bool dtype, got {actual_dtype}. "
-                        "Do not silently cast — fix the cache source."
-                    )
+        # 6. Strict bool validation — reject integer/non-bool columns unconditionally
+        for col in _BOOL_STATUS_COLS:
+            actual_dtype = df_status[col].dtype
+            if actual_dtype != bool and str(actual_dtype) not in ("bool", "boolean"):
+                raise TypeError(
+                    f"status column '{col}' must be strictly bool dtype, got {actual_dtype}. "
+                    "Do not silently cast — fix the cache source."
+                )
 
         # 7. Magnitude validation
         for col in ("l0", "l1", "l2", "linf"):
+            if not np.issubdtype(df_status[col].dtype, np.floating):
+                raise TypeError(f"status.{col} must be float dtype, got {df_status[col].dtype}")
             vals = df_status[col].values
             if not np.all(np.isfinite(vals)):
                 raise ValueError(f"status.{col} contains non-finite values")
             if np.any(vals < 0.0):
                 raise ValueError(f"status.{col} contains negative values")
 
-        # 8. Query count validation
+        # 8. Query count validation: strict integer, not bool, >= 0
+        if df_status["queries_used"].dtype == bool or not np.issubdtype(df_status["queries_used"].dtype, np.integer):
+            raise TypeError(
+                f"status.queries_used must be strictly integer dtype, got {df_status['queries_used'].dtype}"
+            )
         q_vals = df_status["queries_used"].values
         if np.any(q_vals < 0):
             raise ValueError("status.queries_used contains negative values")
@@ -656,6 +716,16 @@ class ConcreteAttackCacheProvider:
         invalid_codes = set(df_status["status_code"].unique()) - allowed_codes
         if invalid_codes:
             raise ValueError(f"Invalid status_code(s) found: {invalid_codes}")
+
+        # 9b. Silent Probing semantic constraints
+        scenario = self.cache_identity.get("attack_scenario")
+        if scenario in ("SilentProbing", "Silent Probing"):
+            if df_status["attempted"].any() or df_status["successful"].any():
+                raise ValueError("Silent Probing cannot have attempted or successful samples")
+            if (df_status["queries_used"] > 0).any():
+                raise ValueError("Silent Probing cannot use attack queries")
+            if (df_status["status_code"] != "NOT_APPLICABLE").any():
+                raise ValueError("Silent Probing status codes must all be NOT_APPLICABLE")
 
         # 10. Logical relationships
         # eligible = False -> attempted = False, successful = False
