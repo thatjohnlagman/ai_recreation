@@ -2,6 +2,8 @@ import pandas as pd
 from typing import List, Dict, Any
 import dataclasses
 from dataclasses import dataclass
+from pathlib import Path
+import yaml
 
 @dataclass(frozen=True)
 class RunConfig:
@@ -13,23 +15,32 @@ class RunConfig:
     is_alias: bool
     alias_for_run_id: str
 
-def generate_evaluation_matrix() -> pd.DataFrame:
+def generate_evaluation_matrix(configs_dir: Path) -> pd.DataFrame:
     """
-    Generates the deterministic evaluation matrix for Phase 10.
-    Produces exactly:
-    - 90 primary references
-    - 189 sensitivity references
-    - 27 exact C1 aliases
-    - 252 unique executions
+    Generates the deterministic evaluation matrix for Phase 10 and validates it
+    against the frozen configurations.
     """
-    primary_seeds = [42, 43, 44, 45, 46]
-    sensitivity_seeds = [42, 43, 44]
+    with open(configs_dir / "experiment.yaml") as f:
+        exp_yaml = yaml.safe_load(f)
+    with open(configs_dir / "attacks.yaml") as f:
+        attacks_yaml = yaml.safe_load(f)
+    with open(configs_dir / "defenses.yaml") as f:
+        defenses_yaml = yaml.safe_load(f)
+    with open(configs_dir / "controllers.yaml") as f:
+        controllers_yaml = yaml.safe_load(f)
+
+    primary_seeds = exp_yaml["stochastic"]["primary_seeds"]
+    sensitivity_seeds = exp_yaml["stochastic"]["sensitivity_seeds"]
     
     attacks = ['Silent Probing', 'Surrogate Transfer', 'Decision Boundary']
     defenses = ['afp', 'feature_squeezing', 'randomized_smoothing']
     
+    # Controllers from YAML
+    controllers = list(controllers_yaml["controller_configurations"].keys())
+    controllers.append("Base")
+    
     primary_controllers = ['Base', 'C1']
-    sensitivity_controllers = ['C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7']
+    sensitivity_controllers = [c for c in controllers if c != 'Base']
 
     runs = []
     
@@ -79,7 +90,65 @@ def generate_evaluation_matrix() -> pd.DataFrame:
                             alias_for_run_id=""
                         ))
 
-    return pd.DataFrame([dataclasses.asdict(r) for r in runs])
+    df = pd.DataFrame([dataclasses.asdict(r) for r in runs])
+    
+    # Validation
+    primary_count = len(df[df["run_id"].str.startswith("primary_")])
+    sensitivity_count = len(df[df["run_id"].str.startswith("sensitivity_")])
+    alias_count = len(df[df["is_alias"]])
+    unique_count = len(df[~df["is_alias"]])
+    batches = unique_count * 144
+    rs_runs = len(df[(~df["is_alias"]) & (df["defense_name"] == "randomized_smoothing")])
+
+    if primary_count != 90: raise ValueError(f"Expected 90 primary references, got {primary_count}")
+    if sensitivity_count != 189: raise ValueError(f"Expected 189 sensitivity references, got {sensitivity_count}")
+    if len(df) != 279: raise ValueError(f"Expected 279 total rows, got {len(df)}")
+    if alias_count != 27: raise ValueError(f"Expected 27 aliases, got {alias_count}")
+    if unique_count != 252: raise ValueError(f"Expected 252 unique executions, got {unique_count}")
+    if batches != 36288: raise ValueError(f"Expected 36288 batches, got {batches}")
+    if rs_runs != 84: raise ValueError(f"Expected 84 unique RS runs, got {rs_runs}")
+    
+    # Validation directions
+    # Verify the generated sets match what's allowed in YAML
+    yaml_attack_labels = set()
+    for k, v in attacks_yaml.items():
+        if isinstance(v, dict) and "label" in v:
+            yaml_attack_labels.add(v["label"])
+    
+    # Check that our hardcoded labels map to yaml
+    mapping = {
+        'Silent Probing': 'Silent Probing',
+        'Surrogate Transfer': 'Surrogate Transferability',
+        'Decision Boundary': 'Decision-Boundary Attack'
+    }
+    
+    for r in runs:
+        if mapping[r.attack_scenario] not in yaml_attack_labels:
+            raise ValueError(f"Invalid attack {r.attack_scenario}")
+        if r.defense_name not in defenses_yaml.keys():
+            raise ValueError(f"Invalid defense {r.defense_name}")
+        if r.controller_config_id not in controllers:
+            raise ValueError(f"Invalid controller {r.controller_config_id}")
+        
+    expected_primary = set()
+    for s in primary_seeds:
+        for a in attacks:
+            for d in defenses:
+                for c in primary_controllers:
+                    expected_primary.add(f"primary_{s}_{a.replace(' ', '')}_{d}_{c}")
+                    
+    expected_sens = set()
+    for s in sensitivity_seeds:
+        for a in attacks:
+            for d in defenses:
+                for c in sensitivity_controllers:
+                    expected_sens.add(f"sensitivity_{s}_{a.replace(' ', '')}_{d}_{c}")
+                    
+    generated_ids = set(df["run_id"])
+    if expected_primary | expected_sens != generated_ids:
+        raise ValueError("Bidirectional mapping failed: matrix does not match required combinations exactly")
+
+    return df
 
 def get_unique_executions(matrix: pd.DataFrame) -> pd.DataFrame:
     """Returns only the unique executions that need to be run (i.e. filters out aliases)."""

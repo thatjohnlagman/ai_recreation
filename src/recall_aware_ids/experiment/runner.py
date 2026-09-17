@@ -149,6 +149,11 @@ class ExperimentRunner:
         config_logs = []
         confusion_logs = []
         score_records = []
+        
+        # Accumulators for audit metrics
+        total_queries = 0
+        status_counts = {}
+        all_l0, all_l1, all_l2, all_linf = [], [], [], []
 
         self.policy_controller.reset()
 
@@ -168,6 +173,19 @@ class ExperimentRunner:
                     raise ValueError(f"X_attacked shape {X_attacked.shape} != (500, 78)")
                 if not np.all(np.isfinite(X_attacked)):
                     raise ValueError("X_attacked contains non-finite values")
+
+                # Audit aggregations
+                total_queries += int(np.sum(cache_data["queries"]))
+                
+                for code in cache_data["status_codes"]:
+                    status_counts[code] = status_counts.get(code, 0) + 1
+                    
+                success_mask = cache_data["successful"]
+                if np.any(success_mask):
+                    all_l0.append(cache_data["l0"][success_mask])
+                    all_l1.append(cache_data["l1"][success_mask])
+                    all_l2.append(cache_data["l2"][success_mask])
+                    all_linf.append(cache_data["linf"][success_mask])
 
                 # ---- 3. Defense + model predict on defended output ----
                 defended_preds, defense_result, defended_scores = self.defense_adapter.defend_batch(
@@ -352,6 +370,21 @@ class ExperimentRunner:
                 float(agg_successful / agg_attempted) if asr_applicable and agg_attempted > 0 else None
             )
 
+            def summarize_mag(arr_list):
+                if not arr_list:
+                    return {"mean": 0.0, "max": 0.0, "min": 0.0, "std": 0.0}
+                arr = np.concatenate(arr_list)
+                if len(arr) == 0:
+                    return {"mean": 0.0, "max": 0.0, "min": 0.0, "std": 0.0}
+                return {
+                    "mean": float(np.mean(arr)),
+                    "max": float(np.max(arr)),
+                    "min": float(np.min(arr)),
+                    "std": float(np.std(arr)),
+                }
+                
+            cache_identity = getattr(self.attack_cache, "cache_identity", {})
+
             summary = RunSummary(
                 run_id=self.run_id,
                 seed=self.seed,
@@ -372,6 +405,13 @@ class ExperimentRunner:
                 total_eligible=agg_eligible,
                 total_attempted=agg_attempted,
                 total_successful=agg_successful,
+                total_queries=total_queries,
+                cache_identity=cache_identity,
+                status_code_counts=status_counts,
+                l0_summary=summarize_mag(all_l0),
+                l1_summary=summarize_mag(all_l1),
+                l2_summary=summarize_mag(all_l2),
+                linf_summary=summarize_mag(all_linf),
                 global_asr=global_asr,
                 completed_successfully=True,
             )

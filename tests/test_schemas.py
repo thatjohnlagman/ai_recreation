@@ -150,9 +150,9 @@ def test_batch_config_log_accepts_valid_ra():
 
 def _valid_confusion_log(**overrides):
     defaults = dict(
-        run_id="r", batch_id=0, tp=1, fp=2, tn=3, fn=4,
-        accuracy=0.4, recall=0.2, precision=0.33, f1=0.25,
-        balanced_accuracy=0.5, pr_auc_average_precision=0.4,
+        run_id="r", batch_id=0, tp=100, fp=100, tn=150, fn=150,
+        accuracy=0.5, recall=0.4, precision=0.5, f1=0.44,
+        balanced_accuracy=0.5, pr_auc_average_precision=0.5,
         eligible_count=10, attempted_count=5, successful_count=1,
         asr_applicable=True, asr=0.2,
     )
@@ -194,6 +194,10 @@ def test_batch_confusion_log_rejects_successful_gt_attempted():
     with pytest.raises(ValueError, match="successful_count"):
         _valid_confusion_log(attempted_count=5, successful_count=10)
 
+def test_batch_confusion_log_enforces_exact_500_sum():
+    with pytest.raises(ValueError, match="must sum to exactly 500"):
+        # Sum = 1 + 2 + 3 + 4 = 10 (not 500)
+        _valid_confusion_log(tp=1, fp=2, tn=3, fn=4)
 
 def test_batch_confusion_log_rejects_nonfinite_metric():
     with pytest.raises(ValueError):
@@ -203,13 +207,23 @@ def test_batch_confusion_log_rejects_nonfinite_metric():
 def test_batch_confusion_log_accepts_silent_probing():
     # ASR not applicable, none attempted/successful, asr=None
     log = BatchConfusionLog(
-        run_id="r", batch_id=0, tp=1, fp=0, tn=9, fn=0,
-        accuracy=1.0, recall=1.0, precision=1.0, f1=1.0,
-        balanced_accuracy=1.0, pr_auc_average_precision=1.0,
+        run_id="r", batch_id=0, tp=100, fp=100, tn=150, fn=150,
+        accuracy=0.5, recall=0.5, precision=0.5, f1=0.5,
+        balanced_accuracy=0.5, pr_auc_average_precision=0.5,
         eligible_count=0, attempted_count=0, successful_count=0,
         asr_applicable=False, asr=None,
     )
     assert log.asr is None
+
+def test_batch_confusion_log_enforces_zero_asr_when_zero_attempts():
+    with pytest.raises(ValueError, match="asr must be 0.0 when attempted is 0"):
+        BatchConfusionLog(
+            run_id="r", batch_id=0, tp=100, fp=100, tn=150, fn=150,
+            accuracy=0.5, recall=0.5, precision=0.5, f1=0.5,
+            balanced_accuracy=0.5, pr_auc_average_precision=0.5,
+            eligible_count=10, attempted_count=0, successful_count=0,
+            asr_applicable=True, asr=0.5
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -278,11 +292,20 @@ def _valid_run_summary(**overrides):
     defaults = dict(
         run_id="r", seed=42, attack_scenario="SilentProbing", defense="afp",
         config_id="Base", total_batches=144,
-        tp=10, fp=0, tn=90, fn=0,
-        accuracy=1.0, recall=1.0, precision=1.0, f1=1.0,
-        balanced_accuracy=1.0, pr_auc_average_precision=1.0,
-        total_eligible=0, total_attempted=0, total_successful=0,
-        global_asr=None, completed_successfully=True,
+        tp=18000, fp=18000, tn=18000, fn=18000,
+        accuracy=0.5, recall=0.5, precision=0.5, f1=0.5,
+        balanced_accuracy=0.5, pr_auc_average_precision=0.5,
+        total_eligible=72000,
+        total_attempted=72000,
+        total_successful=72000,
+        total_queries=1000,
+        cache_identity={"some": "hash"},
+        status_code_counts={"SUCCESS": 72000},
+        l0_summary={"mean": 0.0},
+        l1_summary={"mean": 0.0},
+        l2_summary={"mean": 0.0},
+        linf_summary={"mean": 0.0},
+        global_asr=1.0, completed_successfully=True,
     )
     defaults.update(overrides)
     return RunSummary(**defaults)
@@ -306,6 +329,11 @@ def test_run_summary_rejects_out_of_range_asr():
 def test_run_summary_rejects_attempted_gt_eligible():
     with pytest.raises(ValueError, match="total_attempted"):
         _valid_run_summary(total_eligible=5, total_attempted=10)
+
+def test_run_summary_enforces_exact_72000_sum():
+    with pytest.raises(ValueError, match="must sum to exactly 72000"):
+        # Sum = 10 + 0 + 90 + 0 = 100 (not 72000)
+        _valid_run_summary(tp=10, fp=0, tn=90, fn=0)
 
 
 # ---------------------------------------------------------------------------

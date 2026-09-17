@@ -56,6 +56,7 @@ def validate_cache_manifest(
     X_attacked_path: Path,
     expected_hashes: Dict[str, Any],
     status_path: Optional[Path] = None,
+    expected_row_count: int = 72000,
 ) -> bool:
     """
     Validates:
@@ -113,23 +114,24 @@ def validate_cache_manifest(
         )
 
     # Check all expected hashes match
-    for key, expected_val in expected_hashes.items():
-        if key not in manifest:
-            raise ValueError(f"Cache invalid: Expected key '{key}' not found in manifest")
-        if key in ("attack_script_hashes", "attack_parameters", "query_budgets"):
-            if not isinstance(manifest[key], dict) or not isinstance(expected_val, dict):
-                raise ValueError(f"Cache invalid: '{key}' must be a dictionary")
-            for k2, v2 in expected_val.items():
-                if manifest[key].get(k2) != v2:
-                    raise ValueError(f"Cache invalid: Mismatch in {key}[{k2}]")
-        else:
-            if manifest[key] != expected_val:
-                raise ValueError(
-                    f"Cache invalid: Mismatch for {key}. Expected {expected_val!r}, got {manifest[key]!r}"
-                )
+    # Require exact equality for the full cache identity instead of a subset match
+    if manifest != expected_hashes:
+        # Find differences for helpful error message
+        missing_keys = set(expected_hashes.keys()) - set(manifest.keys())
+        extra_keys = set(manifest.keys()) - set(expected_hashes.keys())
+        diffs = []
+        for k in expected_hashes.keys():
+            if k in manifest and manifest[k] != expected_hashes[k]:
+                diffs.append(f"{k}: expected {expected_hashes[k]}, got {manifest[k]}")
+        
+        err_msg = "Cache invalid: manifest does not match expected_cache_identity exactly."
+        if missing_keys: err_msg += f" Missing keys: {missing_keys}."
+        if extra_keys: err_msg += f" Extra keys: {extra_keys}."
+        if diffs: err_msg += f" Mismatches: {diffs}."
+        raise ValueError(err_msg)
 
-    if manifest["row_count"] != 72000:
-        raise ValueError(f"Cache invalid: row_count must be 72000, got {manifest['row_count']}")
+    if manifest["row_count"] != expected_row_count:
+        raise ValueError(f"Cache invalid: row_count must be {expected_row_count}, got {manifest['row_count']}")
 
     return True
 
@@ -276,53 +278,33 @@ class AttackCacheBuilder:
         # Oracle for target evaluation
         target_oracle = BlackBoxOracle(predict_fn, max_queries_per_sample=None)
 
-        # Eligibility screening does not count towards budgeted queries per instructions?
-        # Actually it says: "distinguish any clean eligibility-selection computation from budgeted attack queries"
-        # We can just use predict_fn directly for eligibility, or target_oracle if it's considered selection
-        orig_preds = predict_fn(X_measurement)
-
         for i in range(n):
             ep = int(eval_positions[i])
             true_label = int(y_measurement[i])
-            orig_pred = int(orig_preds[i])
-
-            if orig_pred != 1 or true_label != 1:
-                status = "INELIGIBLE_TRUE_BENIGN" if true_label != 1 else "INELIGIBLE_FALSE_NEGATIVE"
-                statuses.append({
-                    "eval_position": ep,
-                    "eligible": False, "attempted": False, "successful": False,
-                    "status_code": status, "queries_used": 0,
-                    "l0": 0.0, "l1": 0.0, "l2": 0.0, "linf": 0.0,
-                })
-                continue
-
-            # Target access is oracle-tracked via evaluate_transfer (if surrogate_attack implements it) or just manual oracle call
-            X_cand, mags_or_reason = surrogate_attack.generate_candidate(X_measurement[i])
-            
-            if X_cand is None:
-                statuses.append({
-                    "eval_position": ep,
-                    "eligible": True, "attempted": True, "successful": False,
-                    "status_code": "NO_FEASIBLE_CANDIDATE", "queries_used": 0,
-                    "l0": 0.0, "l1": 0.0, "l2": 0.0, "linf": 0.0,
-                })
-                continue
-
             sample_id = f"surrogate_{ep}"
-            final_pred = int(target_oracle.predict(X_cand.reshape(1, -1), sample_ids=[sample_id], stage="transfer_eval")[0])
-            queries = target_oracle.get_query_count(sample_id)
-            success = (final_pred == 0)
 
-            if success:
-                X_attacked[i] = X_cand
+            # 1. Generate X_cand using only the surrogate
+            X_cand, _ = surrogate_attack.generate_candidate(X_measurement[i])
+            
+            # 2. Call evaluate_transfer() exactly once
+            result = surrogate_attack.evaluate_transfer(
+                X_cand, X_measurement[i], target_oracle, sample_id, true_label
+            )
 
-            mags = mags_or_reason if isinstance(mags_or_reason, dict) else {"l0": 0.0, "l1": 0.0, "l2": 0.0, "linf": 0.0}
+            # 3. Store result.X_adv at the corresponding original measurement position
+            X_attacked[i] = np.array(result.X_adv).flatten()
+
+            # 4, 5, 6. Construct the status row from that same AttackResult
+            mags = result.magnitudes if result.magnitudes else {"l0": 0.0, "l1": 0.0, "l2": 0.0, "linf": 0.0}
+            success_bool = False if result.success is None else bool(result.success)
 
             statuses.append({
                 "eval_position": ep,
-                "eligible": True, "attempted": True, "successful": success,
-                "status_code": "SUCCESS" if success else "TARGET_REJECTION",
-                "queries_used": int(queries),
+                "eligible": result.eligible,
+                "attempted": result.attempted,
+                "successful": success_bool,
+                "status_code": result.status_code,
+                "queries_used": result.query_count,
                 "l0": float(mags.get("l0", 0.0)),
                 "l1": float(mags.get("l1", 0.0)),
                 "l2": float(mags.get("l2", 0.0)),
@@ -368,6 +350,19 @@ class AttackCacheBuilder:
             raise ValueError(f"Could not select exactly {n_boundary_targets} targets (found {len(target_indices)})")
 
         target_set = set(target_indices)
+        
+        selected_positions = [int(eval_positions[i]) for i in target_indices]
+        import hashlib
+        pred_hash = hashlib.sha256(orig_preds.tobytes()).hexdigest()
+        pos_hash = hashlib.sha256(np.array(selected_positions, dtype=np.int64).tobytes()).hexdigest()
+        
+        screening_metrics = {
+            "screening_model_identity": self.provenance_hashes.get("frozen_rf_hash", "unknown"),
+            "screening_prediction_hash": pred_hash,
+            "selected_position_hash": pos_hash,
+            "selected_target_count": len(selected_positions),
+            "selection_seed": self.seed,
+        }
 
         X_attacked = X_measurement.astype(np.float32).copy()
         statuses = []
@@ -407,18 +402,22 @@ class AttackCacheBuilder:
                 X_attacked[i] = result.X_adv
 
             mags = result.magnitudes if result.magnitudes else {"l0": 0.0, "l1": 0.0, "l2": 0.0, "linf": 0.0}
+            success_bool = False if result.success is None else bool(result.success)
+
             statuses.append({
                 "eval_position": ep,
-                "eligible": result.eligible, "attempted": result.attempted, "successful": bool(result.success),
+                "eligible": result.eligible, "attempted": result.attempted, "successful": success_bool,
                 "status_code": result.status_code, "queries_used": int(queries),
                 "l0": float(mags.get("l0", 0.0)),
                 "l1": float(mags.get("l1", 0.0)),
                 "l2": float(mags.get("l2", 0.0)),
                 "linf": float(mags.get("linf", 0.0)),
             })
+            
+        screening_metrics["attack_oracle_queries_used"] = oracle.global_query_count
 
         return self._write_outputs(self.SCENARIO_BOUNDARY, X_attacked, statuses, output_dir,
-                                   attack_script_hashes, attack_parameters, query_budgets)
+                                   attack_script_hashes, attack_parameters, query_budgets, screening_metrics)
 
     # ------------------------------------------------------------------
     # Persistence
@@ -426,15 +425,23 @@ class AttackCacheBuilder:
 
     def _write_outputs(
         self, scenario: str, X_attacked: np.ndarray, statuses: List[dict], output_dir: Path,
-        attack_script_hashes: dict = None, attack_parameters: dict = None, query_budgets: dict = None
+        attack_script_hashes: dict = None, attack_parameters: dict = None, query_budgets: dict = None,
+        screening_metrics: dict = None
     ) -> Path:
+        if scenario in (self.SCENARIO_SURROGATE, self.SCENARIO_BOUNDARY):
+            if not attack_script_hashes: raise ValueError(f"attack_script_hashes required for {scenario}")
+            if not attack_parameters: raise ValueError(f"attack_parameters required for {scenario}")
+            if not query_budgets: raise ValueError(f"query_budgets required for {scenario}")
         if output_dir.exists():
             raise FileExistsError(f"Cache output directory already exists (cannot overwrite): {output_dir}")
             
         tmp_dir = output_dir.with_name(output_dir.name + ".tmp")
         if tmp_dir.exists():
-            import shutil
-            shutil.rmtree(tmp_dir)
+            import datetime
+            ts = datetime.datetime.utcnow().strftime("%Y%m%d%H%M%S%f")
+            quarantine_dir = output_dir.with_name(f"{output_dir.name}_quarantined_{ts}")
+            tmp_dir.rename(quarantine_dir)
+            
         tmp_dir.mkdir(parents=True)
 
         x_path = tmp_dir / "X_attacked.parquet"
@@ -472,7 +479,12 @@ class AttackCacheBuilder:
             "attack_script_hashes": attack_script_hashes or {},
             "attack_parameters": attack_parameters or {},
             "query_budgets": query_budgets or {},
+        }
+        
+        if screening_metrics is not None:
+            manifest["screening_metrics"] = screening_metrics
             
+        manifest.update({
             # Require all provenance hashes to be explicitly provided in self.provenance_hashes
             "attacks_yaml_hash": self.provenance_hashes["attacks_yaml_hash"],
             "X_eval_hash": self.provenance_hashes["X_eval_hash"],
@@ -487,10 +499,29 @@ class AttackCacheBuilder:
             "feature_mask_hash": self.provenance_hashes["feature_mask_hash"],
             "training_bounds_hash": self.provenance_hashes["training_bounds_hash"],
             **{k: v for k, v in self.provenance_hashes.items()}
-        }
+        })
 
         with open(m_path, "w") as f:
             json.dump(manifest, f, indent=2)
+
+        # Before atomic publication, reopen and validate the cache artifacts exactly as the provider would.
+        # This confirms that no serialization bug occurred and that the schemas and identities match.
+        from recall_aware_ids.experiment.caching import ConcreteAttackCacheProvider
+        # Construct a dummy resolved_batches dataframe representing the generated eval_positions
+        fake_batches = pd.DataFrame({
+            "batch_id": [0] * len(X_attacked),
+            "eval_position": [int(s["eval_position"]) for s in statuses]
+        })
+        
+        # Load through the strict provider internally
+        ConcreteAttackCacheProvider(
+            cache_dir=tmp_dir,
+            resolved_batches=fake_batches,
+            expected_cache_identity=manifest,
+            expected_feature_names=self.feature_names,
+            official_mode=False,
+            expected_row_count=len(X_attacked)
+        )
 
         # Atomic rename
         tmp_dir.rename(output_dir)
@@ -522,26 +553,49 @@ class ConcreteAttackCacheProvider:
         self,
         cache_dir: Path,
         resolved_batches: pd.DataFrame,
-        expected_row_count: int = 72000,
+        expected_cache_identity: Dict[str, Any],
+        expected_feature_names: List[str],
+        official_mode: bool,
+        expected_row_count: Optional[int] = None,
         validate_strict_bool: bool = True,
     ):
         self.cache_dir = Path(cache_dir)
         self.resolved_batches = resolved_batches
-        self.expected_row_count = expected_row_count
+        self.official_mode = official_mode
+        
+        if self.official_mode:
+            if expected_row_count is not None and expected_row_count != 72000:
+                raise ValueError("official_mode requires expected_row_count=72000")
+            self.expected_row_count = 72000
+        else:
+            if expected_row_count is None:
+                raise ValueError("synthetic mode requires explicitly supplied expected_row_count")
+            self.expected_row_count = expected_row_count
 
         artifact_path = self.cache_dir / "X_attacked.parquet"
         status_path = self.cache_dir / "status.parquet"
+        manifest_path = self.cache_dir / "manifest.json"
 
-        if not artifact_path.exists():
-            raise FileNotFoundError(f"X_attacked.parquet not found: {artifact_path}")
-        if not status_path.exists():
-            raise FileNotFoundError(f"status.parquet not found: {status_path}")
+        # 1. Manifest validation must occur FIRST
+        if not manifest_path.exists():
+            raise FileNotFoundError(f"manifest.json not found: {manifest_path}")
+
+        validate_cache_manifest(
+            manifest_path=manifest_path,
+            X_attacked_path=artifact_path,
+            expected_hashes=expected_cache_identity,
+            status_path=status_path,
+            expected_row_count=self.expected_row_count
+        )
+
+        with open(manifest_path, "r") as f:
+            self.cache_identity = json.load(f)
 
         # Load
         df_x = pd.read_parquet(artifact_path)
         df_status = pd.read_parquet(status_path)
 
-        # 1. Row count validation
+        # 2. Row count validation
         if len(df_x) != expected_row_count:
             raise ValueError(f"X_attacked has {len(df_x)} rows, expected {expected_row_count}")
         if len(df_status) != expected_row_count:
@@ -554,18 +608,8 @@ class ConcreteAttackCacheProvider:
             raise ValueError("status.parquet contains null eval_positions")
 
         # 3. Exact feature names and ordering
-        import json as _j
-        import pathlib
-        ROOT = pathlib.Path(__file__).resolve().parents[3]
-        feature_names_path = ROOT / "artifacts/preprocessors/feature_mask.json"
-        if feature_names_path.exists():
-            with open(feature_names_path) as _f:
-                _expected_cols = _j.load(_f)["feature_columns"]
-            if list(df_x.columns) != _expected_cols:
-                raise ValueError("X_attacked.parquet columns do not exactly match expected feature_columns in order")
-        elif df_x.shape[1] != 78:
-            # Fallback if testing without artifacts
-            raise ValueError(f"X_attacked has {df_x.shape[1]} columns, expected 78")
+        if list(df_x.columns) != expected_feature_names:
+            raise ValueError("X_attacked.parquet columns do not exactly match expected_feature_names in order")
 
         # 4. Finite values
         X_arr = df_x.values.astype(np.float32)
@@ -602,9 +646,12 @@ class ConcreteAttackCacheProvider:
 
         # 9. Allowed status codes
         allowed_codes = {
-            "NOT_APPLICABLE", "SUCCESS", "MAX_QUERIES_REACHED", "PUSHED_OUT_OF_BOUNDS", "UNKNOWN_ERROR",
-            "INELIGIBLE_TRUE_BENIGN", "INELIGIBLE_FALSE_NEGATIVE", "NOT_ATTEMPTED",
-            "NO_FEASIBLE_CANDIDATE", "TARGET_REJECTION"
+            "NOT_APPLICABLE", "SUCCESS", "NOT_ATTEMPTED",
+            "INELIGIBLE_TRUE_BENIGN", "INELIGIBLE_FALSE_NEGATIVE",
+            "NO_FEASIBLE_CANDIDATE", "TARGET_REJECTION",
+            # Authoritative Phase 7 status codes:
+            "BUDGET_EXHAUSTION", "INSUFFICIENT_BUDGET_FOR_FULL_SEARCH",
+            "PROJECTION_FAILED_BEFORE_TRANSFER", "PROJECTION_FAILED_DURING_SEARCH"
         }
         invalid_codes = set(df_status["status_code"].unique()) - allowed_codes
         if invalid_codes:
@@ -626,17 +673,21 @@ class ConcreteAttackCacheProvider:
         if len(success_unattempted) > 0:
             raise ValueError("Found successful samples not marked as attempted")
 
-        # 11. eval_position alignment: Exact equality with resolved measurement identities
+        # 11. eval_position alignment and batch structure
         cache_eps = set(df_status["eval_position"].values.tolist())
         batch_eps = set(resolved_batches["eval_position"].values.tolist())
         
-        if expected_row_count == 72000:
+        if self.official_mode:
             if len(cache_eps) != 72000:
                 raise ValueError(f"status.parquet contains {len(cache_eps)} unique eval_positions, expected 72000")
+            if len(resolved_batches["batch_id"].unique()) != 144:
+                raise ValueError("official_mode requires exactly 144 batches")
+            if not all(resolved_batches["batch_id"].value_counts() == 500):
+                raise ValueError("official_mode requires exactly 500 rows per batch")
             if cache_eps != batch_eps:
                 raise ValueError("eval_positions in cache do not exactly equal resolved_batches measurement identities")
         else:
-            # Fallback for small synthetic testing
+            # Explicit synthetic contract check
             if cache_eps != batch_eps:
                 raise ValueError("eval_positions in cache do not exactly equal resolved_batches measurement identities")
 
@@ -675,5 +726,10 @@ class ConcreteAttackCacheProvider:
             "eligible": eligible,
             "attempted": attempted,
             "successful": successful,
+            "status_codes": status_batch["status_code"].values,
             "queries": np.array(status_batch["queries_used"].values, dtype=int),
+            "l0": np.array(status_batch["l0"].values, dtype=float),
+            "l1": np.array(status_batch["l1"].values, dtype=float),
+            "l2": np.array(status_batch["l2"].values, dtype=float),
+            "linf": np.array(status_batch["linf"].values, dtype=float),
         }

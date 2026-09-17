@@ -136,27 +136,37 @@ def run_pilot():
     y_pool = surrogate_oracle.predict(query_subset_X, sample_ids=list(range(1000)), stage="surrogate_fit")
     surrogate.fit_surrogate(query_subset_X, y_pool)
 
+    # Oracle for surrogate target evaluation
+    surrogate_target_oracle = BlackBoxOracle(predict_wrapper, max_queries_per_sample=None)
+
     eligible = 0
     attempted = 0
     successful = 0
     surrogate_candidates = []
+
     for i in range(len(target_subset_X)):
         orig_pred = int(predict_wrapper(target_subset_X[i:i+1])[0])
         true_label = int(target_subset_y[i])
         if orig_pred != 1 or true_label != 1:
             continue
-        eligible += 1
-        X_cand, mags = surrogate.generate_candidate(target_subset_X[i])
-        if X_cand is not None:
-            attempted += 1
-            final = int(predict_wrapper(X_cand.reshape(1, -1))[0])
-            if final == 0:
-                successful += 1
-            surrogate_candidates.append(X_cand)
+        
+        sample_id = f"pilot_sur_{i}"
+        X_cand, _ = surrogate.generate_candidate(target_subset_X[i])
+        
+        result = surrogate.evaluate_transfer(
+            X_cand, target_subset_X[i], surrogate_target_oracle, sample_id, true_label
+        )
+        
+        if result.eligible: eligible += 1
+        if result.attempted: attempted += 1
+        if result.success:
+            successful += 1
+            surrogate_candidates.append(result.X_adv)
 
     t_sur = time.time() - t0
     print(f"Surrogate Transfer (1000 query pool, 500 targets): {t_sur:.4f}s")
     print(f"  Oracle queries (crafting pool):  {surrogate_oracle.global_query_count}")
+    print(f"  Oracle queries (eval targets):   {surrogate_target_oracle.global_query_count}")
     print(f"  Eligible targets:                {eligible}")
     print(f"  Attempted:                       {attempted}")
     print(f"  Successful:                      {successful}")
@@ -215,7 +225,7 @@ def run_pilot():
 
     print("\n--- Runtime Interpretation ---")
     print(f"RS ({t_rs:.2f}s for 5k) appears likely to DOMINATE total experiment time.")
-    print(f"  RS at scale: 11 RF inferences × 72,000 records × 252 runs = ~{int(11*72000*252/1e6)}M RF calls.")
+    print(f"  RS at scale: 11 RF inferences × 72,000 records × 84 runs = ~{int(11*72000*84/1e6)}M RF calls.")
     print(f"  Surrogate ({t_sur:.2f}s) is bounded by tree construction and single-pass inference.")
     print(f"  Boundary ({t_bound:.2f}s / 100 targets) is bounded by sequential query budget.")
     print(f"  Unless later evidence shows otherwise, RS dominates total experiment time.")

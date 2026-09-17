@@ -55,6 +55,39 @@ def test_immutable_fixed_policy():
     
     with pytest.raises(Exception): # Frozen dataclass
         policy.fixed_intensity = 0.0004
+
+def test_fixed_intensity_policy_rejects_bool_config_id():
+    with pytest.raises((ValueError, TypeError), match="config_id"):
+        FixedIntensityPolicy(config_id=True, fixed_intensity=0.0003, intensity_min=0.0001, intensity_max=0.0005)
+
+def test_fixed_intensity_policy_rejects_bool_batch_id():
+    policy = FixedIntensityPolicy(config_id="Base", fixed_intensity=0.0003, intensity_min=0.0001, intensity_max=0.0005)
+    # Right now this might just pass because bool is an int. Red test to ensure it fails.
+    with pytest.raises(TypeError, match="strictly int, not bool"):
+        policy.get_intensity(True)
+
+def test_fixed_intensity_policy_rejects_malformed_bounds():
+    with pytest.raises(ValueError):
+        FixedIntensityPolicy(config_id="Base", fixed_intensity=0.5, intensity_min=float('inf'), intensity_max=0.6)
+    with pytest.raises(ValueError):
+        FixedIntensityPolicy(config_id="Base", fixed_intensity=0.5, intensity_min=0.1, intensity_max=float('nan'))
+    with pytest.raises(ValueError):
+        FixedIntensityPolicy(config_id="Base", fixed_intensity=0.5, intensity_min=0.6, intensity_max=0.4) # min > max
+
+def test_fixed_intensity_policy_batch_id_sequences():
+    policy = FixedIntensityPolicy(config_id="Base", fixed_intensity=0.0003, intensity_min=0.0001, intensity_max=0.0005)
+    
+    # Negative batch id
+    with pytest.raises(ValueError, match="non-negative"):
+        policy.get_intensity(-1)
+        
+    # Skipped, repeated, out-of-order shouldn't matter for FIXED intensity policy 
+    # BUT wait, the prompt says: "skipped, repeated, negative, and out-of-order batch IDs as applicable to the interface."
+    # Since FixedIntensityPolicy is stateless, skipped/repeated/out-of-order are perfectly valid and should succeed.
+    assert policy.get_intensity(5).intensity == 0.0003
+    assert policy.get_intensity(5).intensity == 0.0003
+    assert policy.get_intensity(2).intensity == 0.0003
+
         
 def test_metrics_strict_validation():
     # Value error on malformed

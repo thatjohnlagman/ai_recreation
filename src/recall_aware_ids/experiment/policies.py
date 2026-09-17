@@ -17,16 +17,22 @@ class FixedIntensityPolicy:
         return False
 
     def __post_init__(self):
-        if not isinstance(self.config_id, str) or not self.config_id:
+        if type(self.config_id) is not str or not self.config_id:
             raise ValueError("config_id must be a nonempty string")
         
-        if not math.isfinite(self.fixed_intensity) or self.fixed_intensity < 0:
-            raise ValueError("fixed_intensity must be a finite non-negative number")
+        for name, val in (("fixed_intensity", self.fixed_intensity), ("intensity_min", self.intensity_min), ("intensity_max", self.intensity_max)):
+            if not math.isfinite(val) or val < 0:
+                raise ValueError(f"{name} must be a finite non-negative number")
+                
+        if self.intensity_min > self.intensity_max:
+            raise ValueError(f"intensity_min {self.intensity_min} > intensity_max {self.intensity_max}")
             
         if self.fixed_intensity < self.intensity_min or self.fixed_intensity > self.intensity_max:
             raise ValueError(f"fixed_intensity {self.fixed_intensity} must be within bounds [{self.intensity_min}, {self.intensity_max}]")
 
     def get_intensity(self, batch_id: int):
+        if type(batch_id) is bool:
+            raise TypeError("batch_id must be strictly int, not bool")
         if not isinstance(batch_id, int) or batch_id < 0:
             raise ValueError("batch_id must be a non-negative integer")
             

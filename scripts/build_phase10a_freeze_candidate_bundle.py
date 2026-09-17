@@ -80,7 +80,7 @@ def build_bundle():
     check_external_hashes()
     check_experiment_frozen()
 
-    bundle_path = ROOT / "phase10a_freeze_candidate_bundle_v3.zip"
+    bundle_path = ROOT / "phase10a_freeze_candidate_bundle_v4.zip"
     print(f"\nBuilding bundle: {bundle_path.name}")
     
     # Paths to include in the bundle (source code, tests, configs, plan)
@@ -124,7 +124,9 @@ def build_bundle():
     # ---- 16-step validation sequence ----
     print("Running full test suite...")
     import subprocess
-    res = subprocess.run([sys.executable, "-m", "pytest", "-q", "tests/"])
+    import os
+    env = dict(os.environ, PYTHONPATH="src")
+    res = subprocess.run([sys.executable, "-m", "pytest", "-q", "tests/"], env=env)
     if res.returncode != 0:
         raise RuntimeError("Tests failed!")
         

@@ -84,7 +84,20 @@ def test_validate_cache_manifest_passes(tmp_path):
     with open(m_path, "w") as f:
         json.dump(manifest, f)
 
-    assert validate_cache_manifest(m_path, x_path, {}, status_path=s_path) is True
+    manifest_expected = {
+        "X_eval_hash": _H, "metadata_eval_hash": _H,
+        "evaluation_roles_hash": _H, "evaluation_batches_hash": _H,
+        "crafting_identity_hash": _H, "measurement_identity_hash": _H,
+        "attacks_yaml_hash": _H, "attack_script_hashes": {},
+        "frozen_rf_hash": _H, "scaler_hash": _H,
+        "feature_names_hash": _H, "feature_mask_hash": _H, "training_bounds_hash": _H,
+        "controllers_yaml_hash": _H, "defenses_yaml_hash": _H, "experiment_yaml_hash": _H,
+        "attack_parameters": {}, "query_budgets": {},
+        "attack_scenario": "SilentProbing", "effective_seed": 42,
+        "schema_version": "1.0", "row_count": N,
+        "X_attacked_sha256": x_hash, "status_sha256": s_hash, "output_sha256": x_hash,
+    }
+    assert validate_cache_manifest(m_path, x_path, manifest_expected, status_path=s_path) is True
 
 
 def test_validate_cache_manifest_fails_corrupted_artifact(tmp_path):
@@ -149,7 +162,6 @@ def test_validate_cache_manifest_fails_corrupted_json(tmp_path):
 # ─── ConcreteAttackCacheProvider ─────────────────────────────────────────────
 
 def _write_valid_cache(cache_dir: Path, n_rows: int = N):
-    import json
     feature_names_path = Path(__file__).resolve().parents[1] / "artifacts/preprocessors/feature_mask.json"
     if feature_names_path.exists():
         with open(feature_names_path) as f:
@@ -179,7 +191,39 @@ def test_concrete_cache_provider_valid(tmp_path):
     _write_valid_cache(cache_dir, 500)
 
     resolved = make_synthetic_resolved_batches(500)
-    provider = ConcreteAttackCacheProvider(cache_dir, resolved, expected_row_count=500)
+    
+    # Must write manifest to be valid
+    x_hash = calculate_file_hash(cache_dir / "X_attacked.parquet")
+    s_hash = calculate_file_hash(cache_dir / "status.parquet")
+    manifest = {
+        "X_eval_hash": _H, "metadata_eval_hash": _H,
+        "evaluation_roles_hash": _H, "evaluation_batches_hash": _H,
+        "crafting_identity_hash": _H, "measurement_identity_hash": _H,
+        "attacks_yaml_hash": _H, "attack_script_hashes": {},
+        "frozen_rf_hash": _H, "scaler_hash": _H,
+        "feature_names_hash": _H, "feature_mask_hash": _H, "training_bounds_hash": _H,
+        "controllers_yaml_hash": _H, "defenses_yaml_hash": _H, "experiment_yaml_hash": _H,
+        "attack_parameters": {}, "query_budgets": {},
+        "attack_scenario": "SilentProbing", "effective_seed": 42,
+        "schema_version": "1.0", "row_count": 500,
+        "X_attacked_sha256": x_hash, "status_sha256": s_hash, "output_sha256": x_hash,
+    }
+    with open(cache_dir / "manifest.json", "w") as f:
+        json.dump(manifest, f)
+        
+    feature_names_path = Path(__file__).resolve().parents[1] / "artifacts/preprocessors/feature_mask.json"
+    with open(feature_names_path) as f:
+        real_features = json.load(f)["feature_columns"]
+        
+    with open(cache_dir / "manifest.json") as f:
+        full_manifest = json.load(f)
+
+    provider = ConcreteAttackCacheProvider(
+        cache_dir, resolved, 
+        expected_cache_identity=full_manifest, 
+        expected_feature_names=real_features, official_mode=False,
+        expected_row_count=500
+    )
 
     data = provider.get_batch_data(0)
     assert data["X_attacked"].shape == (500, 78)
@@ -199,8 +243,39 @@ def test_concrete_cache_provider_rejects_non_bool_status(tmp_path):
     status_df.to_parquet(cache_dir / "status.parquet", index=False)
 
     resolved = make_synthetic_resolved_batches(500)
+    
+    x_hash = calculate_file_hash(cache_dir / "X_attacked.parquet")
+    s_hash = calculate_file_hash(cache_dir / "status.parquet")
+    manifest = {
+        "X_eval_hash": _H, "metadata_eval_hash": _H,
+        "evaluation_roles_hash": _H, "evaluation_batches_hash": _H,
+        "crafting_identity_hash": _H, "measurement_identity_hash": _H,
+        "attacks_yaml_hash": _H, "attack_script_hashes": {},
+        "frozen_rf_hash": _H, "scaler_hash": _H,
+        "feature_names_hash": _H, "feature_mask_hash": _H, "training_bounds_hash": _H,
+        "controllers_yaml_hash": _H, "defenses_yaml_hash": _H, "experiment_yaml_hash": _H,
+        "attack_parameters": {}, "query_budgets": {},
+        "attack_scenario": "SilentProbing", "effective_seed": 42,
+        "schema_version": "1.0", "row_count": 500,
+        "X_attacked_sha256": x_hash, "status_sha256": s_hash, "output_sha256": x_hash,
+    }
+    with open(cache_dir / "manifest.json", "w") as f:
+        json.dump(manifest, f)
+        
+    feature_names_path = Path(__file__).resolve().parents[1] / "artifacts/preprocessors/feature_mask.json"
+    with open(feature_names_path) as f:
+        real_features = json.load(f)["feature_columns"]
+
+    with open(cache_dir / "manifest.json") as f:
+        full_manifest = json.load(f)
+
     with pytest.raises(TypeError, match="strictly bool"):
-        ConcreteAttackCacheProvider(cache_dir, resolved, expected_row_count=500)
+        ConcreteAttackCacheProvider(
+            cache_dir, resolved, 
+            expected_cache_identity=full_manifest,
+            expected_feature_names=real_features, official_mode=False,
+            expected_row_count=500
+        )
 
 
 def test_concrete_cache_provider_rejects_wrong_row_count(tmp_path):
@@ -209,8 +284,39 @@ def test_concrete_cache_provider_rejects_wrong_row_count(tmp_path):
     _write_valid_cache(cache_dir, 50)  # 50 rows but expecting 100
 
     resolved = make_synthetic_resolved_batches(N)
-    with pytest.raises(ValueError, match="rows"):
-        ConcreteAttackCacheProvider(cache_dir, resolved, expected_row_count=N)
+    
+    x_hash = calculate_file_hash(cache_dir / "X_attacked.parquet")
+    s_hash = calculate_file_hash(cache_dir / "status.parquet")
+    manifest = {
+        "X_eval_hash": _H, "metadata_eval_hash": _H,
+        "evaluation_roles_hash": _H, "evaluation_batches_hash": _H,
+        "crafting_identity_hash": _H, "measurement_identity_hash": _H,
+        "attacks_yaml_hash": _H, "attack_script_hashes": {},
+        "frozen_rf_hash": _H, "scaler_hash": _H,
+        "feature_names_hash": _H, "feature_mask_hash": _H, "training_bounds_hash": _H,
+        "controllers_yaml_hash": _H, "defenses_yaml_hash": _H, "experiment_yaml_hash": _H,
+        "attack_parameters": {}, "query_budgets": {},
+        "attack_scenario": "SilentProbing", "effective_seed": 42,
+        "schema_version": "1.0", "row_count": 50,
+        "X_attacked_sha256": x_hash, "status_sha256": s_hash, "output_sha256": x_hash,
+    }
+    with open(cache_dir / "manifest.json", "w") as f:
+        json.dump(manifest, f)
+        
+    feature_names_path = Path(__file__).resolve().parents[1] / "artifacts/preprocessors/feature_mask.json"
+    with open(feature_names_path) as f:
+        real_features = json.load(f)["feature_columns"]
+
+    with open(cache_dir / "manifest.json") as f:
+        full_manifest = json.load(f)
+
+    with pytest.raises(ValueError, match="row_count must be"):
+        ConcreteAttackCacheProvider(
+            cache_dir, resolved, 
+            expected_cache_identity=full_manifest,
+            expected_feature_names=real_features, official_mode=False,
+            expected_row_count=N
+        )
 
 
 def test_concrete_cache_provider_rejects_wrong_column_count(tmp_path):
@@ -231,8 +337,134 @@ def test_concrete_cache_provider_rejects_wrong_column_count(tmp_path):
     status_df.to_parquet(cache_dir / "status.parquet", index=False)
 
     resolved = make_synthetic_resolved_batches(N)
-    with pytest.raises(ValueError, match="columns"):
-        ConcreteAttackCacheProvider(cache_dir, resolved, expected_row_count=N)
+    
+    x_hash = calculate_file_hash(cache_dir / "X_attacked.parquet")
+    s_hash = calculate_file_hash(cache_dir / "status.parquet")
+    manifest = {
+        "X_eval_hash": _H, "metadata_eval_hash": _H,
+        "evaluation_roles_hash": _H, "evaluation_batches_hash": _H,
+        "crafting_identity_hash": _H, "measurement_identity_hash": _H,
+        "attacks_yaml_hash": _H, "attack_script_hashes": {},
+        "frozen_rf_hash": _H, "scaler_hash": _H,
+        "feature_names_hash": _H, "feature_mask_hash": _H, "training_bounds_hash": _H,
+        "controllers_yaml_hash": _H, "defenses_yaml_hash": _H, "experiment_yaml_hash": _H,
+        "attack_parameters": {}, "query_budgets": {},
+        "attack_scenario": "SilentProbing", "effective_seed": 42,
+        "schema_version": "1.0", "row_count": N,
+        "X_attacked_sha256": x_hash, "status_sha256": s_hash, "output_sha256": x_hash,
+    }
+    with open(cache_dir / "manifest.json", "w") as f:
+        json.dump(manifest, f)
+        
+    feature_names_path = Path(__file__).resolve().parents[1] / "artifacts/preprocessors/feature_mask.json"
+    with open(feature_names_path) as f:
+        real_features = json.load(f)["feature_columns"]
+
+    with open(cache_dir / "manifest.json") as f:
+        full_manifest = json.load(f)
+
+    with pytest.raises(ValueError, match="match expected_feature_names in order"):
+        ConcreteAttackCacheProvider(
+            cache_dir, resolved, 
+            expected_cache_identity=full_manifest,
+            expected_feature_names=real_features, official_mode=False,
+            expected_row_count=N
+        )
+
+
+def test_concrete_cache_provider_rejects_missing_manifest(tmp_path):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    _write_valid_cache(cache_dir, 500)
+    resolved = make_synthetic_resolved_batches(500)
+    # Right now this passes, but it should FAIL if it doesn't find manifest.json
+    # The user wants this to be a red test. We expect it to fail (raise FileNotFoundError or ValueError)
+    with pytest.raises((FileNotFoundError, ValueError), match="manifest"):
+        ConcreteAttackCacheProvider(
+            cache_dir, resolved, expected_row_count=500,
+            expected_cache_identity=_SYNTH_PROV, expected_feature_names=[str(i) for i in range(78)], official_mode=False
+        )
+
+def test_concrete_cache_provider_rejects_mismatched_provenance(tmp_path):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    _write_valid_cache(cache_dir, 500)
+    
+    # Write a valid manifest
+    m_path = cache_dir / "manifest.json"
+    x_hash = calculate_file_hash(cache_dir / "X_attacked.parquet")
+    s_hash = calculate_file_hash(cache_dir / "status.parquet")
+    manifest = {
+        "X_eval_hash": _H, "metadata_eval_hash": _H,
+        "evaluation_roles_hash": _H, "evaluation_batches_hash": _H,
+        "crafting_identity_hash": _H, "measurement_identity_hash": _H,
+        "attacks_yaml_hash": _H, "attack_script_hashes": {},
+        "frozen_rf_hash": _H, "scaler_hash": _H,
+        "feature_names_hash": _H, "feature_mask_hash": _H, "training_bounds_hash": _H,
+        "controllers_yaml_hash": _H, "defenses_yaml_hash": _H, "experiment_yaml_hash": _H,
+        "attack_parameters": {}, "query_budgets": {},
+        "attack_scenario": "SilentProbing", "effective_seed": 42,
+        "schema_version": "1.0", "row_count": 500,
+        "X_attacked_sha256": x_hash, "status_sha256": s_hash, "output_sha256": x_hash,
+    }
+    import json
+    with open(m_path, "w") as f:
+        json.dump(manifest, f)
+        
+    resolved = make_synthetic_resolved_batches(500)
+    mismatched_prov = dict(_SYNTH_PROV)
+    mismatched_prov["frozen_rf_hash"] = "c" * 64
+    
+    feature_names_path = Path(__file__).resolve().parents[1] / "artifacts/preprocessors/feature_mask.json"
+    with open(feature_names_path) as f:
+        real_features = json.load(f)["feature_columns"]
+
+    with pytest.raises(ValueError, match="Mismatch"):
+        ConcreteAttackCacheProvider(
+            cache_dir, resolved, expected_row_count=500,
+            expected_cache_identity=mismatched_prov, expected_feature_names=real_features, official_mode=False
+        )
+
+def test_concrete_cache_provider_cache_identity_exposure(tmp_path):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    _write_valid_cache(cache_dir, 500)
+    
+    m_path = cache_dir / "manifest.json"
+    x_hash = calculate_file_hash(cache_dir / "X_attacked.parquet")
+    s_hash = calculate_file_hash(cache_dir / "status.parquet")
+    manifest = {
+        "X_eval_hash": _H, "metadata_eval_hash": _H,
+        "evaluation_roles_hash": _H, "evaluation_batches_hash": _H,
+        "crafting_identity_hash": _H, "measurement_identity_hash": _H,
+        "attacks_yaml_hash": _H, "attack_script_hashes": {},
+        "frozen_rf_hash": _H, "scaler_hash": _H,
+        "feature_names_hash": _H, "feature_mask_hash": _H, "training_bounds_hash": _H,
+        "controllers_yaml_hash": _H, "defenses_yaml_hash": _H, "experiment_yaml_hash": _H,
+        "attack_parameters": {}, "query_budgets": {},
+        "attack_scenario": "SilentProbing", "effective_seed": 42,
+        "schema_version": "1.0", "row_count": 500,
+        "X_attacked_sha256": x_hash, "status_sha256": s_hash, "output_sha256": x_hash,
+    }
+    import json
+    with open(m_path, "w") as f:
+        json.dump(manifest, f)
+        
+    resolved = make_synthetic_resolved_batches(500)
+    feature_names_path = Path(__file__).resolve().parents[1] / "artifacts/preprocessors/feature_mask.json"
+    with open(feature_names_path) as f:
+        real_features = json.load(f)["feature_columns"]
+
+    provider = ConcreteAttackCacheProvider(
+        cache_dir, resolved, expected_row_count=500,
+        expected_cache_identity=_SYNTH_PROV, expected_feature_names=real_features
+    )
+    
+    assert provider.cache_identity == manifest
+    batch_data = provider.get_batch_data(0)
+    assert "status_codes" in batch_data
+    assert "l0" in batch_data
+
 
 
 # ─── AttackCacheBuilder round-trip ────────────────────────────────────────────
@@ -326,7 +558,15 @@ def test_cache_builder_provider_integration(tmp_path):
     )
 
     resolved = make_synthetic_resolved_batches(N500)
-    provider = ConcreteAttackCacheProvider(out_dir, resolved, expected_row_count=N500)
+    with open(out_dir / "manifest.json") as f:
+        full_manifest = json.load(f)
+
+    provider = ConcreteAttackCacheProvider(
+        out_dir, resolved, 
+        expected_cache_identity=full_manifest,
+        expected_feature_names=builder.feature_names, official_mode=False,
+        expected_row_count=N500
+    )
 
     batch_data = provider.get_batch_data(0)
     assert batch_data["X_attacked"].shape == (N500, 78)
@@ -359,6 +599,15 @@ class MockSurrogateAttack:
         
     def generate_candidate(self, x):
         return x + 1.0, {"l0": 1.0, "l1": 1.0, "l2": 1.0, "linf": 1.0}
+
+    def evaluate_transfer(self, X_cand, X_orig, oracle, sample_id, true_label):
+        oracle.predict(X_cand.reshape(1, -1), sample_ids=[sample_id])
+        from recall_aware_ids.attacks.base import AttackResult
+        return AttackResult(
+            sample_id=sample_id, X_adv=X_cand, eligible=True, attempted=True, success=True,
+            status_code="SUCCESS", message="Mock success", query_count=1,
+            magnitudes={"l0": 1.0, "l1": 1.0, "l2": 1.0, "linf": 1.0}
+        )
 
 class MockBoundaryAttack:
     def generate(self, x, oracle, sample_id, true_label, reference_pool):
@@ -426,7 +675,8 @@ def test_cache_builder_boundary_semantics(tmp_path):
         boundary_attack=boundary,
         benign_reference_pool=X_meas,
         n_boundary_targets=20,
-        max_queries=50
+        max_queries=50,
+        attack_script_hashes={"mock": "hash"}
     )
     
     import pandas as pd

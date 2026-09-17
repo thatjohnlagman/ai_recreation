@@ -306,8 +306,13 @@ class BatchConfusionLog:
         if self.successful_count > self.attempted_count:
             raise ValueError(f"successful_count ({self.successful_count}) > attempted_count ({self.attempted_count})")
         total = self.tp + self.fp + self.tn + self.fn
-        if total > 500:
-            raise ValueError(f"confusion sum {total} exceeds max batch size 500")
+        if total != 500:
+            raise ValueError(f"confusion metrics must sum to exactly 500, got {total}")
+        
+        # zero-attempt ASR logic
+        if self.asr_applicable and self.attempted_count == 0:
+            if self.asr != 0.0:
+                raise ValueError(f"asr must be 0.0 when attempted is 0, got {self.asr}")
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +339,13 @@ class RunSummary:
     total_eligible: int
     total_attempted: int
     total_successful: int
+    total_queries: int
+    cache_identity: Dict[str, Any]
+    status_code_counts: Dict[str, int]
+    l0_summary: Dict[str, float]
+    l1_summary: Dict[str, float]
+    l2_summary: Dict[str, float]
+    linf_summary: Dict[str, float]
     global_asr: Optional[float]
     completed_successfully: bool
 
@@ -363,6 +375,32 @@ class RunSummary:
             raise ValueError("total_attempted > total_eligible")
         if self.total_successful > self.total_attempted:
             raise ValueError("total_successful > total_attempted")
+            
+        if self.total_eligible > 72000:
+            raise ValueError("total_eligible > 72000 (measurement_count)")
+            
+        if not isinstance(self.total_queries, int) or self.total_queries < 0:
+            raise ValueError("total_queries must be non-negative int")
+            
+        if not isinstance(self.cache_identity, dict):
+            raise TypeError("cache_identity must be dict")
+        if not isinstance(self.status_code_counts, dict):
+            raise TypeError("status_code_counts must be dict")
+        
+        for k, v in self.status_code_counts.items():
+            if k not in _ALLOWED_STATUS_CODES:
+                raise ValueError(f"Unknown status code in status_code_counts: {k}")
+            if not isinstance(v, int) or v < 0:
+                raise ValueError("status counts must be non-negative ints")
+                
+        for m_name in ("l0_summary", "l1_summary", "l2_summary", "linf_summary"):
+            m_dict = getattr(self, m_name)
+            if not isinstance(m_dict, dict):
+                raise TypeError(f"{m_name} must be dict")
+
+        total = self.tp + self.fp + self.tn + self.fn
+        if total != 72000:
+            raise ValueError(f"confusion metrics must sum to exactly 72000, got {total}")
 
 
 # ---------------------------------------------------------------------------
