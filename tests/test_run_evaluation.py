@@ -1153,22 +1153,84 @@ def test_production_wiring_canary(tmp_path: Path):
     x_hash = calculate_file_hash(x_parquet_path)
     s_hash = calculate_file_hash(status_parquet_path)
 
-    with open(REPO_ROOT / "artifacts/caches/SilentProbing_42/manifest.json") as f:
-        manifest_data = json.load(f)
-    manifest_data["X_attacked_sha256"] = x_hash
-    manifest_data["status_sha256"] = s_hash
-    manifest_data["output_sha256"] = x_hash
+    # Generate both canary metadata files independently from synthetic inputs
+    # and validated schemas, completely prohibiting access to official evaluation caches
+    attack_script_hashes = {
+        "base.py": calculate_file_hash(REPO_ROOT / "src/recall_aware_ids/defenses/base.py"),
+        "silent_probing.py": calculate_file_hash(REPO_ROOT / "scripts/build_evaluation_caches.py"),
+        "surrogate_transfer.py": calculate_file_hash(REPO_ROOT / "scripts/run_evaluation.py"),
+        "boundary_attack.py": calculate_file_hash(REPO_ROOT / "src/recall_aware_ids/experiment/caching.py"),
+        "oracle.py": calculate_file_hash(REPO_ROOT / "src/recall_aware_ids/experiment/runner.py"),
+        "caching.py": calculate_file_hash(REPO_ROOT / "src/recall_aware_ids/experiment/caching.py"),
+        "build_evaluation_caches.py": calculate_file_hash(REPO_ROOT / "scripts/build_evaluation_caches.py"),
+    }
+
+    manifest_data = {
+        "schema_version": "1.0",
+        "attack_scenario": "SilentProbing",
+        "effective_seed": 42,
+        "row_count": 72000,
+        "X_attacked_sha256": x_hash,
+        "status_sha256": s_hash,
+        "output_sha256": x_hash,
+        "attack_script_hashes": attack_script_hashes,
+        "attack_parameters": {
+            "modifies_samples": False,
+        },
+        "query_budgets": {
+            "max_queries_per_sample": 0,
+        },
+        "attacks_yaml_hash": prov["attacks_yaml_hash"],
+        "controllers_yaml_hash": prov["controllers_yaml_hash"],
+        "defenses_yaml_hash": prov["defenses_yaml_hash"],
+        "experiment_yaml_hash": prov["experiment_yaml_hash"],
+        "model_yaml_hash": calculate_file_hash(REPO_ROOT / "configs/model.yaml"),
+        "frozen_rf_hash": prov["frozen_rf_hash"],
+        "scaler_hash": prov["scaler_hash"],
+        "feature_names_hash": prov["feature_names_hash"],
+        "feature_mask_hash": prov["feature_mask_hash"],
+        "training_bounds_hash": prov["training_bounds_hash"],
+        "evaluation_roles_hash": prov["evaluation_roles_hash"],
+        "evaluation_batches_hash": prov["evaluation_batches_hash"],
+        "X_eval_hash": hashlib.sha256(b"canary_synthetic_X_eval").hexdigest(),
+        "metadata_eval_hash": hashlib.sha256(b"canary_synthetic_metadata_eval").hexdigest(),
+        "crafting_identity_hash": hashlib.sha256(b"canary_synthetic_crafting_id").hexdigest(),
+        "measurement_identity_hash": hashlib.sha256(b"canary_synthetic_meas_id").hexdigest(),
+        "freeze_commit_sha256": hashlib.sha256(b"canary_synthetic_freeze_commit").hexdigest(),
+        "freeze_tag_sha256": hashlib.sha256(b"canary_synthetic_freeze_tag").hexdigest(),
+        "orchestration_commit_sha256": hashlib.sha256(b"canary_synthetic_orch_commit").hexdigest(),
+    }
 
     manifest_path = canary_cache_dir / "manifest.json"
     with open(manifest_path, "w") as f:
         json.dump(manifest_data, f, indent=2)
     m_hash = calculate_file_hash(manifest_path)
 
-    with open(REPO_ROOT / "artifacts/caches/SilentProbing_42/completion.json") as f:
-        completion_data = json.load(f)
-    completion_data["artifacts"]["X_attacked_sha256"] = x_hash
-    completion_data["artifacts"]["status_sha256"] = s_hash
-    completion_data["artifacts"]["manifest_sha256"] = m_hash
+    completion_data = {
+        "completion_state": "COMPLETED",
+        "completed": True,
+        "attack_scenario": "SilentProbing",
+        "display_scenario": "Silent Probing",
+        "effective_seed": 42,
+        "row_count": 72000,
+        "freeze_commit": "65005505415a2bdf2d5744dbd135e9214e74081a",
+        "freeze_tag": "phase10-protocol-freeze",
+        "execution_script_commit": "f3f6f3d94d6854dbd5f02e2474cbacbe2dc62207",
+        "generation_start_timestamp": "2026-09-18T00:00:00.000000+00:00",
+        "generation_end_timestamp": "2026-09-18T00:01:00.000000+00:00",
+        "artifacts": {
+            "X_attacked_sha256": x_hash,
+            "status_sha256": s_hash,
+            "manifest_sha256": m_hash,
+        },
+        "provenance_hashes": {
+            k: v for k, v in manifest_data.items()
+            if k.endswith("_hash") or k.endswith("_sha256")
+        },
+        "attack_parameters": manifest_data["attack_parameters"],
+        "query_budgets": manifest_data["query_budgets"],
+        "attack_script_hashes": manifest_data["attack_script_hashes"],
+    }
 
     completion_path = canary_cache_dir / "completion.json"
     with open(completion_path, "w") as f:
@@ -1334,15 +1396,70 @@ def test_preflight_invokes_manifest_cross_validation(tmp_path):
         )
 
 
-def test_canary_does_not_access_official_caches():
+def test_canary_does_not_access_official_caches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """
     Regression test verifying that the canary execution path uses strictly
     synthetic/training-derived data in tmp_path and never reads from artifacts/caches/.
+
+    Proves:
+      1. Guard actively intercepts and raises PermissionError if any attempt is made
+         to open official cache files under artifacts/caches/.
+      2. The full production-wiring canary completes successfully under this guard
+         with zero accesses to official evaluation caches.
     """
-    official_caches_dir = REPO_ROOT / "artifacts/caches"
+    import builtins
+    official_caches_dir = (REPO_ROOT / "artifacts/caches").resolve()
     assert official_caches_dir.exists()
-    # Official cache directories should contain exactly 15 dirs
-    caches = list(official_caches_dir.iterdir())
-    assert len(caches) == 15
+
+    accessed_official_cache_files = []
+    original_builtin_open = builtins.open
+    original_path_open = Path.open
+
+    def guarded_open(file_or_self, *args, **kwargs):
+        try:
+            if isinstance(file_or_self, (str, Path)):
+                p = Path(file_or_self).resolve()
+            else:
+                p = Path(str(file_or_self)).resolve()
+            if p == official_caches_dir or official_caches_dir in p.parents:
+                mode = args[0] if args else kwargs.get("mode", "r")
+                accessed_official_cache_files.append((str(p), mode))
+                raise PermissionError(
+                    f"Prohibited access to official evaluation cache during canary execution: {p}"
+                )
+        except PermissionError:
+            raise
+        except Exception:
+            pass
+        if isinstance(file_or_self, Path):
+            return original_path_open(file_or_self, *args, **kwargs)
+        return original_builtin_open(file_or_self, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", guarded_open)
+    monkeypatch.setattr(Path, "open", guarded_open)
+
+    # 1. Active detection: prove the guard catches and rejects attempts to read official cache files
+    with pytest.raises(PermissionError, match="Prohibited access to official evaluation cache"):
+        with open(official_caches_dir / "SilentProbing_42/manifest.json", "r") as f:
+            _ = f.read()
+
+    with pytest.raises(PermissionError, match="Prohibited access to official evaluation cache"):
+        with open(official_caches_dir / "SilentProbing_42/completion.json", "r") as f:
+            _ = f.read()
+
+    with pytest.raises(PermissionError, match="Prohibited access to official evaluation cache"):
+        (official_caches_dir / "SilentProbing_42/manifest.json").open("r")
+
+    assert len(accessed_official_cache_files) == 3
+    accessed_official_cache_files.clear()
+
+    # 2. Canary execution under guard: prove canary runs end-to-end without accessing official caches
+    canary_sub = tmp_path / "guarded_canary"
+    canary_sub.mkdir()
+    test_production_wiring_canary(canary_sub)
+
+    assert len(accessed_official_cache_files) == 0, (
+        f"Canary attempted to access official cache files: {accessed_official_cache_files}"
+    )
 
 

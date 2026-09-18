@@ -58,7 +58,7 @@ Every completed run constructs and verifies all 11 required provenance keys agai
 2. `scaler_hash`: `artifacts/preprocessors/standard_scaler.joblib`
 3. `feature_names_hash`: `artifacts/preprocessors/feature_names.json`
 4. `feature_mask_hash`: `artifacts/preprocessors/feature_mask.json`
-5. `training_bounds_hash`: `artifacts/preprocessors/training_bounds.json`
+5. `training_bounds_hash`: `artifacts/preprocessors/training_bounds.parquet`
 6. `evaluation_roles_hash`: `data/manifests/evaluation_roles.csv`
 7. `evaluation_batches_hash`: `data/manifests/evaluation_batches.csv`
 8. `attacks_yaml_hash`: `configs/attacks.yaml`
@@ -71,7 +71,7 @@ Before initiating batch 0 of any run, `CompletionMarker` is pre-instantiated and
 
 ---
 
-## 5. Non-Circular Cache Validation
+## 5. Non-Circular Cache Validation and Preflight Isolation
 Rather than circularly trusting a cache's own `manifest.json`, the orchestrator implements independent verification:
 - Loads authoritative `artifacts/reports/cache_inventory_v2.json`.
 - Locates the canonical scenario and seed entry.
@@ -79,6 +79,10 @@ Rather than circularly trusting a cache's own `manifest.json`, the orchestrator 
 - Compares internal model, preprocessor, and config hashes against independently computed provenance.
 - Only after all 4 files are independently pinned against the inventory is the manifest forwarded to `ConcreteAttackCacheProvider`.
 - Self-consistent but inventory-divergent caches are strictly rejected.
+
+**Operational Isolation (Preflight Validation vs Canary Execution)**:
+- **Preflight Phase**: Reads official cache files (`X_attacked.parquet`, `status.parquet`, `manifest.json`, `completion.json`) solely for non-mutating cryptographic integrity verification against `cache_inventory_v2.json` (verifying file presence, exact SHA-256 hashes, provenance alignment, and completion marker states). Preflight never loads samples, processes rows, or invokes models/defenses.
+- **Synthetic Canary Phase**: Prohibited from reading or touching official evaluation cache files. The canary validates end-to-end production orchestration (all 144 batches, adapter execution, controller state updates, output serializers, reuse, and quarantine) using a 100% synthetic 72,000-row cache generated in `tmp_path` within training feature bounds. Active regression testing (`test_canary_does_not_access_official_caches`) traps and rejects any attempt by the canary to access official cache files.
 
 ---
 
