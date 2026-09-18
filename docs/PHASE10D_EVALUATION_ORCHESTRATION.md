@@ -14,6 +14,10 @@ This document establishes the architecture and execution contract of the evaluat
 8. **Independent Cache Inventory Pinning**: Official attack caches are validated against `artifacts/reports/cache_inventory_v2.json` before any manifest or Parquet is trusted. Manifests are never trusted circularly.
 9. **Pointer-Only Alias Contract**: Sensitivity C1 aliases are published as pointer-only directories containing `alias_pointer.json` and `completion.json`, never masquerading as independently executed runs.
 10. **Dependency-Safe Filtering**: When filters select an alias, its required primary target execution is automatically resolved and scheduled ahead of the alias.
+11. **Prohibit Git-Gate Bypass During Execution**: `--execute --no-enforce-git` fails at the CLI before preflight or data loading. `--no-enforce-git` is permitted only for non-execution development preflight or tests.
+12. **Canonical Input Binding & Output Confinement**: `--execute` binds all inputs strictly to canonical repository paths (`configs/`, `data/manifests/`, `artifacts/models/`, `artifacts/preprocessors/`, `artifacts/caches/`, `artifacts/reports/cache_inventory_v2.json`) and confines output beneath `artifacts/evaluation_runs` (rejecting traversal, unrelated external paths, and symlink escapes).
+13. **Comprehensive Alias & Target Invariants**: Validates target against its exact primary matrix row, independently pinned expected cache identity, and C1 controller requirement; enforces exact provenance matches, hash integrity of target summary and completion, and publication timestamp ordering (`completion.json` written after `alias_pointer.json`).
+14. **Preflight Separation**: Preflight does not open evaluation Parquets or perform model inference; preflight reads and validates frozen role/batch manifests, including their label-alignment fields; official cache files are read only as raw bytes for non-mutating cryptographic verification.
 
 ---
 
@@ -124,9 +128,17 @@ Implements the Phase 10B cleanliness policy:
 Aliases represent identical mathematical evaluations (sensitivity C1 runs aliasing primary C1 runs).
 - Aliases never masquerade as independently executed runs.
 - Published as pointer directories containing:
-  - `alias_pointer.json`: immutable record containing `target_run_id`, `target_path`, `target_run_hash`, `alias_tuple`, `target_validation_summary`.
-  - `completion.json`: alias-specific completion marker certifying publication.
-- Target run outputs are validated before alias creation.
+  - `alias_pointer.json`: immutable record containing `target_run_id`, `target_path`, `target_run_summary_sha256`, `target_completion_sha256`, `target_provenance`, `config_id`, `alias_tuple`.
+  - `completion.json`: alias-specific completion marker certifying publication with exact expected provenance.
+- Validation before publication and on reuse enforces:
+  - Alias `CompletionMarker` provenance equals `expected_provenance` exactly.
+  - Pointer `config_id` matches alias row `controller_config_id`.
+  - Pointer `target_provenance` matches `expected_provenance` exactly.
+  - Pointer `target_run_summary_sha256` matches current target summary hash.
+  - Pointer `target_completion_sha256` matches current target completion hash.
+  - Target run is validated against its exact primary matrix row, independently pinned cache identity, and provenance.
+  - Target controller config is strictly confirmed as C1.
+  - Ordering check: `completion.json` was written after `alias_pointer.json`.
 - Published atomically via same-filesystem staging and renaming.
 - Corrupted or invalid existing alias directories are quarantined.
 - Downstream analysis code resolves `alias_pointer.json` rather than double-counting executions.
@@ -136,8 +148,10 @@ Aliases represent identical mathematical evaluations (sensitivity C1 runs aliasi
 ## 10. Dependency-Safe Filter Planning
 Execution planning guarantees safety before starting run 0:
 - When filters (`--run-id`, `--config`, etc.) select an alias:
-  - If target run is already completed and validated on disk, the alias is scheduled.
-  - If target run is not yet completed, the target run is automatically resolved and prepended to the execution sequence ahead of the alias.
+  - The target is validated against its exact primary matrix row, expected provenance, and independently pinned cache identity.
+  - If target run is completed and valid on disk, the alias is scheduled for publication/reuse.
+  - If target run is missing or fails validation, the target run is automatically scheduled ahead of the alias for full execution.
+  - Targets are never treated as reusable based solely on structural file presence.
 - The entire filtered execution plan is validated upfront.
 - Non-positive `--max-runs` arguments are rejected with an explicit error.
 
@@ -146,10 +160,12 @@ Execution planning guarantees safety before starting run 0:
 ## 11. Genuinely Synthetic Production-Wiring Canary
 A dedicated end-to-end canary (`test_production_wiring_canary` in `tests/test_run_evaluation.py`) validates the complete production wiring:
 - Genuinely synthetic 72,000-row cache generated entirely in `tmp_path` within training feature bounds, completely prohibiting access to official evaluation caches or evaluation Parquets.
-- Production provenance construction (all 11 canonical on-disk artifacts).
+- Temporary synthetic manifests generated under `tmp_path` (90,000 role rows: 18,000 crafting, 72,000 measurement; composite identities; 144 batches of 500; deterministic binary labels; valid batch positions). Canonical `evaluation_roles.csv` and `evaluation_batches.csv` are never read.
+- Provenance hashes the actual canonical attack script files (`attacks/*.py`, `caching.py`, `build_evaluation_caches.py`).
 - Independent cache validation against a dedicated canary inventory ledger.
 - Production defense adapters, policies, and controller factories.
 - Full 144-batch orchestration with sequential timing isolation.
 - Output reopening, recalculation, and cross-metric verification.
 - Completion marker publication, validated reuse, and quarantine behavior.
 - Operates entirely in a synthetic temporary directory without opening evaluation Parquets or writing under `artifacts/evaluation_runs/`.
+- Active multi-method access guard (`test_canary_does_not_access_official_caches`) intercepts `builtins.open`, `Path.open`, `Path.read_text`, `Path.read_bytes`, `pd.read_csv`, and `pd.read_parquet` to ensure zero access to official caches, canonical manifests, or evaluation Parquets.

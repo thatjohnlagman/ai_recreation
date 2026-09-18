@@ -39,7 +39,7 @@ from typing import Dict, List, Set
 
 ROOT = Path(__file__).resolve().parents[1]
 
-BUNDLE_NAME = "phase10d_evaluation_orchestration_readiness_bundle_v2.zip"
+BUNDLE_NAME = "phase10d_evaluation_orchestration_readiness_bundle_v2_3.zip"
 BUNDLE_PATH = ROOT / BUNDLE_NAME
 
 PROTECTED_HASHES = {
@@ -202,6 +202,11 @@ def main():
             "src/recall_aware_ids/defenses/feature_squeezing.py",
             "src/recall_aware_ids/defenses/randomized_smoothing.py",
             "src/recall_aware_ids/defenses/base.py",
+            "src/recall_aware_ids/attacks/base.py",
+            "src/recall_aware_ids/attacks/silent_probing.py",
+            "src/recall_aware_ids/attacks/surrogate_transfer.py",
+            "src/recall_aware_ids/attacks/boundary_attack.py",
+            "src/recall_aware_ids/attacks/oracle.py",
             # Configs
             "configs/attacks.yaml",
             "configs/controllers.yaml",
@@ -231,6 +236,27 @@ def main():
             dst = bundle_root / rel_path
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dst)
+
+        # Synchronize bundled readiness report with exact test timings from this run
+        import re
+        f_match = re.search(r"30 passed in ([0-9\.]+)s", focused_res.stdout)
+        full_match = re.search(r"286 passed in ([0-9\.]+)s", full_res.stdout)
+        if f_match and full_match:
+            f_sec = f_match.group(1)
+            full_sec = full_match.group(1)
+            bundled_report_path = bundle_root / "artifacts/reports/phase10d_evaluation_orchestration_readiness.md"
+            content = bundled_report_path.read_text()
+            content = re.sub(
+                r"\*{0,2}Total Focused Tests:\*{0,2}\s*\*\*30 / 30 PASSED\*\* in [0-9\.]+s\.",
+                f"**Total Focused Tests:** **30 / 30 PASSED** in {f_sec}s.",
+                content,
+            )
+            content = re.sub(
+                r"Execution time:\s*\*\*[0-9\.]+s\*\*",
+                f"Execution time: **{full_sec}s**",
+                content,
+            )
+            bundled_report_path.write_text(content)
 
         # Evidence folder
         evidence_dir = bundle_root / "evidence"

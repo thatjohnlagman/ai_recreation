@@ -1,34 +1,38 @@
-# Phase 10D: Official Evaluation Orchestration Readiness Report (v2 Repair)
+# Phase 10D: Official Evaluation Orchestration Readiness Report (v2.3 Final Correction)
 
-**Date:** 2026-09-18T02:27:00+08:00  
+**Date:** 2026-09-18T11:45:00+08:00  
 **Status:** PASS — Orchestration Readiness Certified  
-**Commit:** Pending Phase 10D v2 reconciliation commit  
+**Commit:** Pending Phase 10D v2.3 final certification commit  
 **Protocol Freeze Tag:** `phase10-protocol-freeze` (`65005505415a2bdf2d5744dbd135e9214e74081a`)  
 
 ---
 
 ## 1. Executive Summary
-Phase 10D v2 establishes, repairs, and certifies that the official Phase 10 evaluation execution pipeline can execute, resume, pair, and validate correctly before official evaluation is authorized.
+Phase 10D v2.3 establishes, repairs, and certifies that the official Phase 10 evaluation execution pipeline can execute, resume, pair, and validate correctly before official evaluation is authorized.
 
 > [!IMPORTANT]
 > **Scope & Technical Readiness vs Empirical Effectiveness**:
 > Technical readiness—**not empirical effectiveness**—has been tested and certified.
 > Official evaluation (`--execute`) was NOT invoked. Zero evaluation Parquets (`X_eval.parquet`, `metadata_eval.parquet`) were opened during readiness testing or benchmarking. No files were written to `artifacts/evaluation_runs/`.
+> Preflight does not open evaluation Parquets or perform model inference; preflight reads and validates frozen role/batch manifests, including their label-alignment fields; official cache files are read only as raw bytes for non-mutating cryptographic verification.
 > The empirical effectiveness of Recall-Aware control relative to Base defenses remains strictly unknown until official execution is authorized and conducted.
 
-**Key Invariants & Binding Corrections (12 / 12 Implemented & Reconciled):**
+**Key Invariants & Binding Corrections (15 / 15 Implemented & Reconciled):**
 1. **Real-Run Provenance (11 Fields)**: Constructed full 11-field provenance dictionary directly from canonical on-disk artifacts (`frozen_rf.joblib`, `standard_scaler.joblib`, `feature_names.json`, `feature_mask.json`, `training_bounds.parquet`, `evaluation_roles.csv`, `evaluation_batches.csv`, and all 4 config YAMLs). Added pre-run dry `CompletionMarker` validation before batch 0. Added red regression test proving failure on missing provenance.
 2. **Removed Circular Cache Trust**: Replaced self-referential manifest trust with independent pinning against `artifacts/reports/cache_inventory_v2.json`. Validates `X_attacked.parquet`, `status.parquet`, `manifest.json`, and `completion.json` hashes before manifest is forwarded to provider. Added test proving self-consistent but inventory-divergent caches are rejected.
 3. **Enforced Git Cleanliness (Phase 10B Policy)**: Rejects staged/unstaged tracked modifications, validates freeze tag ancestry, ensures zero diff in `src/`, and strictly rejects untracked code/docs while allowlisting generated caches, logs, and ZIP bundles. Added comprehensive test coverage.
-4. **Repaired Disk-Space Gate**: Catches only `OSError` when obtaining filesystem stats; raises `RuntimeError` and aborts immediately if free space is below the configured threshold (10.0 GB).
-5. **Removed Stale Defense Bounds**: Derived fixed base intensities and dynamic bounds directly from frozen `defenses.yaml`: AFP base 0.0003, bounds [0.0, 0.0003]; RS base 0.0002, bounds [0.0, 0.0002]; FS base 2.0, bounds [0.0, 2.0].
-6. **Strengthened Measurement-Label Resolution & Preflight Integration**: `run_preflight()` directly executes manifest cross-validation without opening evaluation Parquets: validates required columns, exactly 72,000 unique measurement positions, 18,000 non-overlapping crafting positions, 500 rows/batch, normalized 0..143 batch IDs, and consistent composite IDs and binary labels. Added synthetic rejection tests.
-7. **Repaired Completed-Run Reuse Validation**: Required agreement of directory name, `RunSummary` run_id, `completion.json` run_id, and every batch-record run_id with the target matrix row, exact provenance match, expected cache identity, zero unexpected files, and completion marker written last.
-8. **Repaired Alias Publication**: Established unambiguous pointer-only contract: aliases publish `alias_pointer.json` and `completion.json`, never masquerading as independent runs. Target run outputs validated prior to alias creation; atomic staging and renaming; validated reuse and quarantine.
-9. **Dependency-Safe Filtering**: When filters select an alias, its required primary target execution is automatically resolved and scheduled ahead of the alias. Non-positive `--max-runs` arguments are explicitly rejected.
-10. **Genuinely Synthetic Production-Wiring Canary**: The end-to-end canary operates exclusively on synthetic 72,000-row cache data in `tmp_path` (derived within training feature bounds), completely prohibiting access to official evaluation caches or evaluation Parquets. Preflight reads official cache files solely for non-mutating inventory verification against `cache_inventory_v2.json`, while the synthetic canary is strictly prohibited from touching official evaluation cache files. Active regression test `test_canary_does_not_access_official_caches` traps and rejects any read of official cache files.
-11. **Reconciled Runtime & Storage Projections**: Reconciled the arithmetic between defense-inference lower bound and full wall-clock prediction: applying 15% to 25% orchestration/IO overhead to the measured 3.26h lower bound yields **~3.74 to 4.07 hours** (across thermal envelope of 3.21h–3.79h, full wall-clock spans ~3.69h to 4.74h). Storage calculated from production schema records yields ~2.23 MB for `scores.json` and ~0.57 GB total for 252 runs.
-12. **Repaired Review Bundle**: Created `phase10d_evaluation_orchestration_readiness_bundle_v2.zip` with self-inclusive manifest and hash ledger, verified exact member set extraction, zero duplicates, and zero forbidden files.
+4. **Prohibit Git-Gate Bypass During Execution**: The CLI strictly rejects `--execute --no-enforce-git` before preflight or data loading. The `--no-enforce-git` option remains permitted only for local development preflight or tests, never together with official execution. Added regression test proving rejection.
+5. **Bind Official Execution to Canonical Inputs**: In `--execute` mode, all inputs must resolve to canonical repository paths (`configs/`, `data/manifests/`, `artifacts/models/`, `artifacts/preprocessors/`, `artifacts/caches/`, `artifacts/reports/cache_inventory_v2.json`). Output directory must resolve beneath designated `artifacts/evaluation_runs` root, strictly rejecting directory traversal, unrelated external paths, and symlink escapes.
+6. **Repaired Disk-Space Gate**: Catches only `OSError` when obtaining filesystem stats; raises `RuntimeError` and aborts immediately if free space is below the configured threshold (10.0 GB).
+7. **Derived Defense Bounds from Frozen Defenses.yaml**: Derived fixed base intensities and dynamic bounds directly from frozen `defenses.yaml`: AFP base 0.0003, bounds [0.0, 0.0003]; RS base 0.0002, bounds [0.0, 0.0002]; FS base 2.0, bounds [0.0, 2.0].
+8. **Manifest Cross-Validation & Preflight Separation**: `run_preflight()` directly executes manifest cross-validation without opening evaluation Parquets or running inference: validates required columns, exactly 72,000 unique measurement positions, 18,000 non-overlapping crafting positions, 500 rows/batch, normalized 0..143 batch IDs, and consistent composite IDs and binary labels. Official caches are verified strictly via raw byte SHA-256 checks.
+9. **Repaired Completed-Run Reuse Validation**: Required agreement of directory name, `RunSummary` run_id, `completion.json` run_id, and every batch-record run_id with the target matrix row, exact provenance match, expected cache identity, zero unexpected files, and completion marker written last.
+10. **Complete Alias and Target Validation**: Before publishing or reusing an alias: requires alias `CompletionMarker` provenance to equal expected provenance exactly; validates pointer `config_id` and `target_provenance`; validates `target_run_summary_sha256` and `target_completion_sha256`; enforces `completion.json` written after `alias_pointer.json`; validates target against its exact primary matrix row and independently pinned expected cache identity; ensures target controller config is C1. Targets failing validation are automatically scheduled for full recomputation.
+11. **Dependency-Safe Filtering**: When filters select an alias, its required primary target execution is automatically resolved and scheduled ahead of the alias. Non-positive `--max-runs` arguments are explicitly rejected.
+12. **Genuinely Synthetic Production-Wiring Canary**: The end-to-end canary operates exclusively on synthetic 72,000-row cache data and temporary synthetic 90,000-row roles / 72,000-row batches manifests generated under `tmp_path`, completely prohibiting access to official evaluation caches, evaluation Parquets, or canonical evaluation manifests.
+13. **Strengthened Multi-Method Access Guard**: Regression test `test_canary_does_not_access_official_caches` actively intercepts `builtins.open`, `Path.open`, `Path.read_text`, `Path.read_bytes`, `pd.read_csv`, and `pd.read_parquet` to ensure zero access to official caches, canonical manifests, or evaluation Parquets during canary execution.
+14. **Canonical Attack-Script Provenance**: In both official cache manifests and the synthetic canary fixture, every key in `attack_script_hashes` corresponds strictly to the SHA-256 hash of the canonical file it names (`attacks/*.py`, `caching.py`, `build_evaluation_caches.py`). Added test asserting exact match.
+15. **Reconciled Runtime & Storage Projections**: Reconciled defense-inference lower bound (3.26 hours) and estimated wall-clock range (~3.74 to 4.07 hours with 15–25% IO/orchestration overhead), removing unsupported historical thermal numbers. Storage footprint confirmed at ~2.23 MB for `scores.json` and ~0.57 GB total for 252 runs.
 
 ---
 
@@ -108,16 +112,20 @@ All 15 official cache directories in `artifacts/caches/` were verified against `
 - `test_strict_completed_run_reuse_validation`: **PASSED**
 - `test_pointer_only_alias_publication_and_reuse`: **PASSED**
 - `test_dependency_safe_execution_planning`: **PASSED**
-- `test_production_wiring_canary`: **PASSED** (144 batches end-to-end on synthetic data, zero official caches touched)
+- `test_production_wiring_canary`: **PASSED** (144 batches end-to-end on synthetic data and synthetic manifests, zero canonical evaluation data or official caches touched)
 - `test_preflight_invokes_manifest_cross_validation`: **PASSED** (verifies preflight rejects malformed manifests)
-- `test_canary_does_not_access_official_caches`: **PASSED** (traps and rejects official cache access under guarded interceptor)
-**Total Focused Tests:** **26 / 26 PASSED** in 50.03s.
+- `test_canary_does_not_access_official_caches`: **PASSED** (traps and rejects access to official caches, evaluation Parquets, and canonical manifests under guarded interceptor)
+- `test_attack_script_hashes_correspond_to_named_files`: **PASSED** (verifies every attack_script_hashes key matches canonical file bytes)
+- `test_cli_execute_prohibits_no_enforce_git`: **PASSED** (proves --execute --no-enforce-git is rejected before preflight)
+- `test_cli_execute_rejects_substituted_inputs_and_unsafe_output`: **PASSED** (proves --execute binds strictly to canonical inputs and rejects unsafe output directories)
+- `test_alias_and_target_validation_regression`: **PASSED** (proves all 9 alias and target validation gates fail closed)
+**Total Focused Tests:** **30 / 30 PASSED** in 49.35s.
 
 ### Full Test Suite
-- Total tests collected: **282**
-- Total tests passed: **282** (100%)
+- Total tests collected: **286**
+- Total tests passed: **286** (100%)
 - Total failures: **0**
-- Execution time: **26.38s**
+- Execution time: **63.54s**
 
 ---
 
@@ -136,10 +144,9 @@ All 15 official cache directories in `artifacts/caches/` were verified against `
 ### Matrix-Level Projections (Reconciled Arithmetic)
 - **Primary Comparison (90 runs: 30 AFP, 30 FS, 30 RS):**
   - Defense-inference lower bound: **69.77 min (1.16 hours)**
-  - Full wall-clock projection (+15% to 25% overhead): **~1.34 – 1.45 hours** (~80.2 – 87.2 min).
+  - Full wall-clock projection (+15% to 25% overhead, estimated): **~1.34 – 1.45 hours** (~80.2 – 87.2 min).
 - **Full Unique Executions (252 runs: 84 AFP, 84 FS, 84 RS):**
   - Defense-inference lower bound: **195.34 min (3.26 hours)**
-  - Full wall-clock projection (+15% to 25% overhead): **~3.74 – 4.07 hours** (~224.6 – 244.2 min).
-  - Across thermal envelope (3.21h cold run to 3.79h sustained load lower bound), full wall-clock spans ~3.69h to 4.74h.
+  - Full wall-clock projection (+15% to 25% overhead, estimated): **~3.74 – 4.07 hours** (~224.6 – 244.2 min).
 - **Sensitivity Aliases (27 runs):** **0.00 min** (instant metadata pointer).
 - **Storage Footprint:** ~**2.23 MB** for `scores.json` per run; ~**2.33 MB** total per run; **~0.57 GB** aggregate for 252 runs (well within available 68+ GB).

@@ -31,7 +31,9 @@ import dataclasses
 import hashlib
 import json
 import math
+import os
 import shutil
+import time
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -98,6 +100,42 @@ def make_synthetic_batches(n_batches: int = 144, batch_size: int = 500) -> pd.Da
         "eval_position": np.arange(n_rows, dtype=int),
         "batch_id": np.repeat(np.arange(n_batches), batch_size),
     })
+
+
+def make_synthetic_manifests(target_dir: Path) -> Tuple[Path, Path]:
+    """
+    Creates temporary synthetic manifests under target_dir:
+      - 90,000 synthetic role rows (18,000 crafting, 72,000 measurement).
+      - synthetic composite identities (_source_file, _raw_row_idx).
+      - exactly 144 batches of 500 rows each.
+      - deterministic synthetic binary labels in {0, 1}.
+      - valid batch positions (18000..89999) and within-batch positions (0..499).
+    """
+    target_dir.mkdir(parents=True, exist_ok=True)
+    roles_df = pd.DataFrame({
+        "eval_position": np.arange(90000, dtype=int),
+        "_source_file": ["synthetic_crafting.parquet"] * 18000 + ["synthetic_measurement.parquet"] * 72000,
+        "_raw_row_idx": list(range(18000)) + list(range(72000)),
+        "y_binary": [i % 2 for i in range(18000)] + [i % 2 for i in range(72000)],
+        "attack_family": ["Synthetic"] * 90000,
+        "role": ["crafting"] * 18000 + ["measurement"] * 72000,
+    })
+    roles_path = target_dir / "evaluation_roles.csv"
+    roles_df.to_csv(roles_path, index=False)
+
+    batches_df = pd.DataFrame({
+        "eval_position": np.arange(18000, 90000, dtype=int),
+        "_source_file": ["synthetic_measurement.parquet"] * 72000,
+        "_raw_row_idx": list(range(72000)),
+        "y_binary": [i % 2 for i in range(72000)],
+        "attack_family": ["Synthetic"] * 72000,
+        "role": ["measurement"] * 72000,
+        "batch_id": np.repeat(np.arange(144), 500),
+        "within_batch_position": np.tile(np.arange(500), 144),
+    })
+    batches_path = target_dir / "evaluation_batches.csv"
+    batches_df.to_csv(batches_path, index=False)
+    return roles_path, batches_path
 
 
 class SyntheticCacheProvider(AttackCacheProvider):
@@ -1050,7 +1088,7 @@ def test_pointer_only_alias_publication_and_reuse(tmp_path: Path):
     # Mismatched tuple rejection
     bad_alias_row = alias_row.copy()
     bad_alias_row["seed"] = 43
-    with pytest.raises(ValueError, match="Alias tuple seed mismatch"):
+    with pytest.raises(ValueError, match="Seed mismatch|Alias tuple seed mismatch"):
         publish_alias(bad_alias_row, output_dir=tmp_path, expected_provenance=VALID_PROVENANCE)
 
     # Corrupt alias quarantine and recovery
@@ -1101,8 +1139,11 @@ def test_production_wiring_canary(tmp_path: Path):
         prepare_evaluation_batches,
     )
 
-    prov = build_production_provenance(repo_root=REPO_ROOT)
-    resolved_batches, y_meas, _ = prepare_evaluation_batches(REPO_ROOT / "data/manifests")
+    canary_manifests_dir = tmp_path / "manifests"
+    make_synthetic_manifests(canary_manifests_dir)
+
+    prov = build_production_provenance(repo_root=REPO_ROOT, manifests_dir=canary_manifests_dir)
+    resolved_batches, y_meas, _ = prepare_evaluation_batches(canary_manifests_dir)
 
     with open(REPO_ROOT / "artifacts/preprocessors/feature_mask.json") as f:
         mask_data = json.load(f)
@@ -1153,14 +1194,13 @@ def test_production_wiring_canary(tmp_path: Path):
     x_hash = calculate_file_hash(x_parquet_path)
     s_hash = calculate_file_hash(status_parquet_path)
 
-    # Generate both canary metadata files independently from synthetic inputs
-    # and validated schemas, completely prohibiting access to official evaluation caches
+    # Hash the actual canonical attack script files
     attack_script_hashes = {
-        "base.py": calculate_file_hash(REPO_ROOT / "src/recall_aware_ids/defenses/base.py"),
-        "silent_probing.py": calculate_file_hash(REPO_ROOT / "scripts/build_evaluation_caches.py"),
-        "surrogate_transfer.py": calculate_file_hash(REPO_ROOT / "scripts/run_evaluation.py"),
-        "boundary_attack.py": calculate_file_hash(REPO_ROOT / "src/recall_aware_ids/experiment/caching.py"),
-        "oracle.py": calculate_file_hash(REPO_ROOT / "src/recall_aware_ids/experiment/runner.py"),
+        "base.py": calculate_file_hash(REPO_ROOT / "src/recall_aware_ids/attacks/base.py"),
+        "silent_probing.py": calculate_file_hash(REPO_ROOT / "src/recall_aware_ids/attacks/silent_probing.py"),
+        "surrogate_transfer.py": calculate_file_hash(REPO_ROOT / "src/recall_aware_ids/attacks/surrogate_transfer.py"),
+        "boundary_attack.py": calculate_file_hash(REPO_ROOT / "src/recall_aware_ids/attacks/boundary_attack.py"),
+        "oracle.py": calculate_file_hash(REPO_ROOT / "src/recall_aware_ids/attacks/oracle.py"),
         "caching.py": calculate_file_hash(REPO_ROOT / "src/recall_aware_ids/experiment/caching.py"),
         "build_evaluation_caches.py": calculate_file_hash(REPO_ROOT / "scripts/build_evaluation_caches.py"),
     }
@@ -1275,7 +1315,7 @@ def test_production_wiring_canary(tmp_path: Path):
         caches_dir=tmp_path / "caches",
         inventory_path=canary_inv_path,
         configs_dir=REPO_ROOT / "configs",
-        manifests_dir=REPO_ROOT / "data/manifests",
+        manifests_dir=canary_manifests_dir,
         models_dir=REPO_ROOT / "artifacts/models",
         preprocessors_dir=REPO_ROOT / "artifacts/preprocessors",
         resolved_batches=resolved_batches,
@@ -1304,7 +1344,7 @@ def test_production_wiring_canary(tmp_path: Path):
         caches_dir=tmp_path / "caches",
         inventory_path=canary_inv_path,
         configs_dir=REPO_ROOT / "configs",
-        manifests_dir=REPO_ROOT / "data/manifests",
+        manifests_dir=canary_manifests_dir,
         models_dir=REPO_ROOT / "artifacts/models",
         preprocessors_dir=REPO_ROOT / "artifacts/preprocessors",
         resolved_batches=resolved_batches,
@@ -1329,7 +1369,7 @@ def test_production_wiring_canary(tmp_path: Path):
         caches_dir=tmp_path / "caches",
         inventory_path=canary_inv_path,
         configs_dir=REPO_ROOT / "configs",
-        manifests_dir=REPO_ROOT / "data/manifests",
+        manifests_dir=canary_manifests_dir,
         models_dir=REPO_ROOT / "artifacts/models",
         preprocessors_dir=REPO_ROOT / "artifacts/preprocessors",
         resolved_batches=resolved_batches,
@@ -1399,67 +1439,397 @@ def test_preflight_invokes_manifest_cross_validation(tmp_path):
 def test_canary_does_not_access_official_caches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """
     Regression test verifying that the canary execution path uses strictly
-    synthetic/training-derived data in tmp_path and never reads from artifacts/caches/.
+    synthetic/training-derived data in tmp_path and never reads from artifacts/caches/,
+    canonical evaluation manifests, or evaluation Parquets.
 
     Proves:
-      1. Guard actively intercepts and raises PermissionError if any attempt is made
-         to open official cache files under artifacts/caches/.
+      1. Guard actively intercepts builtins.open, Path.open, Path.read_text,
+         Path.read_bytes, pd.read_csv, and pd.read_parquet and raises PermissionError
+         if any attempt is made to access prohibited canonical files.
       2. The full production-wiring canary completes successfully under this guard
-         with zero accesses to official evaluation caches.
+         with zero accesses to official evaluation caches, manifests, or Parquets.
     """
     import builtins
     official_caches_dir = (REPO_ROOT / "artifacts/caches").resolve()
-    assert official_caches_dir.exists()
+    canonical_roles_path = (REPO_ROOT / "data/manifests/evaluation_roles.csv").resolve()
+    canonical_batches_path = (REPO_ROOT / "data/manifests/evaluation_batches.csv").resolve()
+    eval_parquet_path = (REPO_ROOT / "data/processed/X_eval.parquet").resolve()
+    metadata_parquet_path = (REPO_ROOT / "data/processed/metadata_eval.parquet").resolve()
 
-    accessed_official_cache_files = []
-    original_builtin_open = builtins.open
-    original_path_open = Path.open
+    prohibited_exact_paths = {
+        canonical_roles_path,
+        canonical_batches_path,
+        eval_parquet_path,
+        metadata_parquet_path,
+    }
 
-    def guarded_open(file_or_self, *args, **kwargs):
+    accessed_prohibited_targets = []
+
+    def check_prohibited(target: Any) -> None:
         try:
-            if isinstance(file_or_self, (str, Path)):
-                p = Path(file_or_self).resolve()
+            if isinstance(target, (str, Path)):
+                p = Path(target).resolve()
+            elif hasattr(target, "name"):
+                p = Path(target.name).resolve()
             else:
-                p = Path(str(file_or_self)).resolve()
+                p = Path(str(target)).resolve()
+
             if p == official_caches_dir or official_caches_dir in p.parents:
-                mode = args[0] if args else kwargs.get("mode", "r")
-                accessed_official_cache_files.append((str(p), mode))
+                accessed_prohibited_targets.append(str(p))
                 raise PermissionError(
                     f"Prohibited access to official evaluation cache during canary execution: {p}"
+                )
+            if p in prohibited_exact_paths:
+                accessed_prohibited_targets.append(str(p))
+                raise PermissionError(
+                    f"Prohibited access to canonical evaluation file during canary execution: {p}"
+                )
+            if p.name in ("X_eval.parquet", "metadata_eval.parquet") or (
+                p.name in ("evaluation_roles.csv", "evaluation_batches.csv")
+                and str(REPO_ROOT.resolve()) in str(p)
+                and "canary" not in str(p)
+                and p.parent == (REPO_ROOT / "data/manifests").resolve()
+            ):
+                accessed_prohibited_targets.append(str(p))
+                raise PermissionError(
+                    f"Prohibited access to canonical evaluation file during canary execution: {p}"
                 )
         except PermissionError:
             raise
         except Exception:
             pass
-        if isinstance(file_or_self, Path):
-            return original_path_open(file_or_self, *args, **kwargs)
-        return original_builtin_open(file_or_self, *args, **kwargs)
 
-    monkeypatch.setattr(builtins, "open", guarded_open)
-    monkeypatch.setattr(Path, "open", guarded_open)
+    orig_open = builtins.open
+    orig_path_open = Path.open
+    orig_path_read_text = Path.read_text
+    orig_path_read_bytes = Path.read_bytes
+    orig_pd_read_csv = pd.read_csv
+    orig_pd_read_parquet = pd.read_parquet
 
-    # 1. Active detection: prove the guard catches and rejects attempts to read official cache files
+    def guarded_builtin_open(file, *args, **kwargs):
+        check_prohibited(file)
+        return orig_open(file, *args, **kwargs)
+
+    def guarded_path_open(self, *args, **kwargs):
+        check_prohibited(self)
+        return orig_path_open(self, *args, **kwargs)
+
+    def guarded_path_read_text(self, *args, **kwargs):
+        check_prohibited(self)
+        return orig_path_read_text(self, *args, **kwargs)
+
+    def guarded_path_read_bytes(self, *args, **kwargs):
+        check_prohibited(self)
+        return orig_path_read_bytes(self, *args, **kwargs)
+
+    def guarded_pd_read_csv(filepath_or_buffer, *args, **kwargs):
+        check_prohibited(filepath_or_buffer)
+        return orig_pd_read_csv(filepath_or_buffer, *args, **kwargs)
+
+    def guarded_pd_read_parquet(path, *args, **kwargs):
+        check_prohibited(path)
+        return orig_pd_read_parquet(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", guarded_builtin_open)
+    monkeypatch.setattr(Path, "open", guarded_path_open)
+    monkeypatch.setattr(Path, "read_text", guarded_path_read_text)
+    monkeypatch.setattr(Path, "read_bytes", guarded_path_read_bytes)
+    monkeypatch.setattr(pd, "read_csv", guarded_pd_read_csv)
+    monkeypatch.setattr(pd, "read_parquet", guarded_pd_read_parquet)
+
+    # 1. Active detection: prove the guard catches and rejects attempts across all prohibited files and methods
     with pytest.raises(PermissionError, match="Prohibited access to official evaluation cache"):
         with open(official_caches_dir / "SilentProbing_42/manifest.json", "r") as f:
             _ = f.read()
 
     with pytest.raises(PermissionError, match="Prohibited access to official evaluation cache"):
-        with open(official_caches_dir / "SilentProbing_42/completion.json", "r") as f:
-            _ = f.read()
-
-    with pytest.raises(PermissionError, match="Prohibited access to official evaluation cache"):
         (official_caches_dir / "SilentProbing_42/manifest.json").open("r")
 
-    assert len(accessed_official_cache_files) == 3
-    accessed_official_cache_files.clear()
+    with pytest.raises(PermissionError, match="Prohibited access to canonical evaluation file"):
+        canonical_roles_path.read_text()
 
-    # 2. Canary execution under guard: prove canary runs end-to-end without accessing official caches
+    with pytest.raises(PermissionError, match="Prohibited access to canonical evaluation file"):
+        canonical_batches_path.read_bytes()
+
+    with pytest.raises(PermissionError, match="Prohibited access to canonical evaluation file"):
+        pd.read_csv(canonical_roles_path)
+
+    with pytest.raises(PermissionError, match="Prohibited access to canonical evaluation file"):
+        pd.read_parquet(eval_parquet_path)
+
+    accessed_prohibited_targets.clear()
+
+    # 2. Canary execution under guard: prove canary runs end-to-end without accessing prohibited canonical files
     canary_sub = tmp_path / "guarded_canary"
     canary_sub.mkdir()
     test_production_wiring_canary(canary_sub)
 
-    assert len(accessed_official_cache_files) == 0, (
-        f"Canary attempted to access official cache files: {accessed_official_cache_files}"
+    assert len(accessed_prohibited_targets) == 0, (
+        f"Canary attempted to access prohibited canonical files: {accessed_prohibited_targets}"
     )
+
+
+def test_attack_script_hashes_correspond_to_named_files():
+    """
+    Regression test asserting every attack_script_hashes key corresponds
+    to the exact SHA-256 hash of the canonical file it names.
+    """
+    canonical_files = {
+        "base.py": REPO_ROOT / "src/recall_aware_ids/attacks/base.py",
+        "silent_probing.py": REPO_ROOT / "src/recall_aware_ids/attacks/silent_probing.py",
+        "surrogate_transfer.py": REPO_ROOT / "src/recall_aware_ids/attacks/surrogate_transfer.py",
+        "boundary_attack.py": REPO_ROOT / "src/recall_aware_ids/attacks/boundary_attack.py",
+        "oracle.py": REPO_ROOT / "src/recall_aware_ids/attacks/oracle.py",
+        "caching.py": REPO_ROOT / "src/recall_aware_ids/experiment/caching.py",
+        "build_evaluation_caches.py": REPO_ROOT / "scripts/build_evaluation_caches.py",
+    }
+    with open(REPO_ROOT / "artifacts/reports/cache_inventory_v2.json") as f:
+        inv = json.load(f)
+
+    for c in inv["caches"]:
+        cdir = Path(c["directory"])
+        with open(cdir / "manifest.json") as mf:
+            m = json.load(mf)
+        ash = m["attack_script_hashes"]
+        for key, path in canonical_files.items():
+            assert key in ash, f"Key {key} missing from {cdir}/manifest.json"
+            expected_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+            assert ash[key] == expected_hash, (
+                f"Mismatch for {key} in {cdir}: expected {expected_hash}, got {ash[key]}"
+            )
+
+
+def test_cli_execute_prohibits_no_enforce_git():
+    """
+    Regression test proving CLI rejects --execute combined with --no-enforce-git
+    before preflight or data loading.
+    """
+    from scripts.run_evaluation import main
+
+    with pytest.raises(ValueError, match="Cannot combine --execute with --no-enforce-git"):
+        main(["--execute", "--no-enforce-git"])
+
+
+def test_cli_execute_rejects_substituted_inputs_and_unsafe_output(tmp_path: Path):
+    """
+    Regression test proving CLI --execute mode strictly binds to canonical repository
+    inputs and rejects substituted configs, manifests, models, preprocessors, caches,
+    inventories, and unsafe output directories.
+    """
+    from scripts.run_evaluation import main
+
+    sub_dir = tmp_path / "substituted"
+    sub_dir.mkdir()
+
+    with pytest.raises(ValueError, match="Non-canonical configs directory in --execute mode"):
+        main(["--execute", "--configs-dir", str(sub_dir)])
+
+    with pytest.raises(ValueError, match="Non-canonical manifests directory in --execute mode"):
+        main(["--execute", "--manifests-dir", str(sub_dir)])
+
+    with pytest.raises(ValueError, match="Non-canonical models directory in --execute mode"):
+        main(["--execute", "--models-dir", str(sub_dir)])
+
+    with pytest.raises(ValueError, match="Non-canonical preprocessors directory in --execute mode"):
+        main(["--execute", "--preprocessors-dir", str(sub_dir)])
+
+    with pytest.raises(ValueError, match="Non-canonical caches directory in --execute mode"):
+        main(["--execute", "--caches-dir", str(sub_dir)])
+
+    fake_inv = sub_dir / "cache_inventory_v2.json"
+    fake_inv.write_text("{}")
+    with pytest.raises(ValueError, match="Non-canonical inventory path in --execute mode"):
+        main(["--execute", "--inventory-path", str(fake_inv)])
+
+    # Unsafe output directory: traversal outside eval root
+    traversal_out = REPO_ROOT / "artifacts/evaluation_runs/../../outside"
+    with pytest.raises(ValueError, match="Unsafe output directory in --execute mode"):
+        main(["--execute", "--output-dir", str(traversal_out)])
+
+    # Unsafe output directory: unrelated external directory
+    external_out = tmp_path / "external_runs"
+    with pytest.raises(ValueError, match="Unsafe output directory in --execute mode"):
+        main(["--execute", "--output-dir", str(external_out)])
+
+    # Unsafe output directory: symlink directory
+    symlink_target = tmp_path / "symlink_target"
+    symlink_target.mkdir()
+    symlink_out = tmp_path / "symlink_out"
+    symlink_out.symlink_to(symlink_target)
+    with pytest.raises(ValueError, match="Unsafe output directory in --execute mode|Output directory cannot be a symlink"):
+        main(["--execute", "--output-dir", str(symlink_out)])
+
+
+def test_alias_and_target_validation_regression(tmp_path: Path):
+    """
+    Comprehensive regression tests for alias and target validation:
+      - wrong target controller;
+      - wrong target cache identity;
+      - wrong alias completion provenance;
+      - wrong pointer config;
+      - wrong pointer target provenance;
+      - altered target completion;
+      - structurally valid target belonging to another matrix row;
+      - completion written after alias_pointer.json ordering;
+      - resolve_and_validate_execution_plan scheduling invalid targets for recomputation.
+    """
+    from scripts.run_evaluation import (
+        publish_alias,
+        validate_completed_alias,
+        resolve_and_validate_execution_plan,
+        derive_and_validate_matrix,
+    )
+    from recall_aware_ids.experiment.runner import ExperimentRunner, LabelProvider
+    from recall_aware_ids.experiment.policies import FixedIntensityPolicy
+
+    target_id = "primary_42_SilentProbing_afp_C1"
+    batches = make_synthetic_batches()
+    lp = LabelProvider(y_measurement=np.zeros(72000, dtype=int))
+    cache = SyntheticCacheProvider()
+    adapter = MockDefenseModelAdapter()
+    policy = FixedIntensityPolicy("C1", 0.0003, 0.0, 0.005)
+
+    runner = ExperimentRunner(
+        resolved_batches=batches,
+        label_provider=lp,
+        attack_cache=cache,
+        defense_adapter=adapter,
+        policy_controller=policy,
+        output_dir=tmp_path,
+        run_id=target_id,
+        seed=42,
+        attack_scenario="SilentProbing",
+        defense_name="afp",
+        config_id="C1",
+        provenance_hashes=VALID_PROVENANCE,
+    )
+    runner.execute_run()
+
+    alias_id = "sensitivity_42_SilentProbing_afp_C1"
+    alias_row = pd.Series({
+        "run_id": alias_id,
+        "alias_for_run_id": target_id,
+        "seed": 42,
+        "attack_scenario": "SilentProbing",
+        "defense_name": "afp",
+        "controller_config_id": "C1",
+        "is_alias": True,
+    })
+
+    publish_alias(alias_row, output_dir=tmp_path, expected_provenance=VALID_PROVENANCE)
+    alias_dir = tmp_path / alias_id
+
+    def touch_completion_after_pointer():
+        p_mtime = (alias_dir / "alias_pointer.json").stat().st_mtime
+        os.utime(alias_dir / "completion.json", (p_mtime + 5.0, p_mtime + 5.0))
+
+    # 1. Wrong alias completion provenance
+    bad_prov = dict(VALID_PROVENANCE)
+    bad_prov["frozen_rf_hash"] = "a" * 64
+    v, err = validate_completed_alias(alias_dir, alias_row, expected_provenance=bad_prov, output_dir=tmp_path)
+    assert not v
+    assert "Alias completion provenance does not match" in err
+
+    # 2. Wrong pointer config
+    ptr_path = alias_dir / "alias_pointer.json"
+    with open(ptr_path) as f:
+        ptr = json.load(f)
+    orig_ptr = dict(ptr)
+    ptr["config_id"] = "C2"
+    with open(ptr_path, "w") as f:
+        json.dump(ptr, f)
+    touch_completion_after_pointer()
+    v, err = validate_completed_alias(alias_dir, alias_row, expected_provenance=VALID_PROVENANCE, output_dir=tmp_path)
+    assert not v
+    assert "Alias pointer config_id mismatch" in err
+    with open(ptr_path, "w") as f:
+        json.dump(orig_ptr, f)
+    touch_completion_after_pointer()
+
+    # 3. Wrong pointer target provenance
+    ptr_bad_prov = dict(orig_ptr)
+    ptr_bad_prov["target_provenance"] = bad_prov
+    with open(ptr_path, "w") as f:
+        json.dump(ptr_bad_prov, f)
+    touch_completion_after_pointer()
+    v, err = validate_completed_alias(alias_dir, alias_row, expected_provenance=VALID_PROVENANCE, output_dir=tmp_path)
+    assert not v
+    assert "Alias pointer target_provenance does not match" in err
+    with open(ptr_path, "w") as f:
+        json.dump(orig_ptr, f)
+    touch_completion_after_pointer()
+
+    # 4. Altered target completion
+    t_comp = tmp_path / target_id / "completion.json"
+    with open(t_comp) as f:
+        cdata = json.load(f)
+    orig_cdata = dict(cdata)
+    cdata["timestamp"] = "2026-09-18T99:99:99Z"
+    with open(t_comp, "w") as f:
+        json.dump(cdata, f)
+    v, err = validate_completed_alias(alias_dir, alias_row, expected_provenance=VALID_PROVENANCE, output_dir=tmp_path)
+    assert not v
+    assert "Alias target" in err or "target_completion_sha256 mismatch" in err
+    with open(t_comp, "w") as f:
+        json.dump(orig_cdata, f)
+
+    # 5. Wrong target cache identity
+    bad_cache_id = dict(cache.cache_identity)
+    bad_cache_id["attack_scenario"] = "SurrogateTransfer"
+    v, err = validate_completed_alias(
+        alias_dir,
+        alias_row,
+        expected_provenance=VALID_PROVENANCE,
+        output_dir=tmp_path,
+        expected_cache_identity=bad_cache_id,
+    )
+    assert not v
+    assert "run_summary.cache_identity does not match" in err
+
+    # 6. Wrong target controller
+    t_sum = tmp_path / target_id / "run_summary.json"
+    with open(t_sum) as f:
+        sdata = json.load(f)
+    orig_sdata = dict(sdata)
+    sdata["config_id"] = "Base"
+    with open(t_sum, "w") as f:
+        json.dump(sdata, f)
+    v, err = validate_completed_alias(alias_dir, alias_row, expected_provenance=VALID_PROVENANCE, output_dir=tmp_path)
+    assert not v
+    assert "Target run_summary controller config is not C1" in err or "Controller config mismatch" in err
+    with open(t_sum, "w") as f:
+        json.dump(orig_sdata, f)
+
+    # 7. Structurally valid target belonging to another matrix row
+    bad_row = alias_row.copy()
+    bad_row["seed"] = 43
+    v, err = validate_completed_alias(alias_dir, bad_row, expected_provenance=VALID_PROVENANCE, output_dir=tmp_path)
+    assert not v
+    assert "seed mismatch" in err.lower()
+
+    # 8. Mtime ordering
+    now = (alias_dir / "completion.json").stat().st_mtime
+    os.utime(alias_dir / "alias_pointer.json", (now + 5.0, now + 5.0))
+    v, err = validate_completed_alias(alias_dir, alias_row, expected_provenance=VALID_PROVENANCE, output_dir=tmp_path)
+    assert not v
+    assert "alias_pointer.json was modified after completion.json" in err
+    touch_completion_after_pointer()
+
+    # 9. resolve_and_validate_execution_plan schedules invalid target for computation
+    matrix, _ = derive_and_validate_matrix(REPO_ROOT / "configs")
+    with open(t_sum, "w") as f:
+        sdata["config_id"] = "Base"
+        json.dump(sdata, f)
+
+    filtered = matrix[matrix["run_id"] == alias_id]
+    unique_runs, alias_runs = resolve_and_validate_execution_plan(
+        matrix=matrix,
+        filtered_matrix=filtered,
+        output_dir=tmp_path,
+        expected_provenance=VALID_PROVENANCE,
+    )
+    assert target_id in unique_runs["run_id"].values
+    assert alias_id in alias_runs["run_id"].values
+
 
 

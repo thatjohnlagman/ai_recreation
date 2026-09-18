@@ -7,7 +7,10 @@ Phase 10D v2 Official Evaluation Orchestration Entry Point.
 This script acts as the official execution and validation orchestrator for Phase 10
 evaluation matrix runs. It strictly enforces:
   1. Safe-by-default execution: running without --execute performs non-mutating preflight only.
-  2. Preflight separation: preflight never accesses evaluation features (X_eval.parquet) or labels.
+  2. Preflight separation: preflight does not open evaluation Parquets (X_eval.parquet,
+     metadata_eval.parquet) or perform model inference; preflight reads and validates
+     frozen role/batch manifests, including their label-alignment fields; official cache
+     files are read only as raw bytes for non-mutating cryptographic verification.
   3. Dynamic matrix derivation: derives exactly 279 matrix references (90 primary, 189 sensitivity,
      27 exact C1 aliases, 252 unique executions, 36,288 batch evaluations) from frozen configs.
   4. Real-run complete provenance: builds all 11 required provenance hashes from canonical on-disk
@@ -870,10 +873,26 @@ def validate_completed_alias(
     expected_row: pd.Series,
     expected_provenance: Dict[str, str],
     output_dir: Path,
+    matrix: Optional[pd.DataFrame] = None,
+    expected_cache_identity: Optional[Dict[str, Any]] = None,
+    caches_dir: Optional[Path] = None,
+    inventory_path: Optional[Path] = None,
 ) -> Tuple[bool, Optional[str]]:
     """
     Validates an existing alias directory. It must be a pointer-only artifact
     containing ONLY alias_pointer.json and completion.json.
+
+    Rigorous checks:
+      - require alias CompletionMarker provenance to equal expected_provenance exactly;
+      - validate pointer config_id;
+      - validate pointer target_provenance exactly;
+      - validate target_run_summary_sha256;
+      - validate target_completion_sha256;
+      - ensure completion.json was written after alias_pointer.json;
+      - validate the target against its exact primary matrix row;
+      - validate the target against its independently pinned expected cache identity;
+      - ensure target controller config is C1;
+      - reject any mismatch before publishing or reusing the alias.
     """
     if not alias_dir.exists() or not alias_dir.is_dir():
         return False, "Alias directory does not exist or is not a directory"
@@ -883,8 +902,14 @@ def validate_completed_alias(
     if actual_files != expected_files:
         return False, f"Alias directory contains invalid files (expected {expected_files}, got {actual_files})"
 
-    # Validate completion.json
     comp_path = alias_dir / "completion.json"
+    ptr_path = alias_dir / "alias_pointer.json"
+
+    # Ensure completion.json was written after alias_pointer.json
+    if ptr_path.stat().st_mtime > comp_path.stat().st_mtime + 0.1:
+        return False, "alias_pointer.json was modified after completion.json"
+
+    # Validate completion.json
     try:
         with open(comp_path, "r") as f:
             c_data = json.load(f)
@@ -892,11 +917,12 @@ def validate_completed_alias(
         _validate_provenance(marker.provenance_hashes)
         if marker.run_id != expected_row["run_id"]:
             return False, f"Alias completion run_id mismatch: expected {expected_row['run_id']}, got {marker.run_id}"
+        if marker.provenance_hashes != expected_provenance:
+            return False, "Alias completion provenance does not match expected provenance exactly"
     except Exception as e:
         return False, f"Alias completion.json failed validation: {e}"
 
     # Validate alias_pointer.json
-    ptr_path = alias_dir / "alias_pointer.json"
     try:
         with open(ptr_path, "r") as f:
             ptr = json.load(f)
@@ -910,18 +936,82 @@ def validate_completed_alias(
             return False, "Alias pointer scenario mismatch"
         if canonicalize_defense(ptr.get("defense", "")) != canonicalize_defense(expected_row["defense_name"]):
             return False, "Alias pointer defense mismatch"
+        if ptr.get("config_id") != expected_row["controller_config_id"]:
+            return False, f"Alias pointer config_id mismatch: expected {expected_row['controller_config_id']}, got {ptr.get('config_id')}"
+        if ptr.get("target_provenance") != expected_provenance:
+            return False, "Alias pointer target_provenance does not match expected provenance exactly"
     except Exception as e:
         return False, f"alias_pointer.json validation failed: {e}"
 
-    # Validate target run exists and is valid
-    target_dir = output_dir / expected_row["alias_for_run_id"]
-    is_target_valid, err = validate_completed_run(target_dir, expected_provenance=expected_provenance)
+    # Resolve target matrix row
+    target_id = str(expected_row["alias_for_run_id"])
+    target_dir = output_dir / target_id
+    if not target_dir.exists():
+        return False, f"Alias target {target_id} does not exist in {output_dir}"
+
+    target_row = None
+    if matrix is not None:
+        target_rows = matrix[matrix["run_id"] == target_id]
+        if len(target_rows) == 0:
+            return False, f"Alias target {target_id} not found in matrix"
+        target_row = target_rows.iloc[0]
+        if target_row["controller_config_id"] != "C1":
+            return False, f"Target {target_id} controller config is not C1: got {target_row['controller_config_id']}"
+    else:
+        target_row = pd.Series({
+            "run_id": target_id,
+            "seed": int(expected_row["seed"]),
+            "attack_scenario": str(expected_row["attack_scenario"]),
+            "defense_name": str(expected_row["defense_name"]),
+            "controller_config_id": "C1",
+            "is_alias": False,
+            "alias_for_run_id": None,
+        })
+
+    # If expected_cache_identity was not explicitly passed, independently pin if possible
+    if expected_cache_identity is None and caches_dir is not None and inventory_path is not None and inventory_path.exists():
+        scen = canonicalize_scenario(expected_row["attack_scenario"])
+        seed = int(expected_row["seed"])
+        cdir = caches_dir / f"{scen}_{seed}"
+        if cdir.exists():
+            try:
+                expected_cache_identity = validate_cache_against_inventory(
+                    cache_dir=cdir,
+                    scenario=scen,
+                    seed=seed,
+                    inventory_path=inventory_path,
+                    expected_provenance=expected_provenance,
+                )
+            except Exception as e:
+                return False, f"Target cache validation against inventory failed: {e}"
+
+    # Validate target run exists and is valid against exact primary row, cache identity, and provenance
+    is_target_valid, err = validate_completed_run(
+        target_dir,
+        expected_row=target_row,
+        expected_provenance=expected_provenance,
+        expected_cache_identity=expected_cache_identity,
+    )
     if not is_target_valid:
         return False, f"Alias target {target_dir.name} is invalid: {err}"
 
+    # Ensure target controller config is C1 in target's run_summary
+    try:
+        with open(target_dir / "run_summary.json", "r") as f:
+            target_summary_data = json.load(f)
+        if target_summary_data.get("config_id") != "C1":
+            return False, f"Target run_summary controller config is not C1: got {target_summary_data.get('config_id')}"
+    except Exception as e:
+        return False, f"Target run_summary validation failed: {e}"
+
+    # Validate target_run_summary_sha256 and target_completion_sha256
     target_summary_hash = calculate_file_hash(target_dir / "run_summary.json")
     if ptr.get("target_run_summary_sha256") != target_summary_hash:
-        return False, "Alias pointer target_run_summary_sha256 does not match current target summary hash"
+        return False, f"Alias pointer target_run_summary_sha256 mismatch: expected {target_summary_hash}, got {ptr.get('target_run_summary_sha256')}"
+
+    target_comp_hash = calculate_file_hash(target_dir / "completion.json")
+    if ptr.get("target_completion_sha256") != target_comp_hash:
+        return False, f"Alias pointer target_completion_sha256 mismatch: expected {target_comp_hash}, got {ptr.get('target_completion_sha256')}"
 
     return True, None
 
@@ -930,9 +1020,17 @@ def publish_alias(
     alias_row: pd.Series,
     output_dir: Path,
     expected_provenance: Dict[str, str],
+    matrix: Optional[pd.DataFrame] = None,
+    expected_cache_identity: Optional[Dict[str, Any]] = None,
+    caches_dir: Optional[Path] = None,
+    inventory_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """
     Publishes an alias as a pointer-only artifact atomically.
+    Strictly verifies:
+      - Target run exists, matches exact primary matrix row, expected provenance, and cache identity.
+      - Target controller config is strictly C1.
+      - Writes alias_pointer.json first, then completion.json last.
     """
     alias_id = str(alias_row["run_id"])
     target_id = str(alias_row["alias_for_run_id"])
@@ -941,14 +1039,54 @@ def publish_alias(
     if not target_dir.exists():
         raise RuntimeError(f"Alias target {target_id} does not exist in {output_dir}")
 
-    is_valid, err = validate_completed_run(target_dir, expected_provenance=expected_provenance)
-    if not is_valid:
-        raise RuntimeError(f"Alias target {target_id} is invalid: {err}")
+    target_row = None
+    if matrix is not None:
+        target_rows = matrix[matrix["run_id"] == target_id]
+        if len(target_rows) == 0:
+            raise ValueError(f"Alias target {target_id} not found in matrix")
+        target_row = target_rows.iloc[0]
+        if target_row["controller_config_id"] != "C1":
+            raise ValueError(f"Alias target {target_id} controller config is not C1: got {target_row['controller_config_id']}")
+    else:
+        target_row = pd.Series({
+            "run_id": target_id,
+            "seed": int(alias_row["seed"]),
+            "attack_scenario": str(alias_row["attack_scenario"]),
+            "defense_name": str(alias_row["defense_name"]),
+            "controller_config_id": "C1",
+            "is_alias": False,
+            "alias_for_run_id": None,
+        })
 
-    # Ensure alias tuple exactly matches target tuple
+    # If expected_cache_identity was not explicitly passed, independently pin if possible
+    if expected_cache_identity is None and caches_dir is not None and inventory_path is not None and inventory_path.exists():
+        scen = canonicalize_scenario(alias_row["attack_scenario"])
+        seed = int(alias_row["seed"])
+        cdir = caches_dir / f"{scen}_{seed}"
+        if cdir.exists():
+            expected_cache_identity = validate_cache_against_inventory(
+                cache_dir=cdir,
+                scenario=scen,
+                seed=seed,
+                inventory_path=inventory_path,
+                expected_provenance=expected_provenance,
+            )
+
+    is_valid, err = validate_completed_run(
+        target_dir,
+        expected_row=target_row,
+        expected_provenance=expected_provenance,
+        expected_cache_identity=expected_cache_identity,
+    )
+    if not is_valid:
+        raise ValueError(f"Alias target {target_id} is invalid: {err}")
+
+    # Ensure alias tuple exactly matches target tuple and target is C1
     target_summary_path = target_dir / "run_summary.json"
     with open(target_summary_path, "r") as f:
         target_summary_data = json.load(f)
+    if target_summary_data.get("config_id") != "C1":
+        raise ValueError(f"Alias target {target_id} summary config_id is not C1: got {target_summary_data.get('config_id')}")
     if int(target_summary_data["seed"]) != int(alias_row["seed"]):
         raise ValueError(f"Alias tuple seed mismatch: alias={alias_row['seed']}, target={target_summary_data['seed']}")
     if canonicalize_scenario(target_summary_data["attack_scenario"]) != canonicalize_scenario(alias_row["attack_scenario"]):
@@ -959,7 +1097,16 @@ def publish_alias(
     # Check for existing alias directory
     alias_dir = output_dir / alias_id
     if alias_dir.exists():
-        is_alias_valid, a_err = validate_completed_alias(alias_dir, alias_row, expected_provenance, output_dir)
+        is_alias_valid, a_err = validate_completed_alias(
+            alias_dir=alias_dir,
+            expected_row=alias_row,
+            expected_provenance=expected_provenance,
+            output_dir=output_dir,
+            matrix=matrix,
+            expected_cache_identity=expected_cache_identity,
+            caches_dir=caches_dir,
+            inventory_path=inventory_path,
+        )
         if is_alias_valid:
             return {"run_id": alias_id, "status": "REUSED_ALIAS", "alias_for": target_id}
         else:
@@ -997,6 +1144,11 @@ def publish_alias(
         with open(staging_dir / "completion.json", "w") as f:
             json.dump(dataclasses.asdict(marker), f, indent=2)
 
+        # Ensure completion.json was written after alias_pointer.json
+        now_ts = datetime.datetime.utcnow().timestamp()
+        os.utime(staging_dir / "alias_pointer.json", (now_ts, now_ts))
+        os.utime(staging_dir / "completion.json", (now_ts + 1.0, now_ts + 1.0))
+
         staging_dir.rename(alias_dir)
         return {"run_id": alias_id, "status": "PUBLISHED_ALIAS", "alias_for": target_id}
     except Exception:
@@ -1004,22 +1156,23 @@ def publish_alias(
         raise
 
 
-# ---------------------------------------------------------------------------
-# Dependency-Safe Execution Planning
-# ---------------------------------------------------------------------------
 def resolve_and_validate_execution_plan(
     matrix: pd.DataFrame,
     filtered_matrix: pd.DataFrame,
     output_dir: Path,
     expected_provenance: Dict[str, str],
     max_runs: Optional[int] = None,
+    expected_cache_identities: Optional[Dict[str, Dict[str, Any]]] = None,
+    caches_dir: Optional[Path] = None,
+    inventory_path: Optional[Path] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Validates and resolves the execution plan:
       - Validates max_runs > 0.
-      - For each alias: ensures that its primary target run is either already
-        completed and validated, or automatically included in the execution plan
-        ahead of the alias.
+      - For each alias: ensures that its primary target run is validated against its
+        exact primary matrix row, expected provenance, and expected cache identity.
+      - Targets are not treated as reusable based only on structural validation.
+        If validation fails, the target is automatically scheduled for full computation ahead of the alias.
       - Returns (unique_runs_to_execute, alias_runs_to_publish).
     """
     if max_runs is not None:
@@ -1035,14 +1188,39 @@ def resolve_and_validate_execution_plan(
     # Check targets not in filtered_matrix
     missing_targets = []
     for tid in sorted(all_target_ids):
+        target_rows = matrix[matrix["run_id"] == tid]
+        if len(target_rows) == 0:
+            raise ValueError(f"Primary target run {tid} not found in matrix!")
+        target_row = target_rows.iloc[0]
+
         target_dir = output_dir / tid
-        is_target_valid, _ = validate_completed_run(target_dir, expected_provenance=expected_provenance)
+        exp_cache_id = None
+        if expected_cache_identities and tid in expected_cache_identities:
+            exp_cache_id = expected_cache_identities[tid]
+        elif caches_dir is not None and inventory_path is not None and inventory_path.exists():
+            scen = canonicalize_scenario(target_row["attack_scenario"])
+            seed = int(target_row["seed"])
+            cdir = caches_dir / f"{scen}_{seed}"
+            if cdir.exists():
+                try:
+                    exp_cache_id = validate_cache_against_inventory(
+                        cache_dir=cdir,
+                        scenario=scen,
+                        seed=seed,
+                        inventory_path=inventory_path,
+                        expected_provenance=expected_provenance,
+                    )
+                except Exception:
+                    exp_cache_id = None
+
+        is_target_valid, _ = validate_completed_run(
+            target_dir,
+            expected_row=target_row,
+            expected_provenance=expected_provenance,
+            expected_cache_identity=exp_cache_id,
+        )
         if not is_target_valid and tid not in filtered_matrix["run_id"].values:
-            # Need to auto-include target
-            target_row = matrix[matrix["run_id"] == tid]
-            if len(target_row) == 0:
-                raise ValueError(f"Primary target run {tid} not found in matrix!")
-            missing_targets.append(target_row.iloc[0])
+            missing_targets.append(target_row)
 
     if missing_targets:
         targets_df = pd.DataFrame(missing_targets)
@@ -1490,6 +1668,75 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
 
+    # 0. Official Execution Mode Strict Invariant Checks
+    if args.execute:
+        # Prohibit Git-gate bypass during execution
+        if not args.enforce_git:
+            raise ValueError(
+                "Cannot combine --execute with --no-enforce-git: official execution strictly mandates clean Git state and freeze ancestry."
+            )
+
+        # Bind official execution to canonical inputs
+        canonical_configs = (REPO_ROOT / "configs").resolve()
+        if args.configs_dir.resolve() != canonical_configs:
+            raise ValueError(
+                f"Non-canonical configs directory in --execute mode: {args.configs_dir}. "
+                f"Official execution requires canonical path: {canonical_configs}."
+            )
+
+        canonical_manifests = (REPO_ROOT / "data/manifests").resolve()
+        if args.manifests_dir.resolve() != canonical_manifests:
+            raise ValueError(
+                f"Non-canonical manifests directory in --execute mode: {args.manifests_dir}. "
+                f"Official execution requires canonical path: {canonical_manifests}."
+            )
+
+        canonical_models = (REPO_ROOT / "artifacts/models").resolve()
+        if args.models_dir.resolve() != canonical_models:
+            raise ValueError(
+                f"Non-canonical models directory in --execute mode: {args.models_dir}. "
+                f"Official execution requires canonical path: {canonical_models}."
+            )
+
+        canonical_preprocessors = (REPO_ROOT / "artifacts/preprocessors").resolve()
+        if args.preprocessors_dir.resolve() != canonical_preprocessors:
+            raise ValueError(
+                f"Non-canonical preprocessors directory in --execute mode: {args.preprocessors_dir}. "
+                f"Official execution requires canonical path: {canonical_preprocessors}."
+            )
+
+        canonical_caches = (REPO_ROOT / "artifacts/caches").resolve()
+        if args.caches_dir.resolve() != canonical_caches:
+            raise ValueError(
+                f"Non-canonical caches directory in --execute mode: {args.caches_dir}. "
+                f"Official execution requires canonical path: {canonical_caches}."
+            )
+
+        canonical_inventory = (REPO_ROOT / "artifacts/reports/cache_inventory_v2.json").resolve()
+        if args.inventory_path.resolve() != canonical_inventory:
+            raise ValueError(
+                f"Non-canonical inventory path in --execute mode: {args.inventory_path}. "
+                f"Official execution requires canonical path: {canonical_inventory}."
+            )
+
+        # Output directory security checks
+        eval_root = (REPO_ROOT / "artifacts/evaluation_runs").resolve()
+        resolved_output = args.output_dir.resolve()
+        try:
+            resolved_output.relative_to(eval_root)
+        except ValueError:
+            raise ValueError(
+                f"Unsafe output directory in --execute mode: {args.output_dir}. "
+                f"Output directory must resolve beneath designated root: {eval_root}."
+            )
+        if args.output_dir.is_symlink():
+            raise ValueError(f"Output directory cannot be a symlink: {args.output_dir}")
+        cur = args.output_dir
+        while cur.resolve() != eval_root and cur != cur.parent:
+            if cur.is_symlink():
+                raise ValueError(f"Output directory path contains a symlink: {cur}")
+            cur = cur.parent
+
     # 1. Run Preflight (always runs unconditionally)
     preflight_report = run_preflight(
         configs_dir=args.configs_dir,
@@ -1557,6 +1804,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         output_dir=args.output_dir,
         expected_provenance=provenance,
         max_runs=args.max_runs,
+        caches_dir=args.caches_dir,
+        inventory_path=args.inventory_path,
     )
 
     print(f"Execution Plan: {len(unique_runs)} unique executions, {len(alias_runs)} alias pointers.")
@@ -1619,6 +1868,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             alias_row=r,
             output_dir=args.output_dir,
             expected_provenance=provenance,
+            matrix=matrix,
+            caches_dir=args.caches_dir,
+            inventory_path=args.inventory_path,
         )
         aliased_count += 1
 

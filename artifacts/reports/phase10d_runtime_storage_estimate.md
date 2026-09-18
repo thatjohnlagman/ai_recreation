@@ -42,7 +42,7 @@ Attack caching is **100% precomputed** in the 15 official attack caches (`artifa
 > - **Primary Comparison (90 runs)**: 1.16h lower bound $\times$ [1.15, 1.25] = **~1.34 to 1.45 hours** (~80.2 to 87.2 min).
 > - **Full Evaluation Matrix (252 unique runs)**: 3.26h lower bound $\times$ [1.15, 1.25] = **~3.74 to 4.07 hours** (~224.6 to 244.2 min).
 >
-> Note: Across varying CPU thermal/load conditions on this host, the defense-inference lower bound ranges from 3.21h (cold run) to 3.79h (sustained load). Applying 15%–25% overhead to the full envelope yields an overall expected wall-clock range of ~3.69h (3.21h $\times$ 1.15) to ~4.74h (3.79h $\times$ 1.25). For the authoritative sustained-load lower bound (3.26h), the projected wall-clock execution time is **~3.74 to 4.07 hours**.
+> Note: The measured defense-inference lower bound on this host is **3.26 hours**. Accounting for estimated 15%–25% orchestration, serialization, and verification overhead, the estimated total wall-clock execution time for all 252 unique runs is **~3.74 to 4.07 hours** (estimated).
 
 > [!NOTE]
 > **Dominant Defense**: Randomized Smoothing (RS) performs 11 Random Forest inference passes per sample and accounts for approximately **89.9%** of total execution time.

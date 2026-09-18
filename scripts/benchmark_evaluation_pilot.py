@@ -271,7 +271,7 @@ Attack caching is **100% precomputed** in the 15 official attack caches (`artifa
 > - **Primary Comparison (90 runs)**: {primary_lower_h:.2f}h lower bound $\\times$ [1.15, 1.25] = **~{primary_wall_low:.2f} to {primary_wall_high:.2f} hours** (~{primary_wall_low*60:.1f} to {primary_wall_high*60:.1f} min).
 > - **Full Evaluation Matrix (252 unique runs)**: {matrix_lower_h:.2f}h lower bound $\\times$ [1.15, 1.25] = **~{matrix_wall_low:.2f} to {matrix_wall_high:.2f} hours** (~{matrix_wall_low*60:.1f} to {matrix_wall_high*60:.1f} min).
 >
-> Note: Across varying CPU thermal/load conditions on this host, the defense-inference lower bound ranges from 3.21h (cold run) to 3.79h (sustained load). Applying 15%–25% overhead to the full envelope yields an overall expected wall-clock range of ~3.69h (3.21h $\\times$ 1.15) to ~4.74h (3.79h $\\times$ 1.25). For the authoritative sustained-load lower bound ({matrix_lower_h:.2f}h), the projected wall-clock execution time is **~{matrix_wall_low:.2f} to {matrix_wall_high:.2f} hours**.
+> Note: The measured defense-inference lower bound on this host is **{matrix_lower_h:.2f} hours**. Accounting for estimated 15%–25% orchestration, serialization, and verification overhead, the estimated total wall-clock execution time for all 252 unique runs is **~{matrix_wall_low:.2f} to {matrix_wall_high:.2f} hours** (estimated).
 
 > [!NOTE]
 > **Dominant Defense**: Randomized Smoothing (RS) performs 11 Random Forest inference passes per sample and accounts for approximately **{rs_run_sec/(afp_run_sec + fs_run_sec + rs_run_sec)*100:.1f}%** of total execution time.
