@@ -7,41 +7,46 @@ from unittest.mock import patch, MagicMock
 from src.recall_aware_ids.experiment.schemas import RunSummary
 from scripts.build_analysis_tables import calculate_metrics, process_run, check_eq
 
-def build_dummy_run(run_id="test_run", attack="DecisionBoundary", batches=144):
+def build_dummy_run(attack="DecisionBoundary", seed=42, defense="afp", config="Base", batches=144, run_id="test_run"):
+    if run_id is None:
+        run_id = f"primary_{seed}_{attack}_{defense}_{config}"
+        
+    dummy_hash = "b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c"
+    
     summary = {
         "run_id": run_id,
-        "seed": 42,
+        "seed": seed,
         "attack_scenario": attack,
-        "config_id": "Base",
-        "defense": "afp",
-        "global_asr": 0.5,
-        "total_successful": 50,
-        "total_attempted": 100,
-        "total_eligible": 200,
-        "pr_auc_average_precision": 0.9,
+        "defense": defense,
+        "config_id": config,
+        "total_batches": batches,
+        "tp": batches * 125,
+        "fp": batches * 125,
+        "tn": batches * 125,
+        "fn": batches * 125,
         "accuracy": 0.5,
         "precision": 0.5,
         "recall": 0.5,
         "f1": 0.5,
         "balanced_accuracy": 0.5,
-        "tp": batches * 125,
-        "fp": batches * 125,
-        "tn": batches * 125,
-        "fn": batches * 125,
-        "total_batches": batches,
-        "total_queries": 72000,
+        "pr_auc_average_precision": 0.5,
+        "total_eligible": 100,
+        "total_attempted": 100,
+        "total_successful": 50,
+        "total_queries": 500 * batches,
+        "global_asr": 0.5,
         "cache_identity": {
-            "attacks_yaml_hash": "b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c",
-            "controllers_yaml_hash": "b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c",
-            "defenses_yaml_hash": "b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c",
-            "evaluation_batches_hash": "b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c",
-            "evaluation_roles_hash": "b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c",
-            "experiment_yaml_hash": "b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c",
-            "feature_mask_hash": "b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c",
-            "feature_names_hash": "b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c",
-            "frozen_rf_hash": "b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c",
-            "scaler_hash": "b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c",
-            "training_bounds_hash": "b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c"
+            "evaluation_batches_hash": dummy_hash,
+            "evaluation_roles_hash": dummy_hash,
+            "experiment_yaml_hash": dummy_hash,
+            "feature_mask_hash": dummy_hash,
+            "feature_names_hash": dummy_hash,
+            "frozen_rf_hash": dummy_hash,
+            "scaler_hash": dummy_hash,
+            "training_bounds_hash": dummy_hash,
+            "attacks_yaml_hash": dummy_hash,
+            "controllers_yaml_hash": dummy_hash,
+            "defenses_yaml_hash": dummy_hash
         },
         "status_code_counts": {"SUCCESS": 72000},
         "l0_summary": {"min": 0.0, "mean": 0.0, "std": 0.0, "max": 0.0},
@@ -50,6 +55,7 @@ def build_dummy_run(run_id="test_run", attack="DecisionBoundary", batches=144):
         "linf_summary": {"min": 0.0, "mean": 0.0, "std": 0.0, "max": 0.0},
         "completed_successfully": True
     }
+    
     if attack == "SilentProbing":
         summary["global_asr"] = None
         summary["total_successful"] = 0
@@ -58,25 +64,47 @@ def build_dummy_run(run_id="test_run", attack="DecisionBoundary", batches=144):
 
     completion = {"run_id": run_id, "status": "COMPLETED"}
     scores = []
-    
     confusions = []
     configs = []
+    
     for i in range(batches):
         confusions.append({
+            "run_id": run_id,
             "batch_id": i,
             "tp": 125, "fp": 125, "tn": 125, "fn": 125,
-            "accuracy": 0.5, "precision": 0.5, "recall": 0.5, "f1": 0.5, "balanced_accuracy": 0.5
+            "accuracy": 0.5, "precision": 0.5, "recall": 0.5, "f1": 0.5, "balanced_accuracy": 0.5,
+            "pr_auc_average_precision": 0.5, "eligible_count": 0, "attempted_count": 0,
+            "successful_count": 0, "asr_applicable": False, "asr": 0.0
         })
         configs.append({
+            "run_id": run_id,
             "batch_id": i,
+            "config_id": config,
             "intensity": 1.0,
             "state": "Base",
-            "zero_denominator": False
+            "multiplier": 1.0, "rolling_recall": 0.0, "hit_min_bound": False, "hit_max_bound": False,
+            "zero_denominator": False, "tp": None, "fn": None, "window_start_batch_id": None, "window_end_batch_id": None,
+            "configured_window_size": None, "window_batch_count": None, "window_tp_sum": None, "window_fn_sum": None,
+            "unclipped_next_intensity": None, "clipped_next_intensity": None, "fs_effective_d": None
+        })
+        scores.append({
+            "run_id": run_id,
+            "batch_id": i,
+            "y_true": [0]*500,
+            "labels": [0]*500,
+            "scores": [0.0]*500,
+            "preds": [0]*500,
+            "predictions": [0]*500,
+            "defense_final_invalid_count": 0,
+            "protected_feature_modification_count": 0,
+            "projected_cell_count": 0
         })
         
     return summary, completion, confusions, configs, scores
 
 def write_dummy_run(tmp_path, summary, completion, confusions, configs, scores):
+    tmp_path = tmp_path / "artifacts" / "evaluation_runs"
+    tmp_path.mkdir(parents=True, exist_ok=True)
     run_dir = tmp_path / summary["run_id"]
     run_dir.mkdir(parents=True)
     with open(run_dir / "run_summary.json", "w") as f: json.dump(summary, f)
@@ -88,14 +116,14 @@ def write_dummy_run(tmp_path, summary, completion, confusions, configs, scores):
 
 @patch('scripts.build_analysis_tables.EVAL_DIR')
 def test_1_valid_end_to_end_synthetic(mock_eval, tmp_path):
-    mock_eval.return_value = tmp_path
+    mock_eval.return_value = tmp_path / "artifacts" / "evaluation_runs"
     # This just ensures we can process a run
     summary, completion, confusions, configs, scores = build_dummy_run()
     write_dummy_run(tmp_path, summary, completion, confusions, configs, scores)
     
     
     row = {"run_id": "test_run", "attack_scenario": "DecisionBoundary", "seed": 42, "defense_name": "afp", "controller_config_id": "Base"}
-    with patch("scripts.build_analysis_tables.EVAL_DIR", tmp_path):
+    with patch("scripts.build_analysis_tables.EVAL_DIR", tmp_path / "artifacts" / "evaluation_runs"):
         rr, brs, crs = process_run(row)
         assert len(brs) == 144
         assert rr["TP"] == 144 * 125
@@ -108,18 +136,18 @@ def test_2_missing_duplicate_out_of_order(mock_eval, tmp_path):
     configs.pop(5)
     write_dummy_run(tmp_path, summary, completion, confusions, configs, scores)
     row = {"run_id": "test_run", "attack_scenario": "DecisionBoundary", "seed": 42, "defense_name": "afp", "controller_config_id": "Base"}
-    with patch("scripts.build_analysis_tables.EVAL_DIR", tmp_path):
-        with pytest.raises(ValueError, match="Batch count"):
+    with patch("scripts.build_analysis_tables.EVAL_DIR", tmp_path / "artifacts" / "evaluation_runs"):
+        with pytest.raises(ValueError, match="len mismatch"):
             process_run(row)
             
     # Out of order
     summary, completion, confusions, configs, scores = build_dummy_run()
     confusions[5], confusions[6] = confusions[6], confusions[5]
-    shutil.rmtree(tmp_path / "test_run")
+    shutil.rmtree(tmp_path / "artifacts" / "evaluation_runs" / "test_run")
     write_dummy_run(tmp_path, summary, completion, confusions, configs, scores)
     row = {"run_id": "test_run", "attack_scenario": "DecisionBoundary", "seed": 42, "defense_name": "afp", "controller_config_id": "Base"}
-    with patch("scripts.build_analysis_tables.EVAL_DIR", tmp_path):
-        with pytest.raises(ValueError, match="out of order"):
+    with patch("scripts.build_analysis_tables.EVAL_DIR", tmp_path / "artifacts" / "evaluation_runs"):
+        with pytest.raises(ValueError, match="confusion batch_id.*mismatch"):
             process_run(row)
 
 @patch('scripts.build_analysis_tables.EVAL_DIR')
@@ -128,7 +156,7 @@ def test_3_cross_file_run_id_disagreement(mock_eval, tmp_path):
     completion["run_id"] = "wrong_id"
     write_dummy_run(tmp_path, summary, completion, confusions, configs, scores)
     row = {"run_id": "test_run", "attack_scenario": "DecisionBoundary", "seed": 42, "defense_name": "afp", "controller_config_id": "Base"}
-    with patch("scripts.build_analysis_tables.EVAL_DIR", tmp_path):
+    with patch("scripts.build_analysis_tables.EVAL_DIR", tmp_path / "artifacts" / "evaluation_runs"):
         with pytest.raises(ValueError, match="completion.json run_id mismatch"):
             process_run(row)
 
@@ -138,8 +166,8 @@ def test_4_cross_file_batch_id_disagreement(mock_eval, tmp_path):
     configs[5]["batch_id"] = 999
     write_dummy_run(tmp_path, summary, completion, confusions, configs, scores)
     row = {"run_id": "test_run", "attack_scenario": "DecisionBoundary", "seed": 42, "defense_name": "afp", "controller_config_id": "Base"}
-    with patch("scripts.build_analysis_tables.EVAL_DIR", tmp_path):
-        with pytest.raises(ValueError, match="Batch ID mismatch"):
+    with patch("scripts.build_analysis_tables.EVAL_DIR", tmp_path / "artifacts" / "evaluation_runs"):
+        with pytest.raises(ValueError, match="batch_id.*mismatch"):
             process_run(row)
 
 def test_5_incorrect_alias_target():
