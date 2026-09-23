@@ -902,6 +902,34 @@ def validate_completed_alias(
     if actual_files != expected_files:
         return False, f"Alias directory contains invalid files (expected {expected_files}, got {actual_files})"
 
+    # If expected_cache_identity was not explicitly passed, independently pin if possible
+    if expected_cache_identity is None and caches_dir is not None and inventory_path is not None and inventory_path.exists():
+        scen = canonicalize_scenario(expected_row["attack_scenario"])
+        seed = int(expected_row["seed"])
+        cdir = caches_dir / f"{scen}_{seed}"
+        if cdir.exists():
+            try:
+                expected_cache_identity = validate_cache_against_inventory(
+                    cache_dir=cdir,
+                    scenario=scen,
+                    seed=seed,
+                    inventory_path=inventory_path,
+                    expected_provenance=expected_provenance,
+                )
+            except Exception as e:
+                return False, f"Target cache validation against inventory failed: {e}"
+
+    target_run_provenance = dict(expected_provenance)
+    cache_manifest_hash = expected_cache_identity.get("manifest_sha256") if expected_cache_identity else None
+    if cache_manifest_hash is None and caches_dir is not None:
+        scen = canonicalize_scenario(expected_row["attack_scenario"])
+        seed = int(expected_row["seed"])
+        cdir = caches_dir / f"{scen}_{seed}"
+        if cdir.exists():
+            cache_manifest_hash = calculate_file_hash(cdir / "manifest.json")
+    if cache_manifest_hash is not None:
+        target_run_provenance["cache_manifest_hash"] = cache_manifest_hash
+
     comp_path = alias_dir / "completion.json"
     ptr_path = alias_dir / "alias_pointer.json"
 
@@ -917,8 +945,8 @@ def validate_completed_alias(
         _validate_provenance(marker.provenance_hashes)
         if marker.run_id != expected_row["run_id"]:
             return False, f"Alias completion run_id mismatch: expected {expected_row['run_id']}, got {marker.run_id}"
-        if marker.provenance_hashes != expected_provenance:
-            return False, "Alias completion provenance does not match expected provenance exactly"
+        if marker.provenance_hashes != target_run_provenance:
+            return False, "Alias completion provenance does not match target run provenance exactly"
     except Exception as e:
         return False, f"Alias completion.json failed validation: {e}"
 
@@ -938,8 +966,8 @@ def validate_completed_alias(
             return False, "Alias pointer defense mismatch"
         if ptr.get("config_id") != expected_row["controller_config_id"]:
             return False, f"Alias pointer config_id mismatch: expected {expected_row['controller_config_id']}, got {ptr.get('config_id')}"
-        if ptr.get("target_provenance") != expected_provenance:
-            return False, "Alias pointer target_provenance does not match expected provenance exactly"
+        if ptr.get("target_provenance") != target_run_provenance:
+            return False, "Alias pointer target_provenance does not match target run provenance exactly"
     except Exception as e:
         return False, f"alias_pointer.json validation failed: {e}"
 
@@ -968,28 +996,13 @@ def validate_completed_alias(
             "alias_for_run_id": None,
         })
 
-    # If expected_cache_identity was not explicitly passed, independently pin if possible
-    if expected_cache_identity is None and caches_dir is not None and inventory_path is not None and inventory_path.exists():
-        scen = canonicalize_scenario(expected_row["attack_scenario"])
-        seed = int(expected_row["seed"])
-        cdir = caches_dir / f"{scen}_{seed}"
-        if cdir.exists():
-            try:
-                expected_cache_identity = validate_cache_against_inventory(
-                    cache_dir=cdir,
-                    scenario=scen,
-                    seed=seed,
-                    inventory_path=inventory_path,
-                    expected_provenance=expected_provenance,
-                )
-            except Exception as e:
-                return False, f"Target cache validation against inventory failed: {e}"
+    # Validate target run exists and is valid against exact primary row, cache identity, and provenance
 
     # Validate target run exists and is valid against exact primary row, cache identity, and provenance
     is_target_valid, err = validate_completed_run(
         target_dir,
         expected_row=target_row,
-        expected_provenance=expected_provenance,
+        expected_provenance=target_run_provenance,
         expected_cache_identity=expected_cache_identity,
     )
     if not is_target_valid:
@@ -1072,10 +1085,21 @@ def publish_alias(
                 expected_provenance=expected_provenance,
             )
 
+    target_run_provenance = dict(expected_provenance)
+    cache_manifest_hash = expected_cache_identity.get("manifest_sha256") if expected_cache_identity else None
+    if cache_manifest_hash is None and caches_dir is not None:
+        scen = canonicalize_scenario(alias_row["attack_scenario"])
+        seed = int(alias_row["seed"])
+        cdir = caches_dir / f"{scen}_{seed}"
+        if cdir.exists():
+            cache_manifest_hash = calculate_file_hash(cdir / "manifest.json")
+    if cache_manifest_hash is not None:
+        target_run_provenance["cache_manifest_hash"] = cache_manifest_hash
+
     is_valid, err = validate_completed_run(
         target_dir,
         expected_row=target_row,
-        expected_provenance=expected_provenance,
+        expected_provenance=target_run_provenance,
         expected_cache_identity=expected_cache_identity,
     )
     if not is_valid:
@@ -1130,7 +1154,7 @@ def publish_alias(
             "alias_for_run_id": target_id,
             "target_run_summary_sha256": target_summary_hash,
             "target_completion_sha256": target_comp_hash,
-            "target_provenance": expected_provenance,
+            "target_provenance": target_run_provenance,
             "published_at": datetime.datetime.utcnow().isoformat() + "Z",
         }
         with open(staging_dir / "alias_pointer.json", "w") as f:
@@ -1139,7 +1163,7 @@ def publish_alias(
         marker = CompletionMarker(
             run_id=alias_id,
             timestamp=datetime.datetime.utcnow().isoformat() + "Z",
-            provenance_hashes=expected_provenance,
+            provenance_hashes=target_run_provenance,
         )
         with open(staging_dir / "completion.json", "w") as f:
             json.dump(dataclasses.asdict(marker), f, indent=2)
@@ -1213,10 +1237,21 @@ def resolve_and_validate_execution_plan(
                 except Exception:
                     exp_cache_id = None
 
+        target_run_provenance = dict(expected_provenance)
+        cache_manifest_hash = exp_cache_id.get("manifest_sha256") if exp_cache_id else None
+        if cache_manifest_hash is None and caches_dir is not None:
+            scen = canonicalize_scenario(target_row["attack_scenario"])
+            seed = int(target_row["seed"])
+            cdir = caches_dir / f"{scen}_{seed}"
+            if cdir.exists():
+                cache_manifest_hash = calculate_file_hash(cdir / "manifest.json")
+        if cache_manifest_hash is not None:
+            target_run_provenance["cache_manifest_hash"] = cache_manifest_hash
+
         is_target_valid, _ = validate_completed_run(
             target_dir,
             expected_row=target_row,
-            expected_provenance=expected_provenance,
+            expected_provenance=target_run_provenance,
             expected_cache_identity=exp_cache_id,
         )
         if not is_target_valid and tid not in filtered_matrix["run_id"].values:

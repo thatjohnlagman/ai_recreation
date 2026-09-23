@@ -147,6 +147,7 @@ class SyntheticCacheProvider(AttackCacheProvider):
         self.cache_identity["attack_scenario"] = scenario
         self.cache_identity["effective_seed"] = 42
         self.cache_identity["row_count"] = n_batches * batch_size
+        self.cache_identity["manifest_sha256"] = "c" * 64
 
     def get_batch_data(self, batch_id: int) -> Dict[str, np.ndarray]:
         rng = np.random.RandomState(batch_id)
@@ -1701,7 +1702,7 @@ def test_alias_and_target_validation_regression(tmp_path: Path):
         attack_scenario="SilentProbing",
         defense_name="afp",
         config_id="C1",
-        provenance_hashes=VALID_PROVENANCE,
+        provenance_hashes={**VALID_PROVENANCE, "cache_manifest_hash": cache.cache_identity["manifest_sha256"]},
     )
     runner.execute_run()
 
@@ -1716,7 +1717,12 @@ def test_alias_and_target_validation_regression(tmp_path: Path):
         "is_alias": True,
     })
 
-    publish_alias(alias_row, output_dir=tmp_path, expected_provenance=VALID_PROVENANCE)
+    publish_alias(
+        alias_row,
+        output_dir=tmp_path,
+        expected_provenance=VALID_PROVENANCE,
+        expected_cache_identity=cache.cache_identity,
+    )
     alias_dir = tmp_path / alias_id
 
     def touch_completion_after_pointer():
@@ -1726,7 +1732,13 @@ def test_alias_and_target_validation_regression(tmp_path: Path):
     # 1. Wrong alias completion provenance
     bad_prov = dict(VALID_PROVENANCE)
     bad_prov["frozen_rf_hash"] = "a" * 64
-    v, err = validate_completed_alias(alias_dir, alias_row, expected_provenance=bad_prov, output_dir=tmp_path)
+    v, err = validate_completed_alias(
+        alias_dir,
+        alias_row,
+        expected_provenance=bad_prov,
+        output_dir=tmp_path,
+        expected_cache_identity=cache.cache_identity,
+    )
     assert not v
     assert "Alias completion provenance does not match" in err
 
@@ -1739,7 +1751,13 @@ def test_alias_and_target_validation_regression(tmp_path: Path):
     with open(ptr_path, "w") as f:
         json.dump(ptr, f)
     touch_completion_after_pointer()
-    v, err = validate_completed_alias(alias_dir, alias_row, expected_provenance=VALID_PROVENANCE, output_dir=tmp_path)
+    v, err = validate_completed_alias(
+        alias_dir,
+        alias_row,
+        expected_provenance=VALID_PROVENANCE,
+        output_dir=tmp_path,
+        expected_cache_identity=cache.cache_identity,
+    )
     assert not v
     assert "Alias pointer config_id mismatch" in err
     with open(ptr_path, "w") as f:
@@ -1752,7 +1770,13 @@ def test_alias_and_target_validation_regression(tmp_path: Path):
     with open(ptr_path, "w") as f:
         json.dump(ptr_bad_prov, f)
     touch_completion_after_pointer()
-    v, err = validate_completed_alias(alias_dir, alias_row, expected_provenance=VALID_PROVENANCE, output_dir=tmp_path)
+    v, err = validate_completed_alias(
+        alias_dir,
+        alias_row,
+        expected_provenance=VALID_PROVENANCE,
+        output_dir=tmp_path,
+        expected_cache_identity=cache.cache_identity,
+    )
     assert not v
     assert "Alias pointer target_provenance does not match" in err
     with open(ptr_path, "w") as f:
@@ -1767,7 +1791,13 @@ def test_alias_and_target_validation_regression(tmp_path: Path):
     cdata["timestamp"] = "2026-09-18T99:99:99Z"
     with open(t_comp, "w") as f:
         json.dump(cdata, f)
-    v, err = validate_completed_alias(alias_dir, alias_row, expected_provenance=VALID_PROVENANCE, output_dir=tmp_path)
+    v, err = validate_completed_alias(
+        alias_dir,
+        alias_row,
+        expected_provenance=VALID_PROVENANCE,
+        output_dir=tmp_path,
+        expected_cache_identity=cache.cache_identity,
+    )
     assert not v
     assert "Alias target" in err or "target_completion_sha256 mismatch" in err
     with open(t_comp, "w") as f:
@@ -1794,7 +1824,13 @@ def test_alias_and_target_validation_regression(tmp_path: Path):
     sdata["config_id"] = "Base"
     with open(t_sum, "w") as f:
         json.dump(sdata, f)
-    v, err = validate_completed_alias(alias_dir, alias_row, expected_provenance=VALID_PROVENANCE, output_dir=tmp_path)
+    v, err = validate_completed_alias(
+        alias_dir,
+        alias_row,
+        expected_provenance=VALID_PROVENANCE,
+        output_dir=tmp_path,
+        expected_cache_identity=cache.cache_identity,
+    )
     assert not v
     assert "Target run_summary controller config is not C1" in err or "Controller config mismatch" in err
     with open(t_sum, "w") as f:
@@ -1803,14 +1839,26 @@ def test_alias_and_target_validation_regression(tmp_path: Path):
     # 7. Structurally valid target belonging to another matrix row
     bad_row = alias_row.copy()
     bad_row["seed"] = 43
-    v, err = validate_completed_alias(alias_dir, bad_row, expected_provenance=VALID_PROVENANCE, output_dir=tmp_path)
+    v, err = validate_completed_alias(
+        alias_dir,
+        bad_row,
+        expected_provenance=VALID_PROVENANCE,
+        output_dir=tmp_path,
+        expected_cache_identity=cache.cache_identity,
+    )
     assert not v
     assert "seed mismatch" in err.lower()
 
     # 8. Mtime ordering
     now = (alias_dir / "completion.json").stat().st_mtime
     os.utime(alias_dir / "alias_pointer.json", (now + 5.0, now + 5.0))
-    v, err = validate_completed_alias(alias_dir, alias_row, expected_provenance=VALID_PROVENANCE, output_dir=tmp_path)
+    v, err = validate_completed_alias(
+        alias_dir,
+        alias_row,
+        expected_provenance=VALID_PROVENANCE,
+        output_dir=tmp_path,
+        expected_cache_identity=cache.cache_identity,
+    )
     assert not v
     assert "alias_pointer.json was modified after completion.json" in err
     touch_completion_after_pointer()
@@ -1827,6 +1875,7 @@ def test_alias_and_target_validation_regression(tmp_path: Path):
         filtered_matrix=filtered,
         output_dir=tmp_path,
         expected_provenance=VALID_PROVENANCE,
+        expected_cache_identities={target_id: cache.cache_identity},
     )
     assert target_id in unique_runs["run_id"].values
     assert alias_id in alias_runs["run_id"].values
