@@ -1,38 +1,20 @@
-# Phase 11B Pooling and Multiplicity Decision Memo (Blinded)
+# Phase 11B Pooling Decision Memo
 
-**Status:** Option B (Pooled-by-Defense Testing) has been EXPLICITLY APPROVED and LOCKED for the primary thesis-required RQ3 analysis. The Holm multiplicity adjustment is applied across the family of 9 primary tests. No metric values have been inspected. This memo derives solely from matrix structure and the approved thesis text.
+**Status:** Option B is prospectively approved and locked.
+**Lock Timestamp:** 2026-09-23T09:44:33.571916+00:00
 
-## 1. The Ambiguity in the Approved Thesis
+## Decision
+- Option B is prospectively approved and locked.
+- Primary observation: paired batch difference, C1 minus Base.
+- Pool the three attack scenarios within each defense.
+- 2,160 paired batches per defense/metric.
+- Nine primary tests: 3 defenses × Precision, Recall, and F1.
+- The thesis decision rule uses each raw two-tailed paired-t p-value at alpha 0.05.
+- Holm adjustment across one family containing all nine primary tests is supplementary and must not replace the raw-p thesis decision.
+- Supplementary run-level analysis uses 15 paired executions per defense/metric and a separate nine-test Holm family.
+- Batch serial dependence is disclosed as a limitation.
+- RQ4 remains descriptive only.
 
-The approved thesis states (p. 70):
-> *"The main analysis is summarized by defense mechanism and configuration, with attack scenario retained as an evaluation condition."*
-
-This creates structural ambiguity for Phase 11B Hypothesis Testing. How should the 144 batch pairs for a single configuration (Base vs. C1) be grouped for inferential tests?
-
-## 2. Structural Options (Derived from Matrix Only)
-
-There are 3 Defense Mechanisms × 3 Attack Scenarios = 9 Experimental Cells. Each cell contains 5 independent executions × 144 batches = 720 batch-level repeated measures.
-
-### Option A: Cell-Wise Testing (No Pooling Across Attacks)
-- **Grouping:** Test each of the 9 Attack × Defense cells independently.
-- **Pairs per Test:** $N = 720$ batch pairs.
-- **Total Primary Tests (per Metric):** 9 tests.
-- **Thesis Support:** Retains attack scenario strictly as an isolated condition, but fails to summarize *across* the defense mechanism globally.
-
-### Option B: Pooled Testing (Summarized by Defense)
-- **Grouping:** Pool the 3 Attack Scenarios for a given Defense Mechanism.
-- **Pairs per Test:** $N = 720 \times 3 = 2,160$ batch pairs.
-- **Total Primary Tests (per Metric):** 3 tests.
-- **Thesis Support:** Directly addresses "summarized by defense mechanism", while attack scenario remains a nested evaluation condition within the pool.
-
-## 3. Recommended Thesis Interpretation
-
-Based solely on the approved thesis instruction to summarize by defense mechanism *with attack scenario retained as an evaluation condition*, **Option B (Pooled Testing)** most closely aligns with the literal text.
-
-## 4. Supplementary Holm Multiplicity Family
-
-The thesis does not explicitly define a multiplicity correction family. The previously implemented Holm correction is supplementary. 
-If Option B is selected, the supplementary Holm family should consist of the 3 tests within a single metric. If Option A is selected, the family should consist of the 9 tests within a single metric.
-
-## Final Approval Decision
-Option B (Pooled Testing) has been formally approved and locked as the methodology for Phase 11B. Inference will proceed by pooling the 3 attack scenarios per defense mechanism, resulting in 2,160 batch pairs per test, adjusting the family of 9 metric-defense comparisons using the Holm method.
+## Degenerate Result Contract
+- all-zero differences: t=0, p=1, CI=[0,0], dz=0;
+- constant nonzero differences: signed infinity t statistic, raw p=0, degenerate CI=[mean,mean], dz=null/NA, and an explicit warning.

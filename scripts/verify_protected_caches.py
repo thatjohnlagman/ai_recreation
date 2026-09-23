@@ -12,10 +12,18 @@ def main():
     repo_root = Path(__file__).parent.parent
     inv_path = repo_root / "artifacts" / "reports" / "cache_inventory_v2.json"
     
+    stage = "UNKNOWN"
+    if "--before" in sys.argv:
+        stage = "BEFORE"
+    elif "--after" in sys.argv:
+        stage = "AFTER"
+        
     timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
     command = " ".join(sys.argv)
     
-    print(f"[{timestamp}] Executing: {command}")
+    print(f"--- [{stage}] Protected Caches Check ---")
+    print(f"Timestamp: {timestamp}")
+    print(f"Command: {command}")
     
     # Authoritative base hash for cache_inventory_v2.json
     EXPECTED_INV_HASH = "274f6a132cc4459c3adf8a70949cb7ed5d20f95b779b48040e47ec3ea2ede6ae"
@@ -109,12 +117,14 @@ def main():
     print(f"Verified: {verified_count}")
     print(f"Mismatch: {mismatch_count}")
     
-    if mismatch_count > 0 or verified_count != expected_count:
-        print("Status: FAIL")
-        sys.exit(1)
-    else:
-        print("Status: PASS")
-        sys.exit(0)
+    exit_code = 1 if mismatch_count > 0 or verified_count != expected_count else 0
+    status = "FAIL" if exit_code != 0 else "PASS"
+    
+    print(f"Exit Code: {exit_code}")
+    print(f"Status: {status}")
+    print("-" * 40)
+    
+    sys.exit(exit_code)
 
 if __name__ == "__main__":
     main()
