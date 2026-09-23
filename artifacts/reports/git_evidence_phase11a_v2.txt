@@ -2,10 +2,9 @@
 CLEAN (0 modifications)
 
 === GIT UNTRACKED ARTIFACTS ===
-artifacts/reports/git_evidence_phase11a_v2.txt
 
 === RECENT COMMITS ===
+75d5ef9 Phase 11A v2: Fix expected row count for controller traces
 aaf2953 Phase 11A v2: Revert to thesis-mandated batch-level primary inference
 8b7e1b7 Phase 11A v2: Harden statistics and aggregation validations
-c247a70 Phase 11A: Implement read-only analysis tables, specifications, and bundle tests
 

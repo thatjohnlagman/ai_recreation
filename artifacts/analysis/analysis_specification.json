@@ -1,10 +1,8 @@
 {
-  "protocol_version": "2.1.0",
-  "lock_timestamp": "2026-09-23T16:21:00+08:00",
-  "lock_commit": "TO_BE_COMPUTED",
-  "primary_inference_test": "batch_level_paired_t_test",
-  "independent_unit": "batch_level_pairing",
+  "protocol_version": "2.1.1",
+  "primary_observation_unit": "paired_batch",
   "dependence_limitation": "batches nested within executions with serial dependence (acknowledged)",
+  "primary_inference_test": "batch_level_paired_t_test",
   "supplementary_inference_test": "run_level_paired_t_test",
   "supplementary_effect_size": "cohens_dz",
   "supplementary_confidence_interval": 0.95,
@@ -15,6 +13,8 @@
   "missing_data_policy": "catastrophic_failure",
   "undefined_metric_substitution": 0.0,
   "alias_policy": "resolve_to_primary_and_isolate",
-  "zero_variance_difference_p_value": 1.0,
+  "zero_variance_difference_all_zero_p_value": 1.0,
+  "zero_variance_difference_all_zero_dz": 0.0,
+  "zero_variance_difference_constant_nonzero": "report_as_degenerate_infinite_statistic",
   "ambiguity": "exact_multiplicity_family_and_pooling_structure_unresolved"
 }

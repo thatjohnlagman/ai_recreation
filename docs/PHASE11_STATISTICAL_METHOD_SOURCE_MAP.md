@@ -3,18 +3,18 @@
 This document traces every statistical choice to its authoritative frozen source to distinguish between thesis-mandated methods, frozen implementation operationalizations, and supplementary diagnostics.
 
 ## 1. Methods Explicitly Required by the Approved Thesis
-The following methods are structurally mandated by the approved thesis (printed pages 69–73) and constitute the authoritative primary inference procedure.
+The following methods are structurally mandated by the approved thesis and constitute the authoritative primary inference procedure.
 
 | Method Component | Authoritative Source | Note |
 |---|---|---|
-| **Primary Inferential Test** | Approved Thesis (pp. 69–73) | Two-tailed paired t-test. |
-| **Experimental/Pairing Unit** | Approved Thesis (pp. 69–73) | Batch-level pairing. Each Base batch is paired with the corresponding controller batch. |
-| **Confirmatory Metrics** | Approved Thesis (pp. 69–73) | Precision, Recall, and F1-score. |
-| **Significance Level (Alpha)** | Approved Thesis (pp. 69–73) | α = 0.05 |
-| **Descriptive Treatment (RQ1/2/4)**| Approved Thesis (pp. 69–73) | RQ1, RQ2, and RQ4 use descriptive statistics (mean and standard deviation). RQ4 is a descriptive sensitivity analysis and does not introduce a hypothesis test. |
-| **Analysis Grouping** | Approved Thesis (pp. 69–73) | Summarized by defense mechanism and configuration, with attack scenario retained as an evaluation condition. |
+| **Experimental/Pairing Unit** | Approved Thesis (p. 69) | Batch-level Base/C1 pairing. |
+| **Analysis Grouping** | Approved Thesis (p. 70) | Analysis grouping and RQ method summary. |
+| **Primary Inferential Test** | Approved Thesis (pp. 70–73) | Two-tailed paired t-test. |
+| **Confirmatory Metrics** | Approved Thesis (pp. 70–73) | Precision, Recall, and F1-score. |
+| **Significance Level (Alpha)** | Approved Thesis (pp. 70–73) | α = 0.05 |
+| **Descriptive Treatment (RQ1/2/4)**| Approved Thesis (pp. 70–73) | Descriptive handling of RQ1/RQ2/RQ4, as applicable. |
 
-**Methodological Limitation Disclosure:** The thesis requires a batch-level paired t-test. However, consecutive batches within an execution may be serially dependent because the Recall-Aware controller carries state forward. Treating all 6,480 batch pairs as independent is a methodological limitation affecting interpretation. Despite this limitation, the batch-level test remains the unalterable, confirmatory primary test.
+**Methodological Limitation Disclosure:** The thesis requires a batch-level paired test. However, consecutive batches within an execution may be serially dependent because the Recall-Aware controller carries state forward. Treating all 6,480 batch pairs as independent is a methodological limitation affecting interpretation. Despite this limitation, the batch-level test remains the unalterable, confirmatory primary test.
 
 ## 2. Frozen Implementation Details
 These operationalize the approved thesis and were frozen before evaluation.

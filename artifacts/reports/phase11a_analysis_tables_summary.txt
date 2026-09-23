@@ -30,3 +30,8 @@ Table: sensitivity_batch_level.csv
 Schema: run_id, seed, attack_scenario, defense_mechanism, controller_config, batch_id, TP, FP, TN, FN, accuracy, precision, recall, f1_score, balanced_accuracy
 Row Count: 27216 (Expected: 27216)
 SHA-256: 95e3b59f4bf570a341dc869ac7955ee78eb33e618161ef4dd98ab058601d9a07
+
+Table: controller_trace_summary.csv
+Schema: run_id, batch_id, controller_config, intensity, state, rolling_recall, multiplier, clipping_indicator, zero_denominator_indicator
+Row Count: 36288 (Expected: 36288)
+SHA-256: 69053d3dca56efaf59b2eb92bfd381dee4d9fce68d93b9ea41d1655717784f53

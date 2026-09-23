@@ -9,6 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src.recall_aware_ids.experiment.schemas import RunSummary
 from scripts.run_evaluation import ( build_production_provenance,
     derive_and_validate_matrix,
     canonicalize_scenario,
@@ -70,16 +71,31 @@ def process_run(row, expected_batches=144):
         confusions = json.load(f)
     with open(run_dir / "config.json") as f:
         configs = json.load(f)
+    with open(run_dir / "scores.json") as f:
+        scores = json.load(f)
+        
+    check_eq(summary["run_id"], rid, f"{rid}: run_summary.json run_id mismatch")
+    check_eq(completion["run_id"], rid, f"{rid}: completion.json run_id mismatch")
+    
         
     check_eq(len(confusions), expected_batches, f"Batch count in confusion.json for {rid}")
     check_eq(len(configs), expected_batches, f"Batch count in config.json for {rid}")
     
-    # Contract validation for ASR
-    if row["attack_scenario"] == "SilentProbing":
-        check_eq(summary.get("attack_success_rate"), None, f"{rid}: SilentProbing ASR must be null")
-    else:
-        # ASR is valid for other attacks
-        pass
+    # Contract validation for ASR and PR-AUC
+    # We use the authoritative production schema to enforce contracts
+    try:
+        RunSummary(**summary)
+    except Exception as e:
+        raise ValueError(f"{rid}: Schema validation failed: {e}")
+        
+    if canonicalize_scenario(row["attack_scenario"]) != "SilentProbing":
+        att = summary["total_attempted"]
+        succ = summary["total_successful"]
+        gasr = summary["global_asr"]
+        if att == 0:
+            check_eq(gasr, 0.0, f"{rid}: global_asr should be 0.0 when attempted is 0")
+        else:
+            check_tolerance(gasr, float(succ) / att, f"{rid}: global_asr calculation")
         
     run_tp = run_fp = run_tn = run_fn = 0
     
