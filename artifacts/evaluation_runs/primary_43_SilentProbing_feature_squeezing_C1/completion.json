@@ -1,0 +1,18 @@
+{
+  "run_id": "primary_43_SilentProbing_feature_squeezing_C1",
+  "timestamp": "2026-09-23T04:41:43.431472Z",
+  "provenance_hashes": {
+    "frozen_rf_hash": "9608672c5d5e38a9272c560679cdd2291399de0e0917c8c9dff373bfd200f51d",
+    "scaler_hash": "8999376cdf97c2047d9eb1a9ed245fb645bcb3af46b0c2e7cc07e3124a037fc2",
+    "feature_names_hash": "fe36589ce33a64aa7a4eed643dcd0181469c0dc43e629943a0a6b79195b79046",
+    "feature_mask_hash": "5f332f52c7e1abba9f3306f50faedc3f6db0276f9e580749ba739bc85016224f",
+    "training_bounds_hash": "9554f1b0287c88b5ef7b8de19d193184f2d76eec2b4d96f1fa525818cffb275b",
+    "evaluation_roles_hash": "cbf650879aa1369fa26b803777f30d4b0add9e7aff2c05d399ba7f42563f7b45",
+    "evaluation_batches_hash": "4084017e5593732e455763416f7fc38254fc9dab2466eca289b66e68dc0ff79a",
+    "attacks_yaml_hash": "fbd596219990125d8a75da0b1d0e35bdd82c1429052407115ab2ab4f4f91cd2b",
+    "controllers_yaml_hash": "9c81c9696ab740a1b56ae0152f84fbb8be983484fd284cf0ac7edbd6b4a1eb91",
+    "defenses_yaml_hash": "43c21344140233d8ba90d78eff345741ef825a68ee8232c9cf32220309f5a7ff",
+    "experiment_yaml_hash": "a1c5a389b1bc3c66311c7a96a7ccc3ee54af86506e64b38be7f26ad3c3d84c70",
+    "cache_manifest_hash": "3a583c3087b88cf520801a300102246942ee9735c97c9fdbb9dc75e90d4573c6"
+  }
+}

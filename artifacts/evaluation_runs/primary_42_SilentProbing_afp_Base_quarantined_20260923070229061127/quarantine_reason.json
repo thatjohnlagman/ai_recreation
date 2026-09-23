@@ -1,0 +1,5 @@
+{
+  "run_id": "primary_42_SilentProbing_afp_Base",
+  "quarantined_at": "2026-09-23T07:02:29.061282Z",
+  "reason": "Unexpected files: ['quarantine_reason.json']"
+}
