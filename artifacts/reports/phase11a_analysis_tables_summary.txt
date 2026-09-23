@@ -34,4 +34,4 @@ SHA-256: 95e3b59f4bf570a341dc869ac7955ee78eb33e618161ef4dd98ab058601d9a07
 Table: controller_trace_summary.csv
 Schema: run_id, batch_id, controller_config, intensity, state, rolling_recall, multiplier, clipping_indicator, zero_denominator_indicator
 Row Count: 36288 (Expected: 36288)
-SHA-256: 69053d3dca56efaf59b2eb92bfd381dee4d9fce68d93b9ea41d1655717784f53
+SHA-256: 2ce085e71861df3764d50e7a994afaa304fc50c43050e7eee76c9a0dac39216a

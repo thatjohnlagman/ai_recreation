@@ -252,10 +252,12 @@ def reject_unexpected_artifacts(inv_hashes, eval_dir, repo_root):
     check_eq(len(quarantined), 1, "Exactly one historical quarantine directory expected")
 
 def write_csv(path, records, keys):
-    with open(path, "w", newline="") as f:
+    temp_path = path.with_name(path.name + ".tmp")
+    with open(temp_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=keys)
         writer.writeheader()
         writer.writerows(records)
+    temp_path.replace(path)
 
 def deterministic_table_generation(analysis_dir, primary_run_records, primary_batch_records, primary_paired_runs, primary_paired_batches, sens_run_records, sens_batch_records, all_controller_records):
     run_keys = ["run_id", "seed", "attack_scenario", "defense_mechanism", "controller_config", "TP", "FP", "TN", "FN", "accuracy", "precision", "recall", "f1_score", "balanced_accuracy"]

@@ -1,6 +1,6 @@
 # Phase 11B Pooling and Multiplicity Decision Memo (Blinded)
 
-**Status:** Phase 11B execution is blocked pending explicit approval of the statistical pooling structure and multiple-comparison family. No metric values have been inspected. This memo derives solely from matrix structure and the approved thesis text.
+**Status:** Option B (Pooled-by-Defense Testing) has been EXPLICITLY APPROVED and LOCKED for the primary thesis-required RQ3 analysis. The Holm multiplicity adjustment is applied across the family of 9 primary tests. No metric values have been inspected. This memo derives solely from matrix structure and the approved thesis text.
 
 ## 1. The Ambiguity in the Approved Thesis
 
@@ -34,5 +34,5 @@ Based solely on the approved thesis instruction to summarize by defense mechanis
 The thesis does not explicitly define a multiplicity correction family. The previously implemented Holm correction is supplementary. 
 If Option B is selected, the supplementary Holm family should consist of the 3 tests within a single metric. If Option A is selected, the family should consist of the 9 tests within a single metric.
 
-## Request for Explicit Approval
-Please explicitly instruct whether to use **Option A** or **Option B** for the primary batch-level test grouping before Phase 11B can proceed. Do not conduct inference until this is resolved.
+## Final Approval Decision
+Option B (Pooled Testing) has been formally approved and locked as the methodology for Phase 11B. Inference will proceed by pooling the 3 attack scenarios per defense mechanism, resulting in 2,160 batch pairs per test, adjusting the family of 9 metric-defense comparisons using the Holm method.

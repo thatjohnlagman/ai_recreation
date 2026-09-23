@@ -198,15 +198,19 @@ def test_10_zero_attempt_asr():
     with pytest.raises(Exception):
         RunSummary(**summary)
 
-def test_11_nonzero_attempt_exact_asr():
-    summary, completion, confusions, configs, scores = build_dummy_run(attack="DecisionBoundary")
+def test_11_nonzero_attempt_exact_asr(tmp_path):
+    summary, completion, confusions, configs, scores = build_dummy_run(attack="DecisionBoundary", run_id="test_run")
     summary["total_attempted"] = 100
     summary["total_successful"] = 50
     summary["global_asr"] = 0.999 # Wrong calculation
-    # Handled by build_analysis_tables custom logic or schema validator?
-    # Schema just validates types, build logic validates calculation!
-    # Let's test the build logic
-    pass
+    
+    tmp_eval = tmp_path / "artifacts" / "evaluation_runs"
+    write_dummy_run(tmp_path, summary, completion, confusions, configs, scores)
+    
+    row = {"run_id": "test_run", "attack_scenario": "DecisionBoundary", "seed": 42, "defense_name": "afp", "controller_config_id": "Base"}
+    with patch("scripts.build_analysis_tables.EVAL_DIR", tmp_eval):
+        with pytest.raises(ValueError, match="global_asr calculation"):
+            process_run(row)
 
 def test_12_malformed_inconsistent_asr():
     summary, completion, confusions, configs, scores = build_dummy_run(attack="DecisionBoundary")
