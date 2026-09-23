@@ -39,7 +39,7 @@ def main():
         "primary_paired_batch_differences.csv": 6480,
         "sensitivity_run_level.csv": 189,
         "sensitivity_batch_level.csv": 27216,
-        "controller_trace_summary.csv": 40176
+        "controller_trace_summary.csv": 36288
     }
     
     table_summary_path = REPO_ROOT / "artifacts" / "reports" / "phase11a_analysis_tables_summary.txt"
