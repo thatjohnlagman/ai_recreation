@@ -1,0 +1,28 @@
+=== GIT HEAD ===
+96cc3a1afc619810bd44fee2e168b57162f79d2a
+
+=== GIT TRACKED STATUS ===
+CLEAN (0 modifications)
+
+=== GIT UNTRACKED ARTIFACTS ===
+FILE_HASHES_PHASE11B.sha256
+MANIFEST_PHASE11B.txt
+artifacts/analysis/phase11b_assumption_diagnostics.csv
+artifacts/analysis/phase11b_primary_inference.csv
+artifacts/analysis/phase11b_primary_inference.json
+artifacts/analysis/phase11b_rq1_rq2_descriptive.csv
+artifacts/analysis/phase11b_rq4_sensitivity_descriptive.csv
+artifacts/analysis/phase11b_run_level_supplementary.csv
+artifacts/analysis/phase11b_run_level_supplementary.json
+artifacts/reports/DUPLICATE_SCAN_REPORT_v11b.txt
+artifacts/reports/FORBIDDEN_FILE_SCAN_REPORT_v11b.txt
+artifacts/reports/MISSING_FILES_v11b.txt
+artifacts/reports/git_evidence_phase11b.txt
+artifacts/reports/phase11b_statistical_results.md
+docs/PHASE11B_ANALYSIS_EXECUTION.md
+
+=== RECENT COMMITS ===
+96cc3a1 Phase 11B implementation: run_phase11b_analysis, tests, bundle builder
+3d42623 Phase 11A v2.2.4: strict verification parsing, native scan reports, orchestration fix
+6f214b6 add update-index
+
