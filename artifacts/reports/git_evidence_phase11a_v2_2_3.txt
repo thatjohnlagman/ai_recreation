@@ -1,0 +1,18 @@
+=== GIT HEAD ===
+6f214b66f8733953f00ed900d24a269a7966a4f5
+
+=== GIT TRACKED STATUS ===
+CLEAN (0 modifications)
+
+=== GIT UNTRACKED ARTIFACTS ===
+artifacts/reports/DUPLICATE_SCAN_REPORT_v2_2_3.txt
+artifacts/reports/FORBIDDEN_FILE_SCAN_REPORT_v2_2_3.txt
+artifacts/reports/MISSING_FILES_v2_2_3.txt
+artifacts/reports/git_evidence_phase11a_v2_2_3.txt
+artifacts/reports/phase11a_analysis_readiness_v2_2_3.md
+
+=== RECENT COMMITS ===
+6f214b6 add update-index
+e6041a8 Untrack generated reports
+3badfd5 Update analysis tables and reports for v2.2.3 bundle
+

@@ -281,6 +281,9 @@ def main():
     with open(REPO_ROOT / "artifacts" / "reports" / "phase11a_official_output_immutability.log", "w") as f:
         subprocess.run([sys.executable, "scripts/verify_immutability.py", "--before"], stdout=f, stderr=subprocess.STDOUT, check=True)
         
+    with open(REPO_ROOT / "artifacts" / "reports" / "phase11a_protected_artifact_hashes.log", "w") as f:
+        subprocess.run([sys.executable, "scripts/verify_protected_caches.py", "--before"], stdout=f, stderr=subprocess.STDOUT, check=True)
+        
     inv_file = REPO_ROOT / "artifacts" / "reports" / "phase10d_output_inventory.json"
     inv_hashes = verify_official_inventory(inv_file)
     reject_unexpected_artifacts(inv_hashes, EVAL_DIR, REPO_ROOT)
@@ -372,8 +375,9 @@ def main():
         f.write("\n")
         subprocess.run([sys.executable, "scripts/verify_immutability.py", "--after"], stdout=f, stderr=subprocess.STDOUT, check=True)
         
-    with open(REPO_ROOT / "artifacts" / "reports" / "phase11a_protected_artifact_hashes.log", "w") as f:
-        subprocess.run([sys.executable, "scripts/verify_protected_caches.py"], stdout=f, stderr=subprocess.STDOUT, check=True)
+    with open(REPO_ROOT / "artifacts" / "reports" / "phase11a_protected_artifact_hashes.log", "a") as f:
+        f.write("\n")
+        subprocess.run([sys.executable, "scripts/verify_protected_caches.py", "--after"], stdout=f, stderr=subprocess.STDOUT, check=True)
 
     print("Analysis tables built successfully.")
 
