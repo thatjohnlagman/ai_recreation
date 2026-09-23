@@ -80,7 +80,7 @@ def main():
         f.write("# Phase 11A Analysis Readiness Report v2\n\n")
         f.write("The experimental outputs have been securely aggregated into descriptive analysis tables.\n")
         f.write("The formal statistical methodology is strictly locked and documented in `PHASE11_ANALYSIS_SPECIFICATION.md`.\n")
-        f.write("The statistical unit problem is formally resolved using run-level independent inferences.\n")
+        f.write("The batch-level serial dependence limitation is disclosed, and run-level analysis is established as supplementary.\n")
         f.write("The data is verified and ready for Phase 11B hypothesis testing and final evaluation.\n")
         f.write("**Status:** No effectiveness claims have been made. Analysis is mathematically and structurally valid.\n")
         f.write("**Data Safety:** Actual CSV tables containing official metrics are deliberately EXCLUDED from this bundle.\n")

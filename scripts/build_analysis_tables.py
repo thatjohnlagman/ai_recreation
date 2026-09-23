@@ -9,14 +9,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts.run_evaluation import (
+from scripts.run_evaluation import ( build_production_provenance,
     derive_and_validate_matrix,
     canonicalize_scenario,
     canonicalize_defense,
     calculate_file_hash,
     validate_completed_run,
     validate_completed_alias,
-    construct_run_provenance,
     validate_cache_against_inventory
 )
 
@@ -193,6 +192,16 @@ def write_csv(path, records, keys):
         writer.writerows(records)
     tmp.replace(path)
 
+def verify_all_caches(base_provenance):
+    scenarios = ["SilentProbing", "SurrogateTransfer", "DecisionBoundary"]
+    seeds = [42, 43, 44, 45, 46]
+    inventory_path = REPO_ROOT / "artifacts" / "reports" / "cache_inventory_v2.json"
+    
+    for sc in scenarios:
+        for s in seeds:
+            cache_dir = REPO_ROOT / "artifacts" / "caches" / f"{sc}_{s}"
+            validate_cache_against_inventory(cache_dir, sc, s, inventory_path, base_provenance)
+
 def main():
     print("Building analysis tables...")
     
@@ -220,23 +229,22 @@ def main():
             # Check if this file is in the inventory
             rel = str(f.relative_to(REPO_ROOT))
             if rel not in inv_hashes:
-                # Quarantined runs are allowed as long as they aren't part of the matrix?
-                # The user says "verify zero active staging directories and exactly one documented historical quarantine"
-                if "quarantine_" in rel:
+                if "quarantine_" in rel or "_quarantined_" in rel:
                     continue
-                # If there are unexpected files, reject
                 raise ValueError(f"Unexpected artifact not in Phase 10D inventory: {rel}")
                 
     staging = list(EVAL_DIR.glob(".staging*"))
     check_eq(len(staging), 0, "Staging directories found")
     
-    quarantined = list(EVAL_DIR.glob("quarantine_*"))
+    quarantined = list(EVAL_DIR.glob("*quarantined_*"))
     check_eq(len(quarantined), 1, "Exactly one historical quarantine directory expected")
     
-    # Verify caches BEFORE
-    validate_cache_against_inventory(REPO_ROOT / "artifacts" / "reports" / "integrity_hashes.txt")
+    base_provenance = build_production_provenance()
+    matrix, _ = derive_and_validate_matrix(REPO_ROOT / "configs")
     
-    matrix, base_provenance = derive_and_validate_matrix(REPO_ROOT / "configs")
+    # Verify caches BEFORE
+    verify_all_caches(base_provenance)
+    
     unique_runs = matrix[~matrix["is_alias"]]
     alias_runs = matrix[matrix["is_alias"]]
     
@@ -257,9 +265,17 @@ def main():
         rid = row["run_id"]
         run_dir = EVAL_DIR / rid
         
+        # Recreate expected provenance
+        run_prov = dict(base_provenance)
+        cache_dir = REPO_ROOT / "artifacts" / "caches" / f"{canonicalize_scenario(row['attack_scenario'])}_{row['seed']}"
+        run_prov["cache_manifest_hash"] = calculate_file_hash(cache_dir / "manifest.json")
+        
+        # Get cache identity for validation
+        with open(cache_dir / "manifest.json") as f:
+            cache_identity = json.load(f)
+            
         # Hardened validation
-        expected_prov = construct_run_provenance(base_provenance, row["seed"], row["attack_scenario"])
-        is_valid, err = validate_completed_run(run_dir, row, expected_prov, None)
+        is_valid, err = validate_completed_run(run_dir, row, run_prov, cache_identity)
         if not is_valid:
             raise ValueError(f"Invalid run {rid}: {err}")
             
@@ -280,7 +296,11 @@ def main():
     for _, row in alias_runs.iterrows():
         rid = row["run_id"]
         run_dir = EVAL_DIR / rid
-        expected_prov = construct_run_provenance(base_provenance, row["seed"], row["attack_scenario"])
+        
+        # Recreate target expected provenance
+        target_prov = dict(base_provenance)
+        cache_dir = REPO_ROOT / "artifacts" / "caches" / f"{canonicalize_scenario(row['attack_scenario'])}_{row['seed']}"
+        target_prov["cache_manifest_hash"] = calculate_file_hash(cache_dir / "manifest.json")
         
         # Alias points to a unique run
         with open(EVAL_DIR / rid / "alias_pointer.json") as f:
@@ -288,10 +308,10 @@ def main():
         target = pointer["alias_for_run_id"]
         
         # Ensure it targets the correct primary C1
-        expected_target = f"primary_{row['seed']}_{row['attack_scenario']}_{row['defense_name']}_C1"
+        expected_target = f"primary_{row['seed']}_{canonicalize_scenario(row['attack_scenario'])}_{canonicalize_defense(row['defense_name'])}_C1"
         check_eq(target, expected_target, f"{rid} must target exactly its primary C1 equivalent")
         
-        is_valid, err = validate_completed_alias(run_dir, row, EVAL_DIR / target)
+        is_valid, err = validate_completed_alias(run_dir, row, target_prov, EVAL_DIR)
         if not is_valid:
             raise ValueError(f"Invalid alias {rid}: {err}")
         
@@ -382,7 +402,7 @@ def main():
     write_csv(ANALYSIS_DIR / "controller_trace_summary.csv", all_controller_records, ctrl_keys)
     
     # Verify caches AFTER
-    validate_cache_against_inventory(REPO_ROOT / "artifacts" / "reports" / "integrity_hashes.txt")
+    verify_all_caches(base_provenance)
     
     print("Analysis tables built successfully.")
 

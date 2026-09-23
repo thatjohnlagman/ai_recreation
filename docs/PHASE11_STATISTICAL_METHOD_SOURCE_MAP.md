@@ -1,30 +1,36 @@
 # Phase 11 Statistical Method Source Map
 
-This document traces every statistical choice to its authoritative frozen source in the experimental protocol prior to Phase 10 evaluation.
+This document traces every statistical choice to its authoritative frozen source to distinguish between thesis-mandated methods, frozen implementation operationalizations, and supplementary diagnostics.
 
-| Method Component | Authoritative Source | Location | Frozen Before Eval? | Note |
-|---|---|---|---|---|
-| **Two-tailed paired t-test** | `docs/EXPERIMENT_PROTOCOL.md` | Section "Frozen Parameters" (Line 45) | Yes | Specified as the primary test. |
-| **Alpha level (0.05)** | `docs/EXPERIMENT_PROTOCOL.md` | Section "Frozen Parameters" (Line 46) | Yes | |
-| **Batch-Level Pairing Key** | `docs/IMPLEMENTATION_DECISIONS.md` | Section 16 "Statistical Diagnostics" (Line 123) | Yes | `(seed, attack_scenario, defense_mechanism, batch_id)` explicitly mandated. |
-| **Cohen's dz Effect Size** | `docs/IMPLEMENTATION_DECISIONS.md` | Section 16 "Statistical Diagnostics" (Line 124) | Yes | |
-| **95% Confidence Interval** | `docs/IMPLEMENTATION_DECISIONS.md` | Section 16 "Statistical Diagnostics" (Line 125) | Yes | Paired difference CI. |
-| **Shapiro-Wilk Diagnostic** | `docs/IMPLEMENTATION_DECISIONS.md` | Section 16 "Statistical Diagnostics" (Line 127) | Yes | Normality diagnostic on paired differences. |
-| **Wilcoxon Signed-Rank** | `docs/IMPLEMENTATION_DECISIONS.md` | Section 16 "Statistical Diagnostics" (Line 126) | Yes | Supplementary test if normality is questionable. |
-| **Holm Correction** | `docs/IMPLEMENTATION_DECISIONS.md` | Section 16 "Statistical Diagnostics" (Line 126) | Yes | Used for multiplicity adjustment. |
-| **Undefined Metrics** | `docs/IMPLEMENTATION_DECISIONS.md` | Section 15 "Undefined Metric Handling" (Lines 116-118) | Yes | 0.0 value substitution (not NaN). |
+## 1. Methods Explicitly Required by the Approved Thesis
+The following methods are structurally mandated by the approved thesis (printed pages 69–73) and constitute the authoritative primary inference procedure.
 
-## Structural Amendment: The Statistical Unit Problem
-**Mandate Limitation:** `IMPLEMENTATION_DECISIONS.md` Section 16 mandates the batch-level pairing key `(seed, attack, defense, batch_id)`. However, batches are serially dependent repeated measures nested within execution pairs (the independent experimental unit). Treating all 6,480 batch pairs as independent is statistically invalid (pseudoreplication).
+| Method Component | Authoritative Source | Note |
+|---|---|---|
+| **Primary Inferential Test** | Approved Thesis (pp. 69–73) | Two-tailed paired t-test. |
+| **Experimental/Pairing Unit** | Approved Thesis (pp. 69–73) | Batch-level pairing. Each Base batch is paired with the corresponding controller batch. |
+| **Confirmatory Metrics** | Approved Thesis (pp. 69–73) | Precision, Recall, and F1-score. |
+| **Significance Level (Alpha)** | Approved Thesis (pp. 69–73) | α = 0.05 |
+| **Descriptive Treatment (RQ1/2/4)**| Approved Thesis (pp. 69–73) | RQ1, RQ2, and RQ4 use descriptive statistics (mean and standard deviation). RQ4 is a descriptive sensitivity analysis and does not introduce a hypothesis test. |
+| **Analysis Grouping** | Approved Thesis (pp. 69–73) | Summarized by defense mechanism and configuration, with attack scenario retained as an evaluation condition. |
 
-**Resolution:** 
-1. The batch-level paired t-test (N=6480 per metric) will be documented and reported descriptively to satisfy the explicit thesis mandate.
-2. A **run-level paired t-test** (N=45 pairs) will serve as the primary structurally valid inferential test. The independent replication occurs at the execution (seed) level, aggregating the nested batches safely.
+**Methodological Limitation Disclosure:** The thesis requires a batch-level paired t-test. However, consecutive batches within an execution may be serially dependent because the Recall-Aware controller carries state forward. Treating all 6,480 batch pairs as independent is a methodological limitation affecting interpretation. Despite this limitation, the batch-level test remains the unalterable, confirmatory primary test.
 
-## Hypothesis Formulation & Holm Families
-- **Hypothesis Family:** The test is performed separately for each Attack × Defense cell (3 attacks × 3 defenses = 9 cells).
-- **Null Hypothesis (H0):** The true mean paired difference (C1 - Base) in the metric is zero.
-- **Alternative Hypothesis (H1):** The true mean paired difference (C1 - Base) in the metric is non-zero.
-- **Holm Multiplicity Family:** Adjustments are applied across the 9 cells for a single metric. Tests for different metrics (e.g. Precision vs Recall) belong to separate families.
-- **Mixed Directions:** A difference is only considered "effective" if it is statistically significant *and* the sign of the mean difference reflects improvement (per `EXPERIMENT_PROTOCOL.md` Scientific Integrity Commitments, Line 115).
-- **Zero-variance differences:** If all paired differences are exactly zero (variance = 0), the p-value is 1.0.
+## 2. Frozen Implementation Details
+These operationalize the approved thesis and were frozen before evaluation.
+
+| Method Component | Authoritative Source | Note |
+|---|---|---|
+| **Exact Pairing Key** | `IMPLEMENTATION_DECISIONS.md` (Line 123) | `(seed, attack_scenario, defense_mechanism, batch_id)` |
+
+## 3. Supplementary Diagnostics and Robustness Analyses
+The following methods were added during implementation to provide additional rigor, but they **are not replacements for the thesis-required primary test** and do not alter the thesis hypothesis decision rule.
+
+| Method Component | Source | Purpose / Note |
+|---|---|---|
+| **Run-Level Paired Test** | Implementation | Supplementary robustness analysis treating the execution/seed as the independent unit to evaluate sensitivity to the batch-level serial dependence. |
+| **Cohen's dz** | `IMPLEMENTATION_DECISIONS.md` | Supplementary effect size calculation. |
+| **95% Confidence Interval** | `IMPLEMENTATION_DECISIONS.md` | Supplementary diagnostic for the paired difference mean. |
+| **Shapiro-Wilk Diagnostic** | `IMPLEMENTATION_DECISIONS.md` | Supplementary check for normality of paired differences. |
+| **Wilcoxon Signed-Rank** | `IMPLEMENTATION_DECISIONS.md` | Supplementary non-parametric fallback if normality is questionable. |
+| **Holm Correction** | `IMPLEMENTATION_DECISIONS.md` | Supplementary multiplicity adjustment. |
