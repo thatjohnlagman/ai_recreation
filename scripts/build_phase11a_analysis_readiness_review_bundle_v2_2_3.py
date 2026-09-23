@@ -206,6 +206,7 @@ def main():
             raise FileNotFoundError(f"Required member missing: {f}")
             
     print("Verifying against git HEAD before packaging...")
+    subprocess.run(["git", "update-index", "--refresh"], cwd=REPO_ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     # Final tracked-clean check immediately before packaging
     tracked_diff = subprocess.check_output(["git", "diff-index", "HEAD"], text=True, cwd=REPO_ROOT)
     if tracked_diff.strip():
