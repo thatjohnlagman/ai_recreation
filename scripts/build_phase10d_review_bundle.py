@@ -39,7 +39,7 @@ from typing import Dict, List, Set
 
 ROOT = Path(__file__).resolve().parents[1]
 
-BUNDLE_NAME = "phase10d_evaluation_orchestration_readiness_bundle_v2_3.zip"
+BUNDLE_NAME = "phase10d_evaluation_orchestration_readiness_bundle_v2_4.zip"
 BUNDLE_PATH = ROOT / BUNDLE_NAME
 
 PROTECTED_HASHES = {
@@ -114,6 +114,116 @@ def check_cache_metadata_hashes() -> Dict[str, str]:
                 raise ValueError(f"Cache file {cdir / fname} altered! Expected {exp_hash}, got {actual}")
             results[f"{c['slug']}/{fname}"] = actual
     return results
+
+
+def verify_benchmark_consistency(
+    benchmark_output: str,
+    runtime_report_path: Path,
+    readiness_report_path: Path,
+) -> None:
+    """
+    Parses benchmark output, recalculates primary and full-matrix totals,
+    and asserts complete consistency with both runtime and readiness reports.
+    Aborts with ValueError if any timing or calculated total disagrees.
+    """
+    import re
+
+    # 1. Parse per-batch means from benchmark output
+    afp_m = re.search(r"AFP\s+mean per 500-row batch:\s*([0-9\.]+)s", benchmark_output)
+    fs_m = re.search(r"FS\s+mean per 500-row batch:\s*([0-9\.]+)s", benchmark_output)
+    rs_m = re.search(r"RS\s+mean per 500-row batch:\s*([0-9\.]+)s", benchmark_output)
+    if not (afp_m and fs_m and rs_m):
+        raise ValueError("Could not parse per-batch defense timings from benchmark output!")
+
+    afp_batch = float(afp_m.group(1))
+    fs_batch = float(fs_m.group(1))
+    rs_batch = float(rs_m.group(1))
+
+    # 2. Recalculate single-run and matrix totals
+    afp_run = afp_batch * 144
+    fs_run = fs_batch * 144
+    rs_run = rs_batch * 144
+    primary_total_sec = 30 * (afp_run + fs_run + rs_run)
+    full_252_total_sec = 84 * (afp_run + fs_run + rs_run)
+
+    primary_lower_h = primary_total_sec / 3600.0
+    full_lower_h = full_252_total_sec / 3600.0
+
+    primary_wall_low = primary_lower_h * 1.15
+    primary_wall_high = primary_lower_h * 1.25
+    full_wall_low = full_lower_h * 1.15
+    full_wall_high = full_lower_h * 1.25
+
+    # 3. Check parsed totals in benchmark output itself
+    prim_bench_m = re.search(
+        r"Projected Primary Comparison \(90 references\):\s+Total time:\s*[0-9\.]+s\s*\([0-9\.]+\s*min\s*/\s*([0-9\.]+)\s*hours\)",
+        benchmark_output,
+    )
+    full_bench_m = re.search(
+        r"Projected Full Evaluation Matrix \(252 unique executions\):\s+Total time:\s*[0-9\.]+s\s*\([0-9\.]+\s*min\s*/\s*([0-9\.]+)\s*hours\)",
+        benchmark_output,
+    )
+    if not (prim_bench_m and full_bench_m):
+        raise ValueError("Could not parse projected comparison totals from benchmark output!")
+
+    bench_prim_h = float(prim_bench_m.group(1))
+    bench_full_h = float(full_bench_m.group(1))
+    if abs(bench_prim_h - primary_lower_h) > 0.05:
+        raise ValueError(
+            f"Benchmark internal inconsistency: primary hours parsed={bench_prim_h}, calculated={primary_lower_h:.2f}"
+        )
+    if abs(bench_full_h - full_lower_h) > 0.05:
+        raise ValueError(
+            f"Benchmark internal inconsistency: full matrix hours parsed={bench_full_h}, calculated={full_lower_h:.2f}"
+        )
+
+    # 4. Verify runtime report (phase10d_runtime_storage_estimate.md)
+    if not runtime_report_path.exists():
+        raise FileNotFoundError(f"Runtime report missing: {runtime_report_path}")
+    runtime_text = runtime_report_path.read_text()
+
+    expected_runtime_snippets = [
+        f"{afp_batch:.4f} s",
+        f"{fs_batch:.4f} s",
+        f"{rs_batch:.4f} s",
+        f"{primary_lower_h:.2f} h",
+        f"~{primary_wall_low:.2f} – {primary_wall_high:.2f} h",
+        f"{full_lower_h:.2f} h",
+        f"~{full_wall_low:.2f} – {full_wall_high:.2f} h",
+    ]
+    for snip in expected_runtime_snippets:
+        if snip not in runtime_text:
+            raise ValueError(
+                f"Runtime report {runtime_report_path} disagrees with benchmark output!\n"
+                f"Missing expected snippet: '{snip}'\n"
+                f"Benchmark: AFP={afp_batch:.4f}, FS={fs_batch:.4f}, RS={rs_batch:.4f}, "
+                f"Primary={primary_lower_h:.2f}h, Full={full_lower_h:.2f}h"
+            )
+
+    # 5. Verify readiness report (phase10d_evaluation_orchestration_readiness.md)
+    if not readiness_report_path.exists():
+        raise FileNotFoundError(f"Readiness report missing: {readiness_report_path}")
+    readiness_text = readiness_report_path.read_text()
+
+    expected_readiness_snippets = [
+        f"{afp_batch:.4f} s",
+        f"{fs_batch:.4f} s",
+        f"{rs_batch:.4f} s",
+        f"({primary_lower_h:.2f} hours)",
+        f"~{primary_wall_low:.2f} – {primary_wall_high:.2f} hours",
+        f"({full_lower_h:.2f} hours)",
+        f"~{full_wall_low:.2f} – {full_wall_high:.2f} hours",
+    ]
+    for snip in expected_readiness_snippets:
+        if snip not in readiness_text:
+            raise ValueError(
+                f"Readiness report {readiness_report_path} disagrees with benchmark output!\n"
+                f"Missing expected snippet: '{snip}'\n"
+                f"Benchmark: AFP={afp_batch:.4f}, FS={fs_batch:.4f}, RS={rs_batch:.4f}, "
+                f"Primary={primary_lower_h:.2f}h, Full={full_lower_h:.2f}h"
+            )
+
+    print("Consistency Gate Passed: Runtime report and Readiness report agree with BENCHMARK_OUTPUT.txt.")
 
 
 def main():
@@ -239,21 +349,33 @@ def main():
 
         # Synchronize bundled readiness report with exact test timings from this run
         import re
-        f_match = re.search(r"30 passed in ([0-9\.]+)s", focused_res.stdout)
-        full_match = re.search(r"286 passed in ([0-9\.]+)s", full_res.stdout)
+        f_match = re.search(r"([0-9]+) passed in ([0-9\.]+)s", focused_res.stdout)
+        full_match = re.search(r"([0-9]+) passed in ([0-9\.]+)s", full_res.stdout)
         if f_match and full_match:
-            f_sec = f_match.group(1)
-            full_sec = full_match.group(1)
+            f_count = f_match.group(1)
+            f_sec = f_match.group(2)
+            full_count = full_match.group(1)
+            full_sec = full_match.group(2)
             bundled_report_path = bundle_root / "artifacts/reports/phase10d_evaluation_orchestration_readiness.md"
             content = bundled_report_path.read_text()
             content = re.sub(
-                r"\*{0,2}Total Focused Tests:\*{0,2}\s*\*\*30 / 30 PASSED\*\* in [0-9\.]+s\.",
-                f"**Total Focused Tests:** **30 / 30 PASSED** in {f_sec}s.",
+                r"\*{0,2}Total Focused Tests:\*{0,2}\s*\*\*[0-9]+ / [0-9]+ PASSED\*\* in [0-9\.]+s\.",
+                f"**Total Focused Tests:** **{f_count} / {f_count} PASSED** in {f_sec}s.",
                 content,
             )
             content = re.sub(
                 r"Execution time:\s*\*\*[0-9\.]+s\*\*",
                 f"Execution time: **{full_sec}s**",
+                content,
+            )
+            content = re.sub(
+                r"Total tests collected:\s*\*\*[0-9]+\*\*",
+                f"Total tests collected: **{full_count}**",
+                content,
+            )
+            content = re.sub(
+                r"Total tests passed:\s*\*\*[0-9]+\*\*",
+                f"Total tests passed: **{full_count}**",
                 content,
             )
             bundled_report_path.write_text(content)
@@ -266,6 +388,14 @@ def main():
         (evidence_dir / "FULL_SUITE_OUTPUT.txt").write_text(full_res.stdout)
         (evidence_dir / "PREFLIGHT_OUTPUT.txt").write_text(preflight_res.stdout)
         (evidence_dir / "BENCHMARK_OUTPUT.txt").write_text(benchmark_res.stdout)
+
+        # Benchmark Consistency Gate: Abort if reports disagree with benchmark output
+        print("Enforcing benchmark consistency gate across bundled reports...")
+        verify_benchmark_consistency(
+            benchmark_res.stdout,
+            bundle_root / "artifacts/reports/phase10d_runtime_storage_estimate.md",
+            bundle_root / "artifacts/reports/phase10d_evaluation_orchestration_readiness.md",
+        )
 
         # Git evidence
         git_log = subprocess.check_output(["git", "log", "-n", "5", "--oneline"], cwd=ROOT, text=True)

@@ -1,14 +1,14 @@
-# Phase 10D: Official Evaluation Orchestration Readiness Report (v2.3 Final Correction)
+# Phase 10D: Official Evaluation Orchestration Readiness Report (v2.4 Final Correction)
 
-**Date:** 2026-09-18T11:45:00+08:00  
+**Date:** 2026-09-23T11:55:00+08:00  
 **Status:** PASS — Orchestration Readiness Certified  
-**Commit:** Pending Phase 10D v2.3 final certification commit  
+**Commit:** Pending Phase 10D v2.4 final certification commit  
 **Protocol Freeze Tag:** `phase10-protocol-freeze` (`65005505415a2bdf2d5744dbd135e9214e74081a`)  
 
 ---
 
 ## 1. Executive Summary
-Phase 10D v2.3 establishes, repairs, and certifies that the official Phase 10 evaluation execution pipeline can execute, resume, pair, and validate correctly before official evaluation is authorized.
+Phase 10D v2.4 establishes, repairs, and certifies that the official Phase 10 evaluation execution pipeline can execute, resume, pair, and validate correctly before official evaluation is authorized.
 
 > [!IMPORTANT]
 > **Scope & Technical Readiness vs Empirical Effectiveness**:
@@ -32,7 +32,7 @@ Phase 10D v2.3 establishes, repairs, and certifies that the official Phase 10 ev
 12. **Genuinely Synthetic Production-Wiring Canary**: The end-to-end canary operates exclusively on synthetic 72,000-row cache data and temporary synthetic 90,000-row roles / 72,000-row batches manifests generated under `tmp_path`, completely prohibiting access to official evaluation caches, evaluation Parquets, or canonical evaluation manifests.
 13. **Strengthened Multi-Method Access Guard**: Regression test `test_canary_does_not_access_official_caches` actively intercepts `builtins.open`, `Path.open`, `Path.read_text`, `Path.read_bytes`, `pd.read_csv`, and `pd.read_parquet` to ensure zero access to official caches, canonical manifests, or evaluation Parquets during canary execution.
 14. **Canonical Attack-Script Provenance**: In both official cache manifests and the synthetic canary fixture, every key in `attack_script_hashes` corresponds strictly to the SHA-256 hash of the canonical file it names (`attacks/*.py`, `caching.py`, `build_evaluation_caches.py`). Added test asserting exact match.
-15. **Reconciled Runtime & Storage Projections**: Reconciled defense-inference lower bound (3.26 hours) and estimated wall-clock range (~3.74 to 4.07 hours with 15–25% IO/orchestration overhead), removing unsupported historical thermal numbers. Storage footprint confirmed at ~2.23 MB for `scores.json` and ~0.57 GB total for 252 runs.
+15. **Reconciled Runtime & Storage Projections**: Reconciled defense-inference lower bound (5.17 hours) and estimated wall-clock range (~5.94 to 6.46 hours with 15–25% IO/orchestration overhead), removing unsupported historical thermal numbers. Storage footprint confirmed at ~2.23 MB for `scores.json` and ~0.57 GB total for 252 runs.
 
 ---
 
@@ -119,34 +119,36 @@ All 15 official cache directories in `artifacts/caches/` were verified against `
 - `test_cli_execute_prohibits_no_enforce_git`: **PASSED** (proves --execute --no-enforce-git is rejected before preflight)
 - `test_cli_execute_rejects_substituted_inputs_and_unsafe_output`: **PASSED** (proves --execute binds strictly to canonical inputs and rejects unsafe output directories)
 - `test_alias_and_target_validation_regression`: **PASSED** (proves all 9 alias and target validation gates fail closed)
-**Total Focused Tests:** **30 / 30 PASSED** in 49.35s.
+- `test_builder_benchmark_consistency_gate_passes`: **PASSED** (proves repository benchmark output and reports pass the consistency gate)
+- `test_builder_benchmark_consistency_gate_rejects_disagreement`: **PASSED** (proves any timing or total disagreement causes verify_benchmark_consistency to abort)
+**Total Focused Tests:** **32 / 32 PASSED** in 31.48s.
 
 ### Full Test Suite
-- Total tests collected: **286**
-- Total tests passed: **286** (100%)
+- Total tests collected: **288**
+- Total tests passed: **288** (100%)
 - Total failures: **0**
-- Execution time: **63.54s**
+- Execution time: **65.00s**
 
 ---
 
 ## 5. Measured Runtime and Storage Projections
-
+ 
 ### Measured Training-Derived Timings (Apple Silicon M4)
-- **AFP per 500-sample batch:** 0.0520 s (0.10 ms/sample)
-- **FS per 500-sample batch:** 0.0460 s (0.09 ms/sample)
-- **RS per 500-sample batch (11-member ensemble):** 0.8710 s (1.74 ms/sample)
+- **AFP per 500-sample batch:** 0.0555 s (0.11 ms/sample)
+- **FS per 500-sample batch:** 0.0514 s (0.10 ms/sample)
+- **RS per 500-sample batch (11-member ensemble):** 1.4309 s (2.86 ms/sample)
 
 ### Projected Single Run (144 Batches = 72,000 Samples)
-- **One AFP Run:** 7.49 s (0.12 min)
-- **One FS Run:** 6.62 s (0.11 min)
-- **One RS Run:** 125.42 s (2.09 min)
+- **One AFP Run:** 7.99 s (0.13 min)
+- **One FS Run:** 7.40 s (0.12 min)
+- **One RS Run:** 206.05 s (3.43 min)
 
 ### Matrix-Level Projections (Reconciled Arithmetic)
 - **Primary Comparison (90 runs: 30 AFP, 30 FS, 30 RS):**
-  - Defense-inference lower bound: **69.77 min (1.16 hours)**
-  - Full wall-clock projection (+15% to 25% overhead, estimated): **~1.34 – 1.45 hours** (~80.2 – 87.2 min).
+  - Defense-inference lower bound: **110.72 min (1.85 hours)**
+  - Full wall-clock projection (+15% to 25% overhead, estimated): **~2.12 – 2.31 hours** (~127.3 – 138.4 min).
 - **Full Unique Executions (252 runs: 84 AFP, 84 FS, 84 RS):**
-  - Defense-inference lower bound: **195.34 min (3.26 hours)**
-  - Full wall-clock projection (+15% to 25% overhead, estimated): **~3.74 – 4.07 hours** (~224.6 – 244.2 min).
+  - Defense-inference lower bound: **310.01 min (5.17 hours)**
+  - Full wall-clock projection (+15% to 25% overhead, estimated): **~5.94 – 6.46 hours** (~356.5 – 387.5 min).
 - **Sensitivity Aliases (27 runs):** **0.00 min** (instant metadata pointer).
 - **Storage Footprint:** ~**2.23 MB** for `scores.json` per run; ~**2.33 MB** total per run; **~0.57 GB** aggregate for 252 runs (well within available 68+ GB).

@@ -11,9 +11,9 @@ Zero evaluation Parquets (`X_eval.parquet`, `metadata_eval.parquet`) or official
 
 | Defense Mechanism | Measured Mean per 500-Row Batch | Per-Sample Latency | 10-Batch Test Total |
 | :--- | :--- | :--- | :--- |
-| **Adaptive Feature Poisoning (AFP)** | 0.0520 s | 0.10 ms/sample | 0.520 s |
-| **Feature Squeezing (FS)** | 0.0460 s | 0.09 ms/sample | 0.460 s |
-| **Randomized Smoothing (RS)** (11-member) | 0.8710 s | 1.74 ms/sample | 8.710 s |
+| **Adaptive Feature Poisoning (AFP)** | 0.0555 s | 0.11 ms/sample | 0.555 s |
+| **Feature Squeezing (FS)** | 0.0514 s | 0.10 ms/sample | 0.514 s |
+| **Randomized Smoothing (RS)** (11-member) | 1.4309 s | 2.86 ms/sample | 14.309 s |
 
 ---
 
@@ -23,14 +23,14 @@ Attack caching is **100% precomputed** in the 15 official attack caches (`artifa
 
 | Scope | AFP Component | FS Component | RS Component | Defense-Inference Lower Bound | Full Wall-Clock Projection (+15% to 25% overhead) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Single Run (1 execution)** | 7.49 s (0.12 min) | 6.62 s (0.11 min) | 125.42 s (2.09 min) | — | — |
-| **Primary Comparison (90 references)** | 30 runs: 3.74 min | 30 runs: 3.31 min | 30 runs: 62.71 min | **69.77 min (1.16 h)** | **~1.34 – 1.45 h** (~80.2 – 87.2 min) |
-| **Full Evaluation Matrix (252 unique runs)** | 84 runs: 10.48 min | 84 runs: 9.27 min | 84 runs: 175.59 min | **195.34 min (3.26 h)** | **~3.74 – 4.07 h** (~224.6 – 244.2 min) |
+| **Single Run (1 execution)** | 7.99 s (0.13 min) | 7.40 s (0.12 min) | 206.05 s (3.43 min) | — | — |
+| **Primary Comparison (90 references)** | 30 runs: 4.00 min | 30 runs: 3.70 min | 30 runs: 103.03 min | **110.72 min (1.85 h)** | **~2.12 – 2.31 h** (~127.3 – 138.4 min) |
+| **Full Evaluation Matrix (252 unique runs)** | 84 runs: 11.19 min | 84 runs: 10.36 min | 84 runs: 288.47 min | **310.01 min (5.17 h)** | **~5.94 – 6.46 h** (~356.5 – 387.5 min) |
 | **C1 Sensitivity Aliases (27 references)** | Instant | Instant | Instant | **0.00 min** (metadata pointer) | **< 1 s** |
 
 > [!IMPORTANT]
 > **Defense-Inference Lower Bound vs Full Wall-Clock Prediction**:
-> The **3.26-hour figure** represents a **defense-inference lower bound only**.
+> The **5.17-hour figure** represents a **defense-inference lower bound only**.
 > It strictly isolates CPU/RAM matrix defense inference. It excludes:
 > - Parquet attack-cache loading and deserialization;
 > - JSON serialization for `scores.json`, `confusion.json`, and `config.json`;
@@ -39,13 +39,13 @@ Attack caching is **100% precomputed** in the 15 official attack caches (`artifa
 > - Directory staging, atomic renames, and filesystem metadata operations.
 >
 > Accounting for an estimated 15% to 25% orchestration and I/O overhead:
-> - **Primary Comparison (90 runs)**: 1.16h lower bound $\times$ [1.15, 1.25] = **~1.34 to 1.45 hours** (~80.2 to 87.2 min).
-> - **Full Evaluation Matrix (252 unique runs)**: 3.26h lower bound $\times$ [1.15, 1.25] = **~3.74 to 4.07 hours** (~224.6 to 244.2 min).
+> - **Primary Comparison (90 runs)**: 1.85h lower bound $\times$ [1.15, 1.25] = **~2.12 to 2.31 hours** (~127.3 to 138.4 min).
+> - **Full Evaluation Matrix (252 unique runs)**: 5.17h lower bound $\times$ [1.15, 1.25] = **~5.94 to 6.46 hours** (~356.5 to 387.5 min).
 >
-> Note: The measured defense-inference lower bound on this host is **3.26 hours**. Accounting for estimated 15%–25% orchestration, serialization, and verification overhead, the estimated total wall-clock execution time for all 252 unique runs is **~3.74 to 4.07 hours** (estimated).
+> Note: The measured defense-inference lower bound on this host is **5.17 hours**. Accounting for estimated 15%–25% orchestration, serialization, and verification overhead, the estimated total wall-clock execution time for all 252 unique runs is **~5.94 to 6.46 hours** (estimated).
 
 > [!NOTE]
-> **Dominant Defense**: Randomized Smoothing (RS) performs 11 Random Forest inference passes per sample and accounts for approximately **89.9%** of total execution time.
+> **Dominant Defense**: Randomized Smoothing (RS) performs 11 Random Forest inference passes per sample and accounts for approximately **93.1%** of total execution time.
 > **Parallelization Potential**: Runs across different seeds and defenses are embarrassingly parallel.
 
 ---

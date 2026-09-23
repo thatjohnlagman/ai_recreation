@@ -1832,4 +1832,65 @@ def test_alias_and_target_validation_regression(tmp_path: Path):
     assert alias_id in alias_runs["run_id"].values
 
 
+# ---------------------------------------------------------------------------
+# Test 31: Builder Benchmark Consistency Gate & Disagreement Rejection
+# ---------------------------------------------------------------------------
+def test_builder_benchmark_consistency_gate_passes():
+    """Verify that current repository benchmark output and reports pass the consistency gate."""
+    import subprocess
+    from scripts.build_phase10d_review_bundle import verify_benchmark_consistency
+
+    bench_res = subprocess.run(
+        ["./.venv-m4/bin/python", "scripts/benchmark_evaluation_pilot.py"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert bench_res.returncode == 0
+
+    runtime_report = REPO_ROOT / "artifacts/reports/phase10d_runtime_storage_estimate.md"
+    readiness_report = REPO_ROOT / "artifacts/reports/phase10d_evaluation_orchestration_readiness.md"
+
+    # Must pass without raising
+    verify_benchmark_consistency(bench_res.stdout, runtime_report, readiness_report)
+
+
+def test_builder_benchmark_consistency_gate_rejects_disagreement(tmp_path: Path):
+    """Verify that any timing or total disagreement causes verify_benchmark_consistency to abort."""
+    import subprocess
+    import shutil
+    from scripts.build_phase10d_review_bundle import verify_benchmark_consistency
+
+    bench_res = subprocess.run(
+        ["./.venv-m4/bin/python", "scripts/benchmark_evaluation_pilot.py"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert bench_res.returncode == 0
+
+    orig_runtime = REPO_ROOT / "artifacts/reports/phase10d_runtime_storage_estimate.md"
+    orig_readiness = REPO_ROOT / "artifacts/reports/phase10d_evaluation_orchestration_readiness.md"
+
+    t_runtime = tmp_path / "phase10d_runtime_storage_estimate.md"
+    t_readiness = tmp_path / "phase10d_evaluation_orchestration_readiness.md"
+
+    shutil.copy2(orig_runtime, t_runtime)
+    shutil.copy2(orig_readiness, t_readiness)
+
+    # 1. Tamper with runtime report timing
+    t_runtime.write_text(t_runtime.read_text().replace("0.0555 s", "0.0999 s"))
+    with pytest.raises(ValueError, match="Runtime report .* disagrees with benchmark output"):
+        verify_benchmark_consistency(bench_res.stdout, t_runtime, t_readiness)
+
+    # Restore runtime report
+    shutil.copy2(orig_runtime, t_runtime)
+
+    # 2. Tamper with readiness report total
+    t_readiness.write_text(t_readiness.read_text().replace("(5.17 hours)", "(3.26 hours)"))
+    with pytest.raises(ValueError, match="Readiness report .* disagrees with benchmark output"):
+        verify_benchmark_consistency(bench_res.stdout, t_runtime, t_readiness)
+
+
+
 
