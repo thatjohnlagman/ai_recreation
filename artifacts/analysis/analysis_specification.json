@@ -1,41 +1,21 @@
 {
-  "protocol_version": "1.0.0",
-  "date_frozen": "2026-09-17T21:23:51+08:00",
-  "experimental_units": {
-    "population": "Black-box probing attacks against binary Random Forest IDS",
-    "experimental_unit": "500-record measurement batches (from disjoint 72,000-record measurement pool)",
-    "execution_level": "(seed, attack_scenario, defense_mechanism, controller_config)",
-    "alias_handling": "C1 sensitivity aliases map directly to the primary C1 run and must NEVER be treated as independent duplicates."
-  },
-  "research_questions": [
-    "RQ1: Base results descriptive performance",
-    "RQ2: C1 Recall-Aware descriptive performance",
-    "RQ3: Comparative effectiveness (C1 minus Base)",
-    "RQ4: Sensitivity analysis (C1-C7) descriptive performance"
-  ],
-  "metrics": {
-    "used": ["Accuracy", "Precision", "Recall", "F1-Score", "Balanced Accuracy"],
-    "undefined_handling": {
-      "TP_plus_FP_zero": "Precision = 0.0",
-      "TP_plus_FN_zero": "Recall = 0.0",
-      "Precision_plus_Recall_zero": "F1 = 0.0"
-    }
-  },
-  "inferential_statistics": {
-    "statistical_test": "Two-tailed paired t-test",
-    "pairing_key": ["seed", "attack_scenario", "defense_mechanism", "batch_id"],
-    "direction_of_differences": "C1 minus Base",
-    "effect_size": "Cohen's dz",
-    "confidence_interval": "95% CI on the paired mean difference",
-    "assumption_checks": "Shapiro-Wilk test on paired differences",
-    "fallback_test": "Wilcoxon signed-rank test",
-    "significance_level_alpha": 0.05,
-    "multiple_comparison_correction": "Holm-adjusted p-values",
-    "interpretation_rule": "A 'significant difference' is only considered 'effective' if the sign of the mean difference is positive for performance metrics."
-  },
-  "execution_handling": {
-    "missing_invalid_data": "Reject execution missing expected batches (144) or containing malformed schema. No unweighted batch averaging.",
-    "quarantine_exclusion": "Explicitly exclude quarantined or active staging directories.",
-    "parquet_exclusions": "Evaluation and inference parquet outputs prohibited from being opened during analysis phase."
-  }
+  "protocol_version": "2.0.0",
+  "lock_timestamp": "2026-09-23T16:05:00+08:00",
+  "lock_commit": "c247a70eae2e9d866591b1e02ae6422154faced4",
+  "independent_unit": "execution_seed",
+  "repeated_measure_unit": "batch",
+  "nesting_structure": "batches nested within executions with serial dependence",
+  "primary_inference_test": "run_level_paired_t_test",
+  "mandated_descriptive_test": "batch_level_paired_t_test",
+  "effect_size": "cohens_dz",
+  "confidence_interval": 0.95,
+  "alpha": 0.05,
+  "normality_check": "shapiro_wilk",
+  "fallback_test": "wilcoxon_signed_rank",
+  "multiplicity_correction": "holm",
+  "missing_data_policy": "catastrophic_failure",
+  "undefined_metric_substitution": 0.0,
+  "alias_policy": "resolve_to_primary_and_isolate",
+  "zero_variance_difference_p_value": 1.0,
+  "hypothesis_families": "attack_by_defense_cells_within_metric"
 }

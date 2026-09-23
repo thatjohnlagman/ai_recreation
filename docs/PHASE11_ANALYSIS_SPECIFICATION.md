@@ -1,40 +1,39 @@
 # Phase 11 Analysis Specification
 
-**Protocol Version:** 1.0.0
-**Date Frozen:** 2026-09-17T21:23:51+08:00
-**Primary Aim:** Evaluate the performance of Recall-Aware Control for Perturbation Defenses in Intrusion Detection Systems Against Black-Box Probing Attacks.
+**Protocol Version:** 2.0.0 (Corrective Analysis Lockdown)
+**Lock Timestamp:** 2026-09-23T16:05:00+08:00
+**Lock Commit:** c247a70eae2e9d866591b1e02ae6422154faced4
+**Source Map:** See `docs/PHASE11_STATISTICAL_METHOD_SOURCE_MAP.md` for explicit mapping to frozen pre-evaluation protocol files.
 
-## Experimental Units
-- **Population:** Black-box probing attacks against binary Random Forest IDS.
-- **Experimental Unit:** 500-record measurement batches (from a disjoint 72,000-record measurement pool).
-- **Execution Level:** The independent execution is defined by the unique combination of `(seed, attack_scenario, defense_mechanism, controller_config)`.
-- **Aliases:** C1 sensitivity aliases map directly to the primary C1 run and must NEVER be treated as independent duplicates.
+## Experimental Units and Nesting Structure
+- **Independent Experimental Unit:** The execution/seed level `(seed, attack_scenario, defense_mechanism, controller_config)`. The unique stochastic environment across the 5 primary seeds represents the independent trials.
+- **Repeated-Measure Unit:** The 144 chronological 500-record measurement batches. These are nested within the independent executions.
+- **Nesting Dependence:** Because the controller state at batch $t+1$ depends upon the outcomes of earlier batches, the batches within a given run are serially dependent and do not represent independent observations.
 
-## Research Questions & Metrics
-- **RQ1:** Base results descriptive performance.
-- **RQ2:** C1 Recall-Aware descriptive performance.
-- **RQ3:** Comparative effectiveness (C1 minus Base).
-- **RQ4:** Sensitivity analysis (C1–C7) descriptive performance.
+## Inferential Statistics Structure (The "Statistical Unit" Amendment)
+The formal `IMPLEMENTATION_DECISIONS.md` protocol explicitly mandated the use of a batch-level pairing key `(seed, attack_scenario, defense_mechanism, batch_id)`. We document that interpreting the batch count as the independent sample size (N=6480 per cell) is pseudoreplication.
 
-- **Metrics Used:** Accuracy, Precision, Recall, F1-Score, Balanced Accuracy.
-- **Handling of Undefined Metrics:**
-  - If TP+FP=0: Precision = 0.0
-  - If TP+FN=0: Recall = 0.0
-  - If Precision+Recall=0: F1 = 0.0
+To resolve this limitation without replacing the mandated test:
+1. **Primary Structural Inference (Amendment):** A **run-level paired t-test** ($N=5$ pairs per Attack×Defense cell, aggregating all 144 batches) will serve as the structurally sound inferential test that satisfies independence assumptions.
+2. **Mandated Fallback:** The **batch-level paired t-test** ($N=720$ pairs per Attack×Defense cell) is performed and reported purely to satisfy the pre-registered protocol mandate, but its p-values must be explicitly flagged with the dependence limitation.
 
-## Inferential Statistics Specification
-- **Statistical Test:** Two-tailed paired t-test (`scipy.stats.ttest_rel`).
-- **Pairing Key:** `(seed, attack_scenario, defense_mechanism, batch_id)`.
-- **Direction of Differences:** C1 minus Base (C1 - Base).
-- **Effect Size:** Cohen's dz (mean difference divided by standard deviation of differences).
-- **Confidence Interval:** 95% CI on the paired mean difference.
-- **Assumption Checks:** Shapiro-Wilk test on paired differences to check normality.
-- **Fallback Test:** Wilcoxon signed-rank test (computed as a supplementary check if normality is questionable, but primary results remain the paired t-test).
-- **Significance Level (Alpha):** 0.05.
-- **Multiple-Comparison Correction:** Holm-adjusted p-values across tests.
-- **Interpretation Rule:** A "significant difference" is only considered "effective" if the sign of the mean difference is positive for performance metrics (Recall, F1). Mixed results are reported transparently.
+## Hypothesis Families and Adjustments
+- **Hypothesis Formulation:** Tests are evaluated separately for each of the 9 *Attack × Defense* experimental cells.
+- **Null Hypothesis ($H_0$):** The true mean paired difference ($C_1 - Base$) in the selected metric is exactly zero.
+- **Alternative Hypothesis ($H_1$):** The true mean paired difference ($C_1 - Base$) in the selected metric is non-zero.
+- **Multiplicity Families:** The Holm adjustment (step-down procedure) is applied strictly within a single metric across the 9 cells. Different metrics (e.g., F1 vs. Precision) form separate families. 
 
-## Execution Handling
-- **Missing or Invalid Data:** Any execution missing expected batches (144) or containing malformed schema is rejected. No unweighted batch averaging is permitted.
-- **Quarantine Exclusion:** Quarantined or active staging directories are explicitly excluded from analysis.
-- **Parquet Exclusions:** All evaluation and inference parquet outputs are prohibited from being opened during the analysis execution phase; only JSON serialization artifacts are used.
+## Statistical Methodology
+- **Test:** Two-tailed paired t-test (`scipy.stats.ttest_rel`).
+- **Effect Size:** Cohen's $d_z$ formula: $d_z = \frac{\bar{X}_{diff}}{s_{diff}}$
+- **Confidence Interval (CI):** 95% CI on the paired difference mean using the t-distribution.
+- **Normality Check:** Shapiro-Wilk test on the paired differences. 
+- **Wilcoxon Signed-Rank:** Computed identically on the paired differences as a deterministic sensitivity fallback if Shapiro-Wilk detects significant non-normality, but the primary results remain the t-test.
+- **Alpha:** 0.05.
+- **Zero-Variance Differences:** If all paired differences are identically zero (variance = 0), the resulting t-statistic is 0.0 and the p-value is 1.0.
+- **Mixed Directions Rule:** A statistically significant difference is only interpreted as "effective" if the sign of the mean difference reflects a genuine improvement (e.g. positive for Recall and F1).
+
+## Missing Data and Alias Policy
+- **Undefined Metrics:** When $TP+FP=0$ or $TP+FN=0$, Precision/Recall substitute to $0.0$.
+- **Aliases:** C1 aliases (Sensitivity matrix) resolve directly to the execution metrics of the targeted primary run. They are isolated into the `sensitivity_*` tables and strictly prohibited from duplicating independent trials in the `primary_*` tables.
+- **Missing Data:** Missing batches or corrupted executions trigger catastrophic failure. Unweighted batch averaging is mathematically prohibited; run metrics must be cleanly regenerated from confusion totals.

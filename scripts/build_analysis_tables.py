@@ -13,7 +13,11 @@ from scripts.run_evaluation import (
     derive_and_validate_matrix,
     canonicalize_scenario,
     canonicalize_defense,
-    calculate_file_hash
+    calculate_file_hash,
+    validate_completed_run,
+    validate_completed_alias,
+    construct_run_provenance,
+    validate_cache_against_inventory
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -71,16 +75,27 @@ def process_run(row, expected_batches=144):
     check_eq(len(confusions), expected_batches, f"Batch count in confusion.json for {rid}")
     check_eq(len(configs), expected_batches, f"Batch count in config.json for {rid}")
     
+    # Contract validation for ASR
+    if row["attack_scenario"] == "SilentProbing":
+        check_eq(summary.get("attack_success_rate"), None, f"{rid}: SilentProbing ASR must be null")
+    else:
+        # ASR is valid for other attacks
+        pass
+        
     run_tp = run_fp = run_tn = run_fn = 0
     
     batch_records = []
     controller_records = []
     
+    expected_bid = 0
     for i in range(expected_batches):
         c = confusions[i]
         cfg = configs[i]
         
         bid = c["batch_id"]
+        check_eq(bid, expected_bid, f"{rid}: Batch ID out of order or missing")
+        expected_bid += 1
+        
         check_eq(cfg["batch_id"], bid, f"Batch ID mismatch between confusion and config {rid} {i}")
         
         tp, fp, tn, fn = c["tp"], c["fp"], c["tn"], c["fn"]
@@ -199,12 +214,29 @@ def main():
         actual_count += 1
     check_eq(actual_count, 1314, "Inventoried artifacts verified")
     
+    # Exclude unexpected final-run artifacts
+    for f in EVAL_DIR.rglob("*"):
+        if f.is_file():
+            # Check if this file is in the inventory
+            rel = str(f.relative_to(REPO_ROOT))
+            if rel not in inv_hashes:
+                # Quarantined runs are allowed as long as they aren't part of the matrix?
+                # The user says "verify zero active staging directories and exactly one documented historical quarantine"
+                if "quarantine_" in rel:
+                    continue
+                # If there are unexpected files, reject
+                raise ValueError(f"Unexpected artifact not in Phase 10D inventory: {rel}")
+                
     staging = list(EVAL_DIR.glob(".staging*"))
     check_eq(len(staging), 0, "Staging directories found")
     
-    # Exclude quarantined implicitly by only reading from matrix
+    quarantined = list(EVAL_DIR.glob("quarantine_*"))
+    check_eq(len(quarantined), 1, "Exactly one historical quarantine directory expected")
     
-    matrix, _ = derive_and_validate_matrix(REPO_ROOT / "configs")
+    # Verify caches BEFORE
+    validate_cache_against_inventory(REPO_ROOT / "artifacts" / "reports" / "integrity_hashes.txt")
+    
+    matrix, base_provenance = derive_and_validate_matrix(REPO_ROOT / "configs")
     unique_runs = matrix[~matrix["is_alias"]]
     alias_runs = matrix[matrix["is_alias"]]
     
@@ -223,6 +255,14 @@ def main():
     print("Processing unique runs...")
     for _, row in unique_runs.iterrows():
         rid = row["run_id"]
+        run_dir = EVAL_DIR / rid
+        
+        # Hardened validation
+        expected_prov = construct_run_provenance(base_provenance, row["seed"], row["attack_scenario"])
+        is_valid, err = validate_completed_run(run_dir, row, expected_prov, None)
+        if not is_valid:
+            raise ValueError(f"Invalid run {rid}: {err}")
+            
         rr, brs, crs = process_run(row)
         run_records_dict[rid] = rr
         batch_records_dict[rid] = brs
@@ -239,15 +279,22 @@ def main():
     print("Processing aliases...")
     for _, row in alias_runs.iterrows():
         rid = row["run_id"]
+        run_dir = EVAL_DIR / rid
+        expected_prov = construct_run_provenance(base_provenance, row["seed"], row["attack_scenario"])
+        
         # Alias points to a unique run
         with open(EVAL_DIR / rid / "alias_pointer.json") as f:
             pointer = json.load(f)
         target = pointer["alias_for_run_id"]
         
-        # Read the alias completion to verify it exists
-        if not (EVAL_DIR / rid / "completion.json").exists():
-            raise FileNotFoundError(f"Alias completion missing for {rid}")
-            
+        # Ensure it targets the correct primary C1
+        expected_target = f"primary_{row['seed']}_{row['attack_scenario']}_{row['defense_name']}_C1"
+        check_eq(target, expected_target, f"{rid} must target exactly its primary C1 equivalent")
+        
+        is_valid, err = validate_completed_alias(run_dir, row, EVAL_DIR / target)
+        if not is_valid:
+            raise ValueError(f"Invalid alias {rid}: {err}")
+        
         rr = run_records_dict[target].copy()
         rr["run_id"] = rid  # Re-label the run_id for the sensitivity table
         rr["controller_config"] = row["controller_config_id"]
@@ -333,6 +380,9 @@ def main():
     write_csv(ANALYSIS_DIR / "sensitivity_run_level.csv", sens_run_records, run_keys)
     write_csv(ANALYSIS_DIR / "sensitivity_batch_level.csv", sens_batch_records, batch_keys)
     write_csv(ANALYSIS_DIR / "controller_trace_summary.csv", all_controller_records, ctrl_keys)
+    
+    # Verify caches AFTER
+    validate_cache_against_inventory(REPO_ROOT / "artifacts" / "reports" / "integrity_hashes.txt")
     
     print("Analysis tables built successfully.")
 
