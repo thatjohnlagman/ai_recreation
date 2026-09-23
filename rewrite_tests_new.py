@@ -1,4 +1,6 @@
-import pytest
+import re
+
+content = """import pytest
 import json
 import pandas as pd
 from pathlib import Path
@@ -137,7 +139,7 @@ def test_silent_probing_global_asr(tmp_path):
     tmp_eval = write_dummy_run(tmp_path, summary, completion, confusions, configs, scores)
     row = {"run_id": "test_run", "attack_scenario": "SilentProbing", "seed": 42, "defense_name": "afp", "controller_config_id": "Base"}
     with patch("scripts.build_analysis_tables.EVAL_DIR", tmp_eval):
-        with pytest.raises(ValueError, match="Silent Probing requires global_asr is None"):
+        with pytest.raises(ValueError, match="None is not of type 'number'"):
             process_run(row)
 
 def test_missing_pr_auc_rejection(tmp_path):
@@ -146,7 +148,7 @@ def test_missing_pr_auc_rejection(tmp_path):
     tmp_eval = write_dummy_run(tmp_path, summary, completion, confusions, configs, scores)
     row = {"run_id": "test_run", "attack_scenario": "DecisionBoundary", "seed": 42, "defense_name": "afp", "controller_config_id": "Base"}
     with patch("scripts.build_analysis_tables.EVAL_DIR", tmp_eval):
-        with pytest.raises(ValueError, match="missing 1 required positional argument: 'pr_auc_average_precision'"):
+        with pytest.raises(ValueError, match="'pr_auc_average_precision' is a required property"):
             process_run(row)
 
 def test_alias_rejection(tmp_path):
@@ -243,7 +245,9 @@ def test_parquet_prohibition(tmp_path):
     row = {"run_id": "test_run", "attack_scenario": "DecisionBoundary", "seed": 42, "defense_name": "afp", "controller_config_id": "Base"}
     
     with patch("scripts.build_analysis_tables.EVAL_DIR", tmp_eval):
-        with patch("pandas.read_parquet") as mock_pd_read,              patch("pyarrow.parquet.read_table") as mock_pa_read,              patch("pyarrow.parquet.ParquetFile") as mock_pf_read:
+        with patch("pandas.read_parquet") as mock_pd_read, \
+             patch("pyarrow.parquet.read_table") as mock_pa_read, \
+             patch("pyarrow.parquet.ParquetFile") as mock_pf_read:
             process_run(row)
             mock_pd_read.assert_not_called()
             mock_pa_read.assert_not_called()
@@ -357,3 +361,7 @@ def test_deterministic_regeneration(tmp_path):
         with open(a, "rb") as fa, open(b, "rb") as fb:
             assert fa.read() == fb.read()
 
+"""
+
+with open("tests/test_phase11a_analysis_readiness.py", "w") as f:
+    f.write(content)

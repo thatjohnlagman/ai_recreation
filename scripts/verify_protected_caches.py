@@ -1,3 +1,4 @@
+import subprocess
 import json
 import hashlib
 import sys
@@ -20,10 +21,12 @@ def main():
         
     timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
     command = " ".join(sys.argv)
+    head_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     
     print(f"--- [{stage}] Protected Caches Check ---")
     print(f"Timestamp: {timestamp}")
     print(f"Command: {command}")
+    print(f"Commit: {head_commit}")
     
     # Authoritative base hash for cache_inventory_v2.json
     EXPECTED_INV_HASH = "274f6a132cc4459c3adf8a70949cb7ed5d20f95b779b48040e47ec3ea2ede6ae"

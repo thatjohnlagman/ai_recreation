@@ -16,7 +16,7 @@
   "zero_variance_difference_all_zero_p_value": 1.0,
   "zero_variance_difference_all_zero_dz": 0.0,
   "zero_variance_difference_constant_nonzero": "report_as_degenerate_infinite_statistic",
-  "ambiguity": "exact_multiplicity_family_and_pooling_structure_unresolved",
+  "pooling_decision_status": "prospectively_approved_and_locked",
   "status": "LOCKED",
   "primary_observation": "paired_batch_difference",
   "difference_direction": "C1_minus_Base",

@@ -1,3 +1,4 @@
+import subprocess
 import json
 import hashlib
 import sys
@@ -20,10 +21,12 @@ def main():
         
     timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
     command = " ".join(sys.argv)
+    head_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     
     print(f"--- [{stage}] Immutability Check ---")
     print(f"Timestamp: {timestamp}")
     print(f"Command: {command}")
+    print(f"Commit: {head_commit}")
     
     if not inv_path.exists():
         print(f"MISSING: artifacts/reports/phase10d_output_inventory.json")
