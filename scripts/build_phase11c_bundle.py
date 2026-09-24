@@ -6,12 +6,12 @@ import zipfile
 import hashlib
 from pathlib import Path
 import datetime
-import re
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-BUNDLE_NAME = "phase11c_thesis_results_review_bundle_v1_0_0.zip"
+BUNDLE_NAME = "phase11c_thesis_results_review_bundle_v1_0_1.zip"
 ANALYSIS_DIR = REPO_ROOT / "artifacts" / "analysis"
 FIGURES_DIR = ANALYSIS_DIR / "figures"
+REPORTS_DIR = REPO_ROOT / "artifacts" / "reports"
 
 sys.path.insert(0, str(REPO_ROOT))
 from scripts.run_evaluation import calculate_file_hash
@@ -44,40 +44,67 @@ def run_with_evidence(cmd, log_path, parse_counts=False):
         
     return proc.returncode == 0
 
-def main():
-    print("Building Phase 11C Thesis Results Review Bundle...")
-    
+def collect_git_evidence():
     head_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, cwd=REPO_ROOT).strip()
+    
+    try:
+        subprocess.check_call(["git", "update-index", "--refresh"], cwd=REPO_ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.check_call(["git", "diff-index", "--quiet", "HEAD", "--"], cwd=REPO_ROOT)
+        tracked_clean = True
+    except subprocess.CalledProcessError:
+        tracked_clean = False
+        
+    if not tracked_clean:
+        diff_out = subprocess.check_output(["git", "diff-index", "HEAD", "--"], text=True, cwd=REPO_ROOT)
+        raise ValueError(f"Git tracked files are not clean! Aborting bundle generation.\n{diff_out}")
+        
+    status_short = subprocess.check_output(["git", "status", "--short"], text=True, cwd=REPO_ROOT)
+    untracked = subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard"], text=True, cwd=REPO_ROOT)
+    git_log = subprocess.check_output(["git", "log", "-n", "3", "--oneline"], text=True, cwd=REPO_ROOT)
+    
+    git_evidence_path = REPORTS_DIR / "git_evidence_phase11c.txt"
+    with open(git_evidence_path, "w") as f:
+        f.write(f"=== GIT HEAD ===\n{head_commit}\n\n")
+        f.write("=== GIT TRACKED STATUS ===\nCLEAN (0 modifications)\n\n")
+        f.write("=== GIT STATUS SHORT ===\n" + status_short + "\n")
+        f.write("=== GIT UNTRACKED ARTIFACTS ===\n" + untracked + "\n")
+        f.write("=== RECENT COMMITS ===\n" + git_log + "\n")
+        
+    return head_commit
+
+def main():
+    print("Building Phase 11C Thesis Results Review Bundle v1.0.1...")
+    
     python_bin = sys.executable
     
-    print("Running focused tests...")
-    if not run_with_evidence([python_bin, "-m", "pytest", "tests/test_phase11c_results.py", "-v"], REPO_ROOT / "artifacts" / "reports" / "phase11c_focused_tests.log", parse_counts=True):
+    print("Running focused tests (Pre-generation)...")
+    # Note: Focused tests will fail before generation because files don't exist yet, so we skip the strict ones or run generation first.
+    # We must run generation first to create the files for tests to pass.
+    
+    print("Running Phase 11C Analysis Generation...")
+    if not run_with_evidence([python_bin, "scripts/run_phase11c_results.py"], REPORTS_DIR / "phase11c_analysis_execution.log"):
+        raise ValueError("Phase 11C analysis script failed")
+        
+    print("Running focused tests (Post-generation)...")
+    if not run_with_evidence([python_bin, "-m", "pytest", "tests/test_phase11c_results.py", "-v"], REPORTS_DIR / "phase11c_focused_tests.log", parse_counts=True):
         raise ValueError("Focused tests failed")
         
     print("Running full test suite...")
-    if not run_with_evidence([python_bin, "-m", "pytest", "-v"], REPO_ROOT / "artifacts" / "reports" / "phase11c_full_suite.log", parse_counts=True):
+    if not run_with_evidence([python_bin, "-m", "pytest", "-v"], REPORTS_DIR / "phase11c_full_suite.log", parse_counts=True):
         raise ValueError("Full tests failed")
         
-    print("Running Phase 11C Analysis Generation...")
-    if not run_with_evidence([python_bin, "scripts/run_phase11c_results.py"], REPO_ROOT / "artifacts" / "reports" / "phase11c_analysis_execution.log"):
-        raise ValueError("Phase 11C analysis script failed")
-        
-    # Source-to-output value traceability report
-    # We will generate a quick text report to show that values trace correctly.
-    with open(REPO_ROOT / "artifacts" / "reports" / "phase11c_traceability_report.txt", "w") as f:
-        f.write("Source-to-Output Value Traceability Report\n")
-        f.write("All generated CSVs and figures trace directly to Phase 11A/11B tables via deterministic code.\n")
-        f.write("See tests/test_phase11c_results.py for explicit traceability assertions.\n")
+    print("Collecting Git evidence...")
+    collect_git_evidence()
         
     generated_reports = {
-        REPO_ROOT / "artifacts" / "reports" / "phase11c_focused_tests.log",
-        REPO_ROOT / "artifacts" / "reports" / "phase11c_full_suite.log",
-        REPO_ROOT / "artifacts" / "reports" / "phase11c_analysis_execution.log",
-        REPO_ROOT / "artifacts" / "reports" / "phase11c_traceability_report.txt",
-        REPO_ROOT / "artifacts" / "reports" / "DUPLICATE_SCAN_REPORT_v11c.txt",
-        REPO_ROOT / "artifacts" / "reports" / "FORBIDDEN_FILE_SCAN_REPORT_v11c.txt",
-        REPO_ROOT / "artifacts" / "reports" / "MISSING_FILES_v11c.txt",
-        REPO_ROOT / "artifacts" / "reports" / "git_evidence_phase11c.txt",
+        REPORTS_DIR / "phase11c_focused_tests.log",
+        REPORTS_DIR / "phase11c_full_suite.log",
+        REPORTS_DIR / "phase11c_analysis_execution.log",
+        REPORTS_DIR / "phase11c_traceability_report.csv",
+        REPORTS_DIR / "DUPLICATE_SCAN_REPORT_v11c.txt",
+        REPORTS_DIR / "FORBIDDEN_FILE_SCAN_REPORT_v11c.txt",
+        REPORTS_DIR / "MISSING_FILES_v11c.txt",
+        REPORTS_DIR / "git_evidence_phase11c.txt",
         REPO_ROOT / "MANIFEST_PHASE11C.txt",
         REPO_ROOT / "FILE_HASHES_PHASE11C.sha256",
         ANALYSIS_DIR / "phase11c_rq1_base_performance.csv",
@@ -87,7 +114,6 @@ def main():
         REPO_ROOT / "docs" / "PHASE11C_CHAPTER4_DRAFT.md"
     }
 
-    # Add figures to generated_reports
     if FIGURES_DIR.exists():
         for fig in FIGURES_DIR.glob("*.png"):
             generated_reports.add(fig)
@@ -104,13 +130,13 @@ def main():
     members_list = [str(p.relative_to(REPO_ROOT)) for p in bundle_files]
     
     dup_count = len(members_list) - len(set(members_list))
-    with open(REPO_ROOT / "artifacts" / "reports" / "DUPLICATE_SCAN_REPORT_v11c.txt", "w") as f:
+    with open(REPORTS_DIR / "DUPLICATE_SCAN_REPORT_v11c.txt", "w") as f:
         f.write(f"Scanned {len(members_list)} members\n")
         f.write(f"Duplicates found: {dup_count}\n")
         
     prohibited_extensions = {".parquet", ".joblib", ".json"}
-    forbidden_names = [m for m in members_list if Path(m).suffix in prohibited_extensions]
-    with open(REPO_ROOT / "artifacts" / "reports" / "FORBIDDEN_FILE_SCAN_REPORT_v11c.txt", "w") as f:
+    forbidden_names = [m for m in members_list if Path(m).suffix in prohibited_extensions or "01_APPROVED_THESIS.pdf" in m]
+    with open(REPORTS_DIR / "FORBIDDEN_FILE_SCAN_REPORT_v11c.txt", "w") as f:
         f.write(f"Scanned {len(members_list)} members\n")
         f.write(f"Forbidden files found: {len(forbidden_names)}\n")
         for fn in forbidden_names:
@@ -122,7 +148,7 @@ def main():
         "FILE_HASHES_PHASE11C.sha256",
         "artifacts/reports/MISSING_FILES_v11c.txt"
     )]
-    with open(REPO_ROOT / "artifacts" / "reports" / "MISSING_FILES_v11c.txt", "w") as f:
+    with open(REPORTS_DIR / "MISSING_FILES_v11c.txt", "w") as f:
         f.write(f"Scanned {len(members_list)} members\n")
         f.write(f"Missing files: {len(missing_names)}\n")
         
@@ -130,16 +156,6 @@ def main():
     hash_path = REPO_ROOT / "FILE_HASHES_PHASE11C.sha256"
     manifest_path.touch()
     hash_path.touch()
-    
-    print("Collecting Git evidence...")
-    git_evidence_path = REPO_ROOT / "artifacts" / "reports" / "git_evidence_phase11c.txt"
-    with open(git_evidence_path, "w") as f:
-        untracked = subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard"], text=True, cwd=REPO_ROOT)
-        git_log = subprocess.check_output(["git", "log", "-n", "3", "--oneline"], text=True, cwd=REPO_ROOT)
-        f.write(f"=== GIT HEAD ===\n{head_commit}\n\n")
-        f.write("=== GIT TRACKED STATUS ===\nCLEAN (0 modifications)\n\n")
-        f.write("=== GIT UNTRACKED ARTIFACTS ===\n" + untracked + "\n")
-        f.write("=== RECENT COMMITS ===\n" + git_log + "\n")
             
     print("Finalizing ledger and manifest...")
     with open(manifest_path, "w") as f:
