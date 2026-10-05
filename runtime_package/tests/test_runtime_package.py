@@ -4,6 +4,8 @@ import sys
 from pathlib import Path
 
 DEMO_DIR = Path(__file__).parents[1]
+if str(DEMO_DIR) not in sys.path:
+    sys.path.insert(0, str(DEMO_DIR))
 
 def test_imports():
     try:

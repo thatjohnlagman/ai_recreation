@@ -12,6 +12,12 @@ let socket = null;
 let currentAfpEnabled = true;
 let currentTheme = localStorage.getItem("app_theme") || "light";
 let currentTileLayer = null;
+let selectedFlowItem = null;
+let currentFeedList = [];
+let currentAttacksList = [];
+let currentDefenseName = "AFP";
+let currentDefenseMode = "Recall-Aware";
+let currentDefenseIntensity = 0.0003;
 
 // -----------------------------------------------------------------------------
 // Initialization
@@ -268,26 +274,61 @@ function updateChart(history) {
 }
 
 // -----------------------------------------------------------------------------
-// Circular SVG Gauge & AFP Panel
+// Circular SVG Gauge & Research Defense Panel
 // -----------------------------------------------------------------------------
 function updateAfpPanel(afp, recallVal) {
   if (!afp) return;
   currentAfpEnabled = afp.enabled;
+  currentDefenseName = (afp.defense_name || "afp").toUpperCase();
+  currentDefenseMode = (afp.mode === "recall-aware") ? "Recall-Aware" : "Base";
+  if (typeof afp.intensity === 'number') {
+    currentDefenseIntensity = afp.intensity;
+  }
+  const defName = currentDefenseName;
+  const modeName = (afp.mode === "recall-aware") ? "RA" : "Base";
+  const stateName = afp.controller_state || (afp.enabled ? "Green" : "Bypassed");
 
-  // Header Badge
+  // Header Badge & Top Status Pill
   const headerBadge = document.getElementById("afp-header-badge");
   if (headerBadge) {
-    headerBadge.textContent = afp.enabled ? "Active" : "Bypassed";
+    headerBadge.textContent = afp.enabled ? `${defName} Active` : "Bypassed";
     headerBadge.className = `badge-status-pill ${afp.enabled ? "green" : "red"}`;
   }
 
-  // Sidebar Status
   const afpStatusText = document.getElementById("afp-status-text");
   const afpStatusDot = document.getElementById("afp-status-dot");
   if (afpStatusText && afpStatusDot) {
-    afpStatusText.textContent = afp.enabled ? "Active" : "Bypassed";
+    afpStatusText.textContent = afp.enabled ? `${defName} (${modeName})` : "Bypassed";
     afpStatusText.className = `status-val ${afp.enabled ? "cyan" : "red"}`;
     afpStatusDot.className = `status-dot ${afp.enabled ? "cyan" : "red"}`;
+  }
+
+  // Panel Title
+  const panelTitle = document.getElementById("defense-panel-title");
+  if (panelTitle) {
+    if (!afp.enabled || afp.defense_name === "none") {
+      panelTitle.textContent = "IDS (No Defense)";
+    } else {
+      panelTitle.textContent = `${afp.mode === "recall-aware" ? "Recall-Aware" : "Base"} ${defName}`;
+    }
+  }
+
+  // Active Buttons in Pill / Segment Groups
+  const defenseBtns = document.querySelectorAll("#defense-selector-group .segment-btn, #defense-selector-group .pill-btn");
+  defenseBtns.forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.defense === (afp.defense_name || "afp"));
+  });
+
+  const modeBtns = document.querySelectorAll("#mode-selector-group .segment-btn, #mode-selector-group .pill-btn");
+  modeBtns.forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.mode === (afp.mode || "recall-aware"));
+  });
+
+  // Controller State Pill
+  const statePill = document.getElementById("controller-state-pill");
+  if (statePill) {
+    statePill.textContent = stateName;
+    statePill.className = `ra-status-badge ${stateName.toLowerCase()}`;
   }
 
   // Circular Gauge Stroke & Values
@@ -310,15 +351,49 @@ function updateAfpPanel(afp, recallVal) {
     gaugePill.className = `gauge-badge-pill ${isHealthy ? "green" : "alert"}`;
   }
 
-  // AFP Intensity Bar & Value
+  // Intensity Bar, Bounds & Labels
   const intensityVal = document.getElementById("afp-intensity-val");
   const intensityBar = document.getElementById("afp-bar-fill");
-  if (intensityVal) {
-    intensityVal.textContent = afp.intensity.toFixed(2);
+  const minBound = (typeof afp.intensity_min === 'number') ? afp.intensity_min : 0.0;
+  const maxBound = (typeof afp.intensity_max === 'number' && afp.intensity_max > 0) ? afp.intensity_max : 0.0003;
+
+  const paramLabel = document.getElementById("afp-param-name");
+  if (paramLabel) {
+    if (afp.defense_name === "rs") paramLabel.textContent = "RS Intensity (σ)";
+    else if (afp.defense_name === "fs") paramLabel.textContent = "FS Rounding (d)";
+    else paramLabel.textContent = "AFP Intensity (ε)";
   }
+
+  const minBoundEl = document.getElementById("afp-min-bound-val");
+  const maxBoundEl = document.getElementById("afp-max-bound-val");
+  const barMinEl = document.getElementById("bar-min-label");
+  const barMaxEl = document.getElementById("bar-max-label");
+
+  if (minBoundEl) minBoundEl.textContent = (afp.defense_name === "fs") ? "0" : minBound.toFixed(4);
+  if (maxBoundEl) maxBoundEl.textContent = (afp.defense_name === "fs") ? "2" : maxBound.toFixed(4);
+  if (barMinEl) barMinEl.textContent = (afp.defense_name === "fs") ? "0" : minBound.toFixed(4);
+  if (barMaxEl) barMaxEl.textContent = (afp.defense_name === "fs") ? "2" : maxBound.toFixed(4);
+
+  if (intensityVal) {
+    if (afp.defense_name === "fs") {
+      intensityVal.textContent = Math.round(afp.intensity || 2);
+    } else {
+      const num = Number(afp.intensity || 0);
+      if (num === 0) {
+        intensityVal.textContent = "0.0000";
+      } else if (num < 0.0001) {
+        // Display up to 6 decimals for decayed intensities (e.g., 0.000075)
+        intensityVal.textContent = num.toFixed(6);
+      } else {
+        // Standard calibrated intensity (e.g., 0.0003)
+        intensityVal.textContent = num.toFixed(4);
+      }
+    }
+  }
+
   if (intensityBar) {
-    // Map [0.20, 0.80] range to 0-100%
-    const pct = Math.max(5, Math.min(100, ((afp.intensity - 0.20) / 0.60) * 100));
+    const span = Math.max(1e-9, maxBound - minBound);
+    const pct = Math.max(5, Math.min(100, (((afp.intensity || 0) - minBound) / span) * 100));
     intensityBar.style.width = `${pct}%`;
   }
 }
@@ -344,18 +419,179 @@ function renderTopThreats(threats) {
   `).join("");
 }
 
+// -----------------------------------------------------------------------------
+// Flow / Attack Forensics Inspector Logic & Heuristics
+// -----------------------------------------------------------------------------
+function inferLocation(ip) {
+  if (!ip) return "External Network";
+  if (ip.startsWith("192.168.1.")) return "Corp LAN (192.168.1.0/24)";
+  if (ip.startsWith("192.168.")) return "Internal Subnet (192.168.0.0/16)";
+  if (ip.startsWith("10.0.1.")) return "Internal Mgmt (10.0.1.0/24)";
+  if (ip.startsWith("10.0.2.")) return "DMZ Host (10.0.2.0/24)";
+  if (ip.startsWith("10.0.3.")) return "Staging Network";
+  if (ip.startsWith("10.")) return "Private Network (10.0.0.0/8)";
+  if (ip.startsWith("172.16.")) return "DMZ Zone (172.16.0.0/16)";
+  if (ip.startsWith("203.0.113.")) return "Singapore (External)";
+  if (ip.startsWith("185.199.")) return "Ukraine (External)";
+  if (ip.startsWith("103.21.")) return "United States (External)";
+  if (ip.startsWith("45.76.")) return "Germany (External)";
+  if (ip.startsWith("89.248.")) return "Russia (External)";
+  if (ip.startsWith("114.119.")) return "China (External)";
+  if (ip.startsWith("177.54.")) return "Brazil (External)";
+  if (ip.startsWith("197.232.")) return "Kenya (External)";
+  return "External Host";
+}
+
+function formatIntensityDecimal(val) {
+  const num = Number(val || 0);
+  if (num === 0) return "0.0000";
+  if (num < 0.0001) return num.toFixed(6);
+  return num.toFixed(4);
+}
+
+function updateInspectorUI(item) {
+  if (!item) return;
+
+  const isMalicious = (item.status && item.status.toLowerCase() === "malicious");
+  const timeStr = item.timestamp || item.time || "Recent";
+  const srcIp = item.source_ip || "192.168.1.45";
+  const dstIp = item.destination_ip || "192.168.1.10:8000";
+  const flowType = item.type || (isMalicious ? "Threat Attack" : "Normal Traffic");
+
+  // Confidence calculation
+  let conf = 0.93;
+  if (typeof item.confidence === "number") {
+    conf = item.confidence;
+  } else if (item.confidence) {
+    conf = parseFloat(item.confidence) || 0.93;
+  } else {
+    conf = isMalicious ? 0.93 : 0.12;
+  }
+
+  // Location resolution
+  const location = (item.location && item.location !== "Unknown") ? item.location : inferLocation(srcIp);
+
+  // Active Defense & Intensity
+  const defense = item.defense || currentDefenseName || "AFP";
+  const mode = item.mode || currentDefenseMode || "Recall-Aware";
+  const intensity = (item.intensity !== undefined) ? item.intensity : currentDefenseIntensity;
+
+  // Action
+  const action = item.action || (isMalicious ? "TCP RST / Drop" : "Forwarded (200 OK)");
+
+  // Update DOM elements
+  const titleEl = document.getElementById("insp-flow-title");
+  if (titleEl) titleEl.textContent = `${srcIp} → ${dstIp} [${flowType}]`;
+
+  const timeEl = document.getElementById("insp-time");
+  if (timeEl) timeEl.textContent = timeStr;
+
+  const badgeEl = document.getElementById("insp-verdict-badge");
+  if (badgeEl) {
+    badgeEl.textContent = isMalicious ? "Blocked (403)" : "Allowed (200)";
+    badgeEl.className = `badge-status ${isMalicious ? "malicious" : "benign"}`;
+  }
+
+  const srcIpEl = document.getElementById("insp-source-ip");
+  if (srcIpEl) srcIpEl.textContent = srcIp;
+
+  const locEl = document.getElementById("insp-location");
+  if (locEl) locEl.textContent = location;
+
+  const dstIpEl = document.getElementById("insp-dest-ip");
+  if (dstIpEl) dstIpEl.textContent = dstIp;
+
+  const protoEl = document.getElementById("insp-protocol");
+  if (protoEl) protoEl.textContent = "Protected Data Service (HTTP)";
+
+  const typeEl = document.getElementById("insp-flow-type");
+  if (typeEl) typeEl.textContent = flowType;
+
+  const levelEl = document.getElementById("insp-threat-level");
+  if (levelEl) {
+    levelEl.textContent = isMalicious ? (conf >= 0.85 ? "Critical Severity" : "Elevated Severity") : "Verified Safe";
+    levelEl.style.color = isMalicious ? "#f87171" : "#34d399";
+  }
+
+  const confValEl = document.getElementById("insp-confidence-val");
+  if (confValEl) confValEl.textContent = `${(conf * 100).toFixed(1)}%`;
+
+  const confFillEl = document.getElementById("insp-confidence-fill");
+  if (confFillEl) {
+    confFillEl.style.width = `${Math.min(100, Math.max(5, conf * 100))}%`;
+    confFillEl.style.background = isMalicious ? "#ef4444" : "#10b981";
+  }
+
+  const defNameEl = document.getElementById("insp-defense-name");
+  if (defNameEl) defNameEl.textContent = `${defense} (${mode})`;
+
+  const defIntEl = document.getElementById("insp-defense-intensity");
+  if (defIntEl) defIntEl.textContent = `ε = ${formatIntensityDecimal(intensity)}`;
+
+  const actionNameEl = document.getElementById("insp-action-name");
+  if (actionNameEl) {
+    actionNameEl.textContent = action;
+    actionNameEl.className = `insp-card-value ${isMalicious ? "text-red" : "text-green"}`;
+  }
+
+  const actionSubEl = document.getElementById("insp-action-sub");
+  if (actionSubEl) {
+    actionSubEl.textContent = isMalicious ? "Inline Firewall Dropped" : "Forwarded to Protected Server";
+  }
+}
+
+window.onRowSelectFeed = function(idx) {
+  if (currentFeedList && currentFeedList[idx]) {
+    selectedFlowItem = currentFeedList[idx];
+    updateInspectorUI(selectedFlowItem);
+    renderRecentFeed(currentFeedList);
+    renderRecentAttacks(currentAttacksList);
+  }
+};
+
+window.onRowSelectAttack = function(idx) {
+  if (currentAttacksList && currentAttacksList[idx]) {
+    selectedFlowItem = currentAttacksList[idx];
+    updateInspectorUI(selectedFlowItem);
+    renderRecentFeed(currentFeedList);
+    renderRecentAttacks(currentAttacksList);
+  }
+};
+
+// Aliases for compatibility
+window.handleSelectFeed = window.onRowSelectFeed;
+window.handleSelectAttack = window.onRowSelectAttack;
+
 function renderRecentFeed(feed) {
   const tbody = document.getElementById("recent-feed-tbody");
   if (!tbody || !feed) return;
+  currentFeedList = feed;
 
-  tbody.innerHTML = feed.map(item => {
-    const isMalicious = (item.status.toLowerCase() === "malicious");
+  // Auto-select first malicious attack (or top item) if none selected yet
+  if (!selectedFlowItem && feed.length > 0) {
+    const firstMalicious = feed.find(item => item.status && item.status.toLowerCase() === "malicious");
+    selectedFlowItem = firstMalicious || feed[0];
+    if (selectedFlowItem) {
+      updateInspectorUI(selectedFlowItem);
+    }
+  }
+
+  const selectedTime = selectedFlowItem ? (selectedFlowItem.timestamp || selectedFlowItem.time) : null;
+
+  tbody.innerHTML = feed.map((item, idx) => {
+    const isMalicious = (item.status && item.status.toLowerCase() === "malicious");
     const badgeClass = isMalicious ? "malicious" : "benign";
+    const itemTime = item.timestamp || item.time;
+    const isSelected = selectedFlowItem && (
+      selectedFlowItem.source_ip === item.source_ip &&
+      selectedTime === itemTime
+    );
+    const selectedClass = isSelected ? "selected-row" : "";
     return `
-      <tr>
+      <tr class="${selectedClass}" data-idx="${idx}" onclick="onRowSelectFeed(${idx})" title="Click to view detailed flow forensics">
         <td>${item.timestamp}</td>
         <td>${item.source_ip}</td>
-        <td>${item.destination_ip}</td>
+        <td>${item.destination_ip || "192.168.1.10"}</td>
         <td>${item.type}</td>
         <td>${typeof item.confidence === 'number' ? item.confidence.toFixed(2) : item.confidence}</td>
         <td><span class="badge-status ${badgeClass}">${item.status}</span></td>
@@ -367,15 +603,30 @@ function renderRecentFeed(feed) {
 function renderRecentAttacks(attacks) {
   const tbody = document.getElementById("recent-attacks-tbody");
   if (!tbody || !attacks) return;
+  currentAttacksList = attacks;
 
-  tbody.innerHTML = attacks.map(item => {
-    const isMalicious = (item.status.toLowerCase() === "malicious");
+  // Auto-select if still null
+  if (!selectedFlowItem && attacks.length > 0) {
+    selectedFlowItem = attacks[0];
+    updateInspectorUI(selectedFlowItem);
+  }
+
+  const selectedTime = selectedFlowItem ? (selectedFlowItem.timestamp || selectedFlowItem.time) : null;
+
+  tbody.innerHTML = attacks.map((item, idx) => {
+    const isMalicious = (item.status && item.status.toLowerCase() === "malicious");
     const badgeClass = isMalicious ? "malicious" : "benign";
+    const itemTime = item.timestamp || item.time;
+    const isSelected = selectedFlowItem && (
+      selectedFlowItem.source_ip === item.source_ip &&
+      selectedTime === itemTime
+    );
+    const selectedClass = isSelected ? "selected-row" : "";
     return `
-      <tr>
+      <tr class="${selectedClass}" data-idx="${idx}" onclick="onRowSelectAttack(${idx})" title="Click to view detailed attack forensics">
         <td>${item.time}</td>
         <td>${item.source_ip}</td>
-        <td>${item.location}</td>
+        <td>${item.location || "External Network"}</td>
         <td>${item.type}</td>
         <td><span class="badge-status ${badgeClass}">${item.status}</span></td>
       </tr>
@@ -519,4 +770,42 @@ function initEventListeners() {
       }
     });
   }
+
+  // Defense Selector Buttons (AFP, RS, FS, None)
+  const defenseBtns = document.querySelectorAll("#defense-selector-group .pill-btn");
+  defenseBtns.forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const selectedDef = btn.dataset.defense;
+      try {
+        const res = await fetch("/api/dashboard/set-defense", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ defense: selectedDef })
+        });
+        const data = await res.json();
+        console.log("Defense changed:", data);
+      } catch (err) {
+        console.error("Error switching defense:", err);
+      }
+    });
+  });
+
+  // Mode Selector Buttons (Recall-Aware, Base)
+  const modeBtns = document.querySelectorAll("#mode-selector-group .pill-btn");
+  modeBtns.forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const selectedMode = btn.dataset.mode;
+      try {
+        const res = await fetch("/api/dashboard/set-mode", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode: selectedMode })
+        });
+        const data = await res.json();
+        console.log("Mode changed:", data);
+      } catch (err) {
+        console.error("Error switching mode:", err);
+      }
+    });
+  });
 }

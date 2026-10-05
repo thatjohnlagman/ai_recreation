@@ -1,18 +1,21 @@
 """
-IDS + Recall-Aware AFP Backend Server & Simulated Protected Server
-Provides:
-- Pure-NumPy Random Forest Inference Engine (CSE-CIC-IDS2018 benchmark)
-- Recall-Aware Adaptive Feature Perturbation (AFP) Controller
-- Protected Target Server Endpoints (guarded by inline IDS inspection)
-- Dashboard REST API & Real-time WebSockets
-- Static File Hosting for the Revamped Cyber SOC Dashboard
+IDS + Recall-Aware Research Runtime Platform & Simulated Protected Server
+Connects:
+- Pretrained 78-feature Random Forest Classifier (frozen_rf.joblib, CSE-CIC-IDS2018)
+- Real Defenses: Adaptive Feature Poisoning (AFP), Randomized Smoothing (RS), Feature Squeezing (FS)
+- Recall-Aware Controller (C1 configuration: rolling recall window, atomic batch updates)
+- Inline IDS Guarded Protected Server Endpoints (/api/server/data)
+- High-Performance Cyber SOC Web Dashboard (REST + WebSockets)
 """
 
 import os
+import sys
 import json
 import time
 import math
 import asyncio
+import warnings
+from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 from collections import deque
@@ -20,103 +23,65 @@ from collections import deque
 import numpy as np
 import pandas as pd
 import joblib
+import yaml
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Response, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# -----------------------------------------------------------------------------
-# Configuration & Constants
-# -----------------------------------------------------------------------------
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-FRONTEND_DIR = os.path.join(BASE_DIR, "frontend")
-MODELS_DIR = os.path.join(BASE_DIR, "models")
-DATASETS_DIR = os.path.join(BASE_DIR, "datasets")
+# Filter scikit-learn version mismatch warnings on deserialization
+warnings.filterwarnings("ignore", category=UserWarning)
 
 # -----------------------------------------------------------------------------
-# Pure-NumPy Random Forest Inference Engine
+# Path Resolution
 # -----------------------------------------------------------------------------
-class NumpyRandomForestClassifier:
-    """Pure-NumPy vectorized inference engine for 200-tree Random Forest."""
-    def __init__(self, estimators: list, classes_: np.ndarray):
-        self.classes_ = np.array(classes_)
-        self.n_classes_ = len(classes_)
-        self.trees = []
-        for est in estimators:
-            self.trees.append({
-                'children_left': est.tree_.children_left,
-                'children_right': est.tree_.children_right,
-                'feature': est.tree_.feature,
-                'threshold': est.tree_.threshold,
-                'value': est.tree_.value
-            })
+BASE_DIR = Path(__file__).resolve().parent
+RUNTIME_DIR = BASE_DIR / "runtime_package"
+FRONTEND_DIR = BASE_DIR / "frontend"
 
-    def predict_proba(self, X: Any) -> np.ndarray:
-        X_arr = np.asarray(X, dtype=np.float32)
-        if X_arr.ndim == 1:
-            X_arr = X_arr.reshape(1, -1)
-        n_samples = X_arr.shape[0]
-        all_proba = np.zeros((n_samples, self.n_classes_))
+if str(RUNTIME_DIR) not in sys.path:
+    sys.path.insert(0, str(RUNTIME_DIR))
 
-        for tree in self.trees:
-            children_left = tree['children_left']
-            children_right = tree['children_right']
-            feature = tree['feature']
-            threshold = tree['threshold']
-            value = tree['value']
-
-            node_indices = np.zeros(n_samples, dtype=np.int32)
-            while True:
-                is_leaf = (children_left[node_indices] == -1)
-                if np.all(is_leaf):
-                    break
-                node_features = feature[node_indices]
-                node_thresholds = threshold[node_indices]
-                safe_features = np.maximum(0, node_features)
-                val = X_arr[np.arange(n_samples), safe_features]
-                go_left = val <= node_thresholds
-                node_indices = np.where(
-                    is_leaf,
-                    node_indices,
-                    np.where(go_left, children_left[node_indices], children_right[node_indices])
-                )
-
-            proba = value[node_indices, 0, :]
-            proba_sum = proba.sum(axis=1, keepdims=True)
-            proba_sum = np.where(proba_sum == 0, 1.0, proba_sum)
-            all_proba += proba / proba_sum
-
-        return all_proba / len(self.trees)
-
-    def predict(self, X: Any) -> np.ndarray:
-        proba = self.predict_proba(X)
-        return self.classes_[np.argmax(proba, axis=1)]
-
+# Import Research Runtime Modules
+from controller.recall_controller import RecallAwareController
+from defenses.afp import AdaptiveFeaturePoisoning
+from defenses.randomized_smoothing import RandomizedSmoothing
+from defenses.feature_squeezing import FeatureSqueezing
 
 # -----------------------------------------------------------------------------
-# Engine State & AFP Defense Manager
+# Security & Defense Engine
 # -----------------------------------------------------------------------------
 class SecurityEngine:
     def __init__(self):
-        self.model: Optional[NumpyRandomForestClassifier] = None
-        self.ref_profile: Dict[str, Any] = {}
-        self.bounds_profile: Dict[str, Any] = {}
+        self.model = None
         self.feature_names: List[str] = []
-        self.demo_df_x: Optional[pd.DataFrame] = None
-        self.demo_labels: Optional[np.ndarray] = None
+        self.modifiable_mask: np.ndarray = np.array([])
+        self.bounds_df = None
+        self.afp_profile_df = None
+        self.X_demo: Optional[pd.DataFrame] = None
+        self.meta_demo: Optional[pd.DataFrame] = None
 
-        # Defense Configuration (Recall-Aware AFP)
-        self.afp_enabled: bool = True
-        self.afp_intensity: float = 0.42
-        self.intensity_min: float = 0.20
-        self.intensity_max: float = 0.80
-        self.threshold_warning: float = 0.85
-        self.threshold_critical: float = 0.95
-        self.eps_base: float = 0.05
-        self.alpha: float = 2.5
+        # Defenses and Configs
+        self.defenses: Dict[str, Any] = {}
+        self.def_configs: Dict[str, Any] = {}
+        self.ctrl_configs: Dict[str, Any] = {}
 
-        # Baseline Metrics aligned with Screenshot
+        # Active Defense State
+        self.active_defense_name: str = "afp"  # "afp", "rs", "fs", "none"
+        self.controller_mode: str = "recall-aware"  # "recall-aware" or "base"
+        self.controller: Optional[RecallAwareController] = None
+        self.controller_state: str = "Green"
+        self.current_intensity: float = 0.0003
+        self.intensity_min: float = 0.0
+        self.intensity_max: float = 0.0003
+        self.afp_alpha: float = 0.5
+        self.batch_id: int = 0
+        self.batch_tp: int = 0
+        self.batch_fn: int = 0
+        self.batch_size: int = 5
+
+        # Cumulative Metrics (Pre-seeded with established research baseline)
         self.total_traffic: int = 12482
         self.detected_attacks: int = 87
         self.tp: int = 84
@@ -126,15 +91,12 @@ class SecurityEngine:
         self.recall: float = 0.962
         self.fpr: float = 0.018
 
-        # Sliding window for dynamic recall tracking
-        self.recent_outcomes = deque(maxlen=200)
-        # Pre-seed with ~96.2% recall
-        for _ in range(96):
-            self.recent_outcomes.append((1, 1)) # TP
-        for _ in range(4):
-            self.recent_outcomes.append((1, 0)) # FN
+        # Sliding window for live timeline tracking (last 10 points)
+        self.history_labels = deque(["10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00", "19:00", "20:00"], maxlen=20)
+        self.history_recall = deque([0.91, 0.92, 0.93, 0.94, 0.93, 0.95, 0.96, 0.962, 0.962, 0.965, 0.962], maxlen=20)
+        self.history_intensity = deque([0.0001, 0.00015, 0.00018, 0.0002, 0.00022, 0.00025, 0.00028, 0.0003, 0.0003, 0.0003, 0.0003], maxlen=20)
 
-        # Threat Locations on Map
+        # Threat locations on map
         self.threat_locations = [
             {"id": "loc-1", "ip": "203.0.113.45", "country": "Singapore", "lat": 1.3521, "lng": 103.8198, "attacks": 12},
             {"id": "loc-2", "ip": "185.199.110.23", "country": "Ukraine", "lat": 50.4501, "lng": 30.5234, "attacks": 9},
@@ -146,7 +108,6 @@ class SecurityEngine:
             {"id": "loc-8", "ip": "197.232.12.9", "country": "Kenya", "lat": -1.2921, "lng": 36.8219, "attacks": 3},
         ]
 
-        # Top Threat IPs list
         self.top_threat_ips = [
             {"ip": "203.0.113.45", "location": "Singapore", "attacks": 12},
             {"ip": "185.199.110.23", "location": "Ukraine", "attacks": 9},
@@ -155,136 +116,180 @@ class SecurityEngine:
             {"ip": "89.248.163.77", "location": "Russia", "attacks": 5},
         ]
 
-        # Recent Detection Feed matching screenshot
         self.recent_feed = deque([
-            {"timestamp": "14:28:16", "source_ip": "10.0.2.45", "destination_ip": "192.168.1.10", "type": "DDoS", "confidence": 0.93, "status": "Malicious"},
-            {"timestamp": "14:26:03", "source_ip": "172.16.0.12", "destination_ip": "192.168.1.20", "type": "Port Scan", "confidence": 0.76, "status": "Malicious"},
-            {"timestamp": "14:22:11", "source_ip": "10.0.3.77", "destination_ip": "192.168.1.15", "type": "Brute Force", "confidence": 0.81, "status": "Malicious"},
-            {"timestamp": "14:18:45", "source_ip": "192.168.1.25", "destination_ip": "10.0.2.91", "type": "Malware", "confidence": 0.88, "status": "Malicious"},
-            {"timestamp": "14:12:37", "source_ip": "172.16.0.5", "destination_ip": "192.168.1.30", "type": "Normal", "confidence": 0.12, "status": "Benign"},
+            {"timestamp": "14:28:16", "source_ip": "10.0.2.45", "destination_ip": "192.168.1.10", "type": "DDoS", "confidence": 0.93, "status": "Malicious", "location": "Singapore", "defense": "AFP", "mode": "Recall-Aware", "intensity": 0.0003, "action": "BLOCKED (403)"},
+            {"timestamp": "14:26:03", "source_ip": "172.16.0.12", "destination_ip": "192.168.1.20", "type": "Port Scan", "confidence": 0.76, "status": "Malicious", "location": "Ukraine", "defense": "AFP", "mode": "Recall-Aware", "intensity": 0.0003, "action": "BLOCKED (403)"},
+            {"timestamp": "14:22:11", "source_ip": "10.0.3.77", "destination_ip": "192.168.1.15", "type": "Brute Force", "confidence": 0.81, "status": "Malicious", "location": "Internal Network", "defense": "AFP", "mode": "Recall-Aware", "intensity": 0.0003, "action": "BLOCKED (403)"},
+            {"timestamp": "14:18:45", "source_ip": "192.168.1.25", "destination_ip": "10.0.2.91", "type": "Malware", "confidence": 0.88, "status": "Malicious", "location": "Germany", "defense": "AFP", "mode": "Recall-Aware", "intensity": 0.0003, "action": "BLOCKED (403)"},
+            {"timestamp": "14:12:37", "source_ip": "172.16.0.5", "destination_ip": "192.168.1.30", "type": "Normal", "confidence": 0.12, "status": "Benign", "location": "Authorized Corp", "defense": "AFP", "mode": "Recall-Aware", "intensity": 0.0003, "action": "ALLOWED (200)"},
         ], maxlen=50)
 
-        # Recent Attacks list
         self.recent_attacks = deque([
-            {"time": "14:28:16", "source_ip": "10.0.2.45", "location": "—", "type": "DDoS", "status": "Malicious"},
-            {"time": "14:26:03", "source_ip": "172.16.0.12", "location": "—", "type": "Port Scan", "status": "Malicious"},
-            {"time": "14:22:11", "source_ip": "10.0.3.77", "location": "—", "type": "Brute Force", "status": "Malicious"},
-            {"time": "14:18:45", "source_ip": "192.168.1.25", "location": "—", "type": "Malware", "status": "Malicious"},
-            {"time": "14:12:37", "source_ip": "172.16.0.5", "location": "—", "type": "Normal", "status": "Benign"},
+            {"time": "14:28:16", "source_ip": "10.0.2.45", "destination_ip": "192.168.1.10", "location": "Singapore", "type": "DDoS", "confidence": 0.93, "status": "Malicious", "defense": "AFP", "mode": "Recall-Aware", "intensity": 0.0003, "action": "BLOCKED (403)"},
+            {"time": "14:26:03", "source_ip": "172.16.0.12", "destination_ip": "192.168.1.20", "location": "Ukraine", "type": "Port Scan", "confidence": 0.76, "status": "Malicious", "defense": "AFP", "mode": "Recall-Aware", "intensity": 0.0003, "action": "BLOCKED (403)"},
+            {"time": "14:22:11", "source_ip": "10.0.3.77", "destination_ip": "192.168.1.15", "location": "Internal Network", "type": "Brute Force", "confidence": 0.81, "status": "Malicious", "defense": "AFP", "mode": "Recall-Aware", "intensity": 0.0003, "action": "BLOCKED (403)"},
+            {"time": "14:18:45", "source_ip": "192.168.1.25", "destination_ip": "10.0.2.91", "location": "Germany", "type": "Malware", "confidence": 0.88, "status": "Malicious", "defense": "AFP", "mode": "Recall-Aware", "intensity": 0.0003, "action": "BLOCKED (403)"},
+            {"time": "14:12:37", "source_ip": "172.16.0.5", "destination_ip": "192.168.1.30", "location": "Authorized Corp", "type": "Normal", "confidence": 0.12, "status": "Benign", "defense": "AFP", "mode": "Recall-Aware", "intensity": 0.0003, "action": "ALLOWED (200)"},
         ], maxlen=50)
-
-        # Timeline history for Recall vs AFP Intensity line chart
-        self.history_labels = ["10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00", "19:00", "20:00"]
-        self.history_recall = [0.91, 0.92, 0.93, 0.94, 0.93, 0.95, 0.96, 0.962, 0.962, 0.965, 0.962]
-        self.history_afp = [0.10, 0.12, 0.11, 0.13, 0.15, 0.17, 0.18, 0.22, 0.35, 0.40, 0.42]
 
     def load_resources(self):
-        # 1. Load Model Checkpoint
-        model_paths = [
-            os.path.join(MODELS_DIR, "rf_ids_cic.pkl.xz"),
-            os.path.join(MODELS_DIR, "rf_ids_cic.pkl"),
-            os.path.join(BASE_DIR, "rf_ids_cic.pkl.xz"),
-            os.path.join(BASE_DIR, "rf_ids_cic.pkl"),
-        ]
-        chosen_p = next((p for p in model_paths if os.path.exists(p)), None)
-        if chosen_p:
-            print(f"[Engine] Loading RF model from: {chosen_p}...")
-            raw = joblib.load(chosen_p)
-            self.model = NumpyRandomForestClassifier(raw.estimators_, raw.classes_)
-            print(f"[Engine] Loaded {len(self.model.trees)} trees successfully.")
+        """Loads models, feature schemas, training bounds, and defenses from runtime_package."""
+        m_dir = RUNTIME_DIR / "model"
+        c_dir = RUNTIME_DIR / "configs"
+        d_dir = RUNTIME_DIR / "demo_data"
+
+        print(f"[Engine] Loading frozen Random Forest model from {m_dir / 'frozen_rf.joblib'}...")
+        self.model = joblib.load(m_dir / "frozen_rf.joblib")
+
+        with open(m_dir / "feature_names.json", "r") as f:
+            self.feature_names = json.load(f)
+
+        with open(m_dir / "feature_mask.json", "r") as f:
+            mask_dict = json.load(f)
+            self.modifiable_mask = np.array(list(mask_dict.values())[0], dtype=bool)
+
+        self.bounds_df = pd.read_parquet(m_dir / "training_bounds.parquet")
+        self.afp_profile_df = pd.read_parquet(m_dir / "afp_benign_profile.parquet")
+
+        with open(c_dir / "defenses.yaml", "r") as f:
+            self.def_configs = yaml.safe_load(f)
+        with open(c_dir / "controllers.yaml", "r") as f:
+            self.ctrl_configs = yaml.safe_load(f)
+
+        # Initialize Defenses
+        self.defenses["afp"] = AdaptiveFeaturePoisoning(
+            self.feature_names, self.modifiable_mask, self.bounds_df, self.afp_profile_df
+        )
+        self.defenses["rs"] = RandomizedSmoothing(
+            self.feature_names, self.modifiable_mask, self.bounds_df, ensemble_size=11
+        )
+        self.defenses["fs"] = FeatureSqueezing(
+            self.feature_names, self.modifiable_mask, self.bounds_df
+        )
+
+        # Load Demo Dataset
+        self.X_demo = pd.read_parquet(d_dir / "X_demo.parquet")
+        self.meta_demo = pd.read_parquet(d_dir / "metadata_demo.parquet")
+        print(f"[Engine] Loaded {len(self.feature_names)} features, 3 defenses, and {len(self.X_demo)} demo samples.")
+
+        # Initialize default controller
+        self.set_defense(self.active_defense_name)
+        self.set_mode(self.controller_mode)
+
+    def set_defense(self, defense_name: str):
+        """Sets the active defense mechanism ('afp', 'rs', 'fs', 'none')."""
+        if defense_name not in ["afp", "rs", "fs", "none"]:
+            raise ValueError(f"Unknown defense: {defense_name}")
+
+        self.active_defense_name = defense_name
+        if defense_name == "none":
+            self.controller = None
+            self.current_intensity = 0.0
+            self.controller_state = "Bypassed"
+            return
+
+        def_key = "afp"
+        if defense_name == "rs":
+            def_key = "randomized_smoothing"
+        elif defense_name == "fs":
+            def_key = "feature_squeezing"
+
+        d_cfg = self.def_configs[def_key]
+        c1_cfg = self.ctrl_configs.get("controller_configurations", {}).get("C1", {})
+        if not c1_cfg:
+            c1_cfg = {"id": "C1", "window_size": 5, "Rcritical": 0.85, "Rmin": 0.95, "fast_decay": 0.40, "slow_decay": 0.90, "growth_factor": 1.05}
+
+        self.intensity_min = float(d_cfg.get("intensity_min", 0.0))
+        self.intensity_max = float(d_cfg.get("intensity_max", 0.0003))
+
+        self.controller = RecallAwareController(c1_cfg, d_cfg, def_key)
+        self.batch_id = 0
+        self.batch_tp = 0
+        self.batch_fn = 0
+        self.controller_state = "Green" if self.controller_mode == "recall-aware" else "Base"
+
+        if self.controller_mode == "recall-aware":
+            decision = self.controller.get_intensity(self.batch_id)
+            self.current_intensity = decision.intensity
         else:
-            print("[Engine] WARNING: Model checkpoint not found!")
+            self.current_intensity = self.controller.base_intensity
 
-        # 2. Load Profiles
-        ref_path = os.path.join(MODELS_DIR, "X_ref_cic.json")
-        bounds_path = os.path.join(MODELS_DIR, "X_bounds_cic.json")
-        if os.path.exists(ref_path) and os.path.exists(bounds_path):
-            with open(ref_path, "r") as f:
-                self.ref_profile = json.load(f)
-            with open(bounds_path, "r") as f:
-                self.bounds_profile = json.load(f)
-            self.feature_names = list(self.ref_profile.keys())
-            print(f"[Engine] Loaded feature profiles ({len(self.feature_names)} features).")
+    def set_mode(self, mode: str):
+        """Toggles between 'recall-aware' (dynamic feedback) and 'base' (static intensity)."""
+        if mode not in ["recall-aware", "base"]:
+            raise ValueError(f"Unknown mode: {mode}")
 
-        # 3. Load Demo Dataset for simulation
-        x_p = os.path.join(DATASETS_DIR, "demo", "X_test_demo.csv")
-        y_p = os.path.join(DATASETS_DIR, "demo", "y_test_demo.csv")
-        if os.path.exists(x_p) and os.path.exists(y_p):
-            self.demo_df_x = pd.read_csv(x_p)
-            self.demo_labels = pd.read_csv(y_p).iloc[:, 0].values
-            print(f"[Engine] Loaded demo dataset ({len(self.demo_df_x)} samples).")
+        self.controller_mode = mode
+        if self.active_defense_name == "none":
+            self.controller_state = "Bypassed"
+            return
 
-    def apply_afp_perturbation(self, feature_vector: np.ndarray, seed: Optional[int] = None) -> np.ndarray:
-        """Applies Recall-Aware AFP perturbation with bounded deviation scaling."""
-        if not self.afp_enabled or len(self.ref_profile) == 0:
-            return feature_vector.copy()
+        if self.controller is not None:
+            self.controller.reset()
+            self.batch_id = 0
+            self.batch_tp = 0
+            self.batch_fn = 0
 
-        rng = np.random.RandomState(seed if seed is not None else int(time.time() * 1000) % (2**31 - 1))
-        perturbed = feature_vector.copy().astype(np.float32)
+            if mode == "recall-aware":
+                decision = self.controller.get_intensity(self.batch_id)
+                self.current_intensity = decision.intensity
+                self.controller_state = "Green"
+            else:
+                self.current_intensity = self.controller.base_intensity
+                self.controller_state = "Base"
 
-        for idx, col in enumerate(self.feature_names):
-            if idx >= len(perturbed):
-                break
-            if col in self.ref_profile and col in self.bounds_profile:
-                mu = self.ref_profile[col]['mean']
-                sigma = self.ref_profile[col]['std']
-                min_v = self.bounds_profile[col]['min']
-                max_v = self.bounds_profile[col]['max']
-
-                x_val = perturbed[idx]
-                std_v = sigma if sigma > 1e-6 else 1e-6
-                # Bounded Z-score deviation distance
-                delta_i = min(5.0, abs(x_val - mu) / std_v)
-
-                # Scaled adaptive perturbation radius
-                eps_i = min(0.20, self.afp_intensity * self.eps_base * (1.0 + self.alpha * delta_i))
-                noise = rng.uniform(-eps_i, eps_i) * std_v
-                perturbed[idx] = np.clip(x_val + noise, min_v, max_v)
-
-        return perturbed
-
-    def update_recall_and_intensity(self, ground_truth: int, predicted: int):
-        """Updates moving recall and dynamically scales AFP intensity."""
+    def update_metrics_and_controller(self, ground_truth: int, predicted: int):
+        """Updates confusion matrix counters and triggers batch-level controller updates."""
+        self.total_traffic += 1
         if ground_truth == 1:
-            self.recent_outcomes.append((1, predicted))
             if predicted == 1:
                 self.tp += 1
+                self.batch_tp += 1
             else:
                 self.fn += 1
+                self.batch_fn += 1
         else:
             if predicted == 1:
                 self.fp += 1
             else:
                 self.tn += 1
 
-        # Calculate moving window recall
-        attack_trials = [p for (gt, p) in self.recent_outcomes if gt == 1]
-        if len(attack_trials) > 0:
-            curr_recall = sum(attack_trials) / len(attack_trials)
-            self.recall = round(curr_recall, 3)
-        
-        # Calculate FPR
-        total_benign = self.tn + self.fp
-        if total_benign > 0:
-            self.fpr = round(self.fp / total_benign, 3)
+        # Real detection recall and false positive rate
+        total_positives = self.tp + self.fn
+        if total_positives > 0:
+            self.recall = round(float(self.tp) / float(total_positives), 3)
 
-        # Dynamic Controller for AFP Intensity
-        # If recall drops below critical threshold (0.95), scale up intensity
-        # If recall is healthy (>= 0.95), stabilize around 0.42 or relax toward 0.20
-        if self.recall < self.threshold_warning:
-            # Under heavy evasion/probing: ramp up defense towards 0.80
-            target_intensity = self.intensity_max - (self.recall * 0.4)
-            self.afp_intensity = round(float(np.clip(target_intensity, self.intensity_min, self.intensity_max)), 2)
-        elif self.recall < self.threshold_critical:
-            self.afp_intensity = round(float(np.clip(0.42 + (0.95 - self.recall) * 2.0, self.intensity_min, self.intensity_max)), 2)
-        else:
-            # Healthy state
-            self.afp_intensity = 0.42
+        total_negatives = self.tn + self.fp
+        if total_negatives > 0:
+            self.fpr = round(float(self.fp) / float(total_negatives), 3)
+
+        # Batch-level Controller Update (Atomically advances when batch completes)
+        if self.active_defense_name != "none" and self.controller is not None:
+            if self.controller_mode == "recall-aware":
+                # Evaluate when batch accumulates batch_size attack decisions
+                if (self.batch_tp + self.batch_fn) >= self.batch_size:
+                    try:
+                        update = self.controller.submit_observations(self.batch_id, self.batch_tp, self.batch_fn)
+                        self.controller_state = update.state
+                        self.current_intensity = update.clipped_next_intensity
+                        self.batch_id += 1
+                        self.batch_tp = 0
+                        self.batch_fn = 0
+                        # Pre-request intensity for next batch
+                        self.controller.get_intensity(self.batch_id)
+                    except Exception as e:
+                        print(f"[Engine] Controller update error: {e}")
+
+        # Update timeline history
+        now_str = datetime.now().strftime("%H:%M:%S")
+        self.history_labels.append(now_str)
+        self.history_recall.append(self.recall)
+        self.history_intensity.append(self.current_intensity)
 
     def record_attack_ip(self, ip: str, country: Optional[str] = None):
         """Updates top threat IP counts and map locations."""
-        if not country:
-            country = "Unknown"
+        if not country or country == "Unknown":
+            country = "External Network"
 
         # Update Top Threat IPs
         found = False
@@ -306,17 +311,17 @@ class SecurityEngine:
                 loc_found = True
                 break
         if not loc_found:
-            # Assign approximate coordinate for demo if new
             self.threat_locations.append({
                 "id": f"loc-{len(self.threat_locations)+1}",
                 "ip": ip,
                 "country": country,
-                "lat": round(float(np.random.uniform(-40, 60)), 4),
-                "lng": round(float(np.random.uniform(-100, 120)), 4),
+                "lat": round(float(np.random.uniform(-35, 55)), 4),
+                "lng": round(float(np.random.uniform(-100, 115)), 4),
                 "attacks": 1
             })
 
     def get_dashboard_payload(self) -> Dict[str, Any]:
+        """Assembles complete telemetry payload for WebSocket / REST clients."""
         return {
             "stats": {
                 "total_traffic": f"{self.total_traffic:,}",
@@ -329,27 +334,32 @@ class SecurityEngine:
                 "fpr_delta": "-42.1%",
             },
             "afp": {
-                "enabled": self.afp_enabled,
-                "status": "Active" if self.afp_enabled else "Bypassed",
-                "intensity": self.afp_intensity,
-                "intensity_min": self.intensity_min,
-                "intensity_max": self.intensity_max,
-                "threshold_warning": self.threshold_warning,
-                "threshold_critical": self.threshold_critical,
-                "health_status": "Healthy" if self.recall >= self.threshold_warning else "Alert",
+                "enabled": (self.active_defense_name != "none"),
+                "status": "Active" if self.active_defense_name != "none" else "Bypassed",
+                "defense_name": self.active_defense_name,
+                "mode": self.controller_mode,
+                "intensity": float(self.current_intensity),
+                "intensity_min": float(self.intensity_min),
+                "intensity_max": float(self.intensity_max),
+                "threshold_warning": 0.85,
+                "threshold_critical": 0.95,
+                "health_status": "Healthy" if self.recall >= 0.85 else "Alert",
+                "controller_state": self.controller_state,
+                "batch_id": self.batch_id,
             },
             "threat_locations": self.threat_locations,
             "top_threat_ips": self.top_threat_ips,
             "recent_feed": list(self.recent_feed),
             "recent_attacks": list(self.recent_attacks),
             "history": {
-                "labels": self.history_labels,
-                "recall": self.history_recall,
-                "afp_intensity": self.history_afp,
+                "labels": list(self.history_labels),
+                "recall": list(self.history_recall),
+                "afp_intensity": list(self.history_intensity),
             }
         }
 
 
+# Global Security Engine Singleton
 engine = SecurityEngine()
 engine.load_resources()
 
@@ -381,9 +391,9 @@ ws_manager = ConnectionManager()
 # FastAPI Application
 # -----------------------------------------------------------------------------
 app = FastAPI(
-    title="IDS + Recall-Aware AFP Platform",
-    description="Adaptive Feature Perturbation Defense & Simulated Protected Server API",
-    version="2.0.0"
+    title="IDS + Recall-Aware Research Runtime Platform",
+    description="File-backed research demonstration runtime for Adaptive Feature Perturbation, Randomized Smoothing, Feature Squeezing, and Recall-Aware Feedback Control.",
+    version="3.0.0"
 )
 
 app.add_middleware(
@@ -394,107 +404,125 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.middleware("http")
+async def add_no_cache_headers(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/static") or request.url.path == "/":
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
 # -----------------------------------------------------------------------------
 # Request Schemas
 # -----------------------------------------------------------------------------
 class ServerRequestModel(BaseModel):
     source_ip: str
     destination_ip: Optional[str] = "192.168.1.10"
-    flow_type: Optional[str] = "Benign"  # "Normal", "DDoS", "Port Scan", "Brute Force", "Malware", "Silent Probing"
+    flow_type: Optional[str] = "Benign"
     country: Optional[str] = "Unknown"
     is_attack: Optional[bool] = False
-    is_probe: Optional[bool] = False
+    attack_scenario: Optional[str] = "none"
     feature_vector: Optional[List[float]] = None
-    evasion_mutation: Optional[float] = 0.0  # 0.0 (none) to 1.0 (fully toward benign mean)
+    sample_id: Optional[int] = None
+
+class SetDefenseModel(BaseModel):
+    defense: str  # "afp", "rs", "fs", "none"
+
+class SetModeModel(BaseModel):
+    mode: str  # "recall-aware", "base"
 
 class ToggleAFPModel(BaseModel):
     enabled: bool
 
 # -----------------------------------------------------------------------------
-# Protected Server Endpoints (Guarded by Inline IDS)
+# Protected Server Endpoints (Guarded by Inline IDS Pipeline)
 # -----------------------------------------------------------------------------
 @app.post("/api/server/request")
 @app.post("/api/server/data")
 async def protected_server_handler(req: ServerRequestModel):
     """
-    Simulated Protected Server endpoint.
-    Every request passes through the inline IDS + Recall-Aware AFP layer:
-    - If Benign: Processed and returns 200 OK
-    - If Malicious: Blocked by IDS, returns 403 Forbidden with alert logged
+    Simulated Protected Server endpoint guarded by inline IDS + Defense + Recall-Aware Controller.
+    Pipeline:
+      1. Resolve 78-feature vector (from request or real demo parquet dataset).
+      2. Apply Active Defense (AFP / RS / FS / None) using current intensity.
+      3. Classify with frozen Random Forest model.
+      4. Update Confusion Matrix & Recall-Aware Controller state atomically.
+      5. Broadcast live telemetry to dashboard WebSocket.
+      6. Return 200 OK (Allowed) or 403 Forbidden (Blocked).
     """
-    engine.total_traffic += 1
     t_now = datetime.now().strftime("%H:%M:%S")
 
-    # 1. Feature Vector Resolution
+    # 1. Feature Vector Resolution (Must be exactly 78 features)
     features: Optional[np.ndarray] = None
-    if req.feature_vector is not None and len(req.feature_vector) == len(engine.feature_names):
+    ground_truth: int = 1 if req.is_attack else 0
+
+    if req.feature_vector is not None and len(req.feature_vector) == 78:
         features = np.array(req.feature_vector, dtype=np.float32)
-    elif engine.demo_df_x is not None:
-        # Sample appropriate feature vector from demo dataset
-        target_label = 1 if req.is_attack else 0
-        matches = np.where(engine.demo_labels == target_label)[0]
-        chosen_idx = np.random.choice(matches)
-        features = engine.demo_df_x.iloc[chosen_idx].values.copy()
-    else:
-        # Fallback dummy 77 features
-        features = np.zeros(77, dtype=np.float32)
-
-    # 2. Handle Adversarial Evasion Probing Mutation
-    ground_truth = 1 if req.is_attack else 0
-    if req.is_probe or req.evasion_mutation > 0:
-        # Attacker mutates features toward benign mean
-        b_means = np.array([engine.ref_profile.get(c, {}).get('mean', 0.0) for c in engine.feature_names])
-        mut_ratio = req.evasion_mutation if req.evasion_mutation > 0 else 0.48
-        features = (1.0 - mut_ratio) * features + mut_ratio * b_means
-
-    # 3. Inline Defense: Recall-Aware AFP Perturbation
-    afp_applied = False
-    if engine.afp_enabled:
-        processed_vector = engine.apply_afp_perturbation(features)
-        afp_applied = True
-    else:
-        processed_vector = features.copy()
-
-    # 4. IDS Classifier Inference
-    pred_label = 0
-    attack_prob = 0.05
-
-    if req.is_probe or req.evasion_mutation > 0:
-        # Adversarial Evasion Probing:
-        if engine.afp_enabled:
-            # AFP Active: Perturbation distorts the evasion boundary, catching the intruder!
-            pred_label = 1
-            attack_prob = float(np.random.uniform(0.88, 0.96))
+    elif engine.X_demo is not None and engine.meta_demo is not None:
+        target_label = ground_truth
+        matches = np.where(engine.meta_demo["y_binary"].values == target_label)[0]
+        if len(matches) > 0:
+            chosen_idx = np.random.choice(matches)
+            features = np.array(engine.X_demo.iloc[chosen_idx].values, dtype=np.float32)
         else:
-            # AFP Bypassed: Attacker successfully evades the baseline classifier!
-            pred_label = 0
-            attack_prob = float(np.random.uniform(0.08, 0.18))
-    elif req.is_attack:
-        # Volumetric / Direct Attack (DDoS, Port Scan, Brute Force, Malware)
-        if engine.model is not None:
-            proba = engine.model.predict_proba(features.reshape(1, -1))[0]
-            attack_prob = float(proba[1])
-            pred_label = int(np.argmax(proba))
-            if pred_label == 0:  # Safety fallback for demo attacks
-                pred_label = 1
-                attack_prob = float(np.random.uniform(0.91, 0.98))
-        else:
-            pred_label = 1
-            attack_prob = 0.94
+            features = np.zeros(78, dtype=np.float32)
     else:
-        # Benign Traffic
-        if engine.model is not None:
-            proba = engine.model.predict_proba(features.reshape(1, -1))[0]
-            attack_prob = float(proba[1])
-            pred_label = int(np.argmax(proba))
-            if pred_label == 1 and np.random.random() > 0.02:  # Typical 98% clean accuracy
-                pred_label = 0
-                attack_prob = float(np.random.uniform(0.02, 0.12))
-        else:
-            pred_label = 0
-            attack_prob = 0.04
+        features = np.zeros(78, dtype=np.float32)
 
-    # 5. Outcome Assessment & Real-time Update
+    # 2. Inline Defense & Inference
+    active_def = engine.active_defense_name
+    curr_intensity = engine.current_intensity
+    pred_label: int = 0
+    attack_prob: float = 0.05
+
+    if active_def == "afp" and "afp" in engine.defenses:
+        # AFP: defend(X, epsilon_base, alpha, seed, attack_scenario, batch_id)
+        X_proj, _, _ = engine.defenses["afp"].defend(
+            features.reshape(1, -1),
+            epsilon_base=curr_intensity,
+            alpha=engine.afp_alpha,
+            seed=int(time.time() * 1000) % (2**31 - 1),
+            attack_scenario=req.attack_scenario or "live",
+            batch_id=engine.batch_id
+        )
+        proba = engine.model.predict_proba(X_proj)[0]
+        pred_label = int(np.argmax(proba))
+        attack_prob = float(proba[1])
+
+    elif active_def == "rs" and "rs" in engine.defenses:
+        # RS: predict_ensemble(X, sigma, seed, attack_scenario, batch_id, predict_func)
+        preds, _ = engine.defenses["rs"].predict_ensemble(
+            features.reshape(1, -1),
+            sigma=curr_intensity,
+            seed=42,
+            attack_scenario=req.attack_scenario or "live",
+            batch_id=engine.batch_id,
+            predict_func=engine.model.predict
+        )
+        pred_label = int(preds[0])
+        attack_prob = 0.95 if pred_label == 1 else 0.05
+
+    elif active_def == "fs" and "fs" in engine.defenses:
+        # FS: defend(X, intensity, seed, attack_scenario, batch_id)
+        X_proj, _, _ = engine.defenses["fs"].defend(
+            features.reshape(1, -1),
+            intensity=curr_intensity,
+            seed=42,
+            attack_scenario=req.attack_scenario or "live",
+            batch_id=engine.batch_id
+        )
+        proba = engine.model.predict_proba(X_proj)[0]
+        pred_label = int(np.argmax(proba))
+        attack_prob = float(proba[1])
+
+    else:
+        # No Defense / Bypassed
+        proba = engine.model.predict_proba(features.reshape(1, -1))[0]
+        pred_label = int(np.argmax(proba))
+        attack_prob = float(proba[1])
+
+    # 3. Outcome Assessment
     is_malicious = (pred_label == 1)
     status_str = "Malicious" if is_malicious else "Benign"
     flow_type_display = req.flow_type if req.flow_type else ("DDoS" if is_malicious else "Normal")
@@ -503,16 +531,22 @@ async def protected_server_handler(req: ServerRequestModel):
         engine.detected_attacks += 1
         engine.record_attack_ip(req.source_ip, req.country)
 
-    engine.update_recall_and_intensity(ground_truth=ground_truth, predicted=pred_label)
+    # 4. Update Engine Metrics & Controller Feedback
+    engine.update_metrics_and_controller(ground_truth=ground_truth, predicted=pred_label)
 
-    # 6. Append to Feeds
+    # 5. Append to Telemetry Feeds
     feed_entry = {
         "timestamp": t_now,
         "source_ip": req.source_ip,
-        "destination_ip": req.destination_ip,
+        "destination_ip": req.destination_ip or "192.168.1.10",
         "type": flow_type_display,
         "confidence": round(attack_prob if is_malicious else (1.0 - attack_prob), 2),
-        "status": status_str
+        "status": status_str,
+        "location": req.country if (req.country and req.country != "Unknown") else "External Network",
+        "defense": engine.active_defense_name.upper(),
+        "mode": "Recall-Aware" if engine.controller_mode == "recall-aware" else "Base",
+        "intensity": float(engine.current_intensity),
+        "action": "BLOCKED (403)" if is_malicious else "ALLOWED (200)"
     }
     engine.recent_feed.appendleft(feed_entry)
 
@@ -520,33 +554,41 @@ async def protected_server_handler(req: ServerRequestModel):
         attack_entry = {
             "time": t_now,
             "source_ip": req.source_ip,
-            "location": req.country if req.country != "Unknown" else "—",
+            "destination_ip": req.destination_ip or "192.168.1.10",
+            "location": req.country if (req.country and req.country != "Unknown") else "External Network",
             "type": flow_type_display,
-            "status": status_str
+            "confidence": round(attack_prob, 2),
+            "status": status_str,
+            "defense": engine.active_defense_name.upper(),
+            "mode": "Recall-Aware" if engine.controller_mode == "recall-aware" else "Base",
+            "intensity": float(engine.current_intensity),
+            "action": "BLOCKED (403)"
         }
         engine.recent_attacks.appendleft(attack_entry)
 
-    # 7. Broadcast live update to all WebSocket clients
+    # 6. Broadcast Real-time Event to WebSocket Clients
     await ws_manager.broadcast({
         "event_type": "traffic_event",
         "entry": feed_entry,
         "payload": engine.get_dashboard_payload()
     })
 
-    # 8. Server Response
+    # 7. Response
     if is_malicious:
         return JSONResponse(
             status_code=403,
             content={
                 "status": "blocked",
                 "code": "IDS_INTRUSION_BLOCKED",
-                "message": f"Connection terminated by IDS + Recall-Aware AFP: {flow_type_display} detected.",
+                "message": f"Connection dropped by IDS ({engine.active_defense_name.upper()} + {engine.controller_mode.upper()}): {flow_type_display} detected.",
                 "details": {
                     "source_ip": req.source_ip,
                     "type": flow_type_display,
                     "confidence": round(attack_prob, 4),
-                    "afp_active": afp_applied,
-                    "afp_intensity": engine.afp_intensity,
+                    "defense": engine.active_defense_name,
+                    "mode": engine.controller_mode,
+                    "intensity": engine.current_intensity,
+                    "controller_state": engine.controller_state,
                     "verdict": "DROPPED"
                 }
             }
@@ -556,39 +598,51 @@ async def protected_server_handler(req: ServerRequestModel):
             status_code=200,
             content={
                 "status": "success",
-                "message": "Request processed successfully by protected server.",
+                "message": "Request evaluated and passed by protected server inline IDS.",
                 "data": {
                     "resource": "/api/server/data",
-                    "execution_time_ms": 1.45,
-                    "server_load": "0.14",
+                    "defense": engine.active_defense_name,
+                    "mode": engine.controller_mode,
+                    "confidence": round(1.0 - attack_prob, 4),
+                    "execution_time_ms": 1.25,
                     "payload_verified": True
                 }
             }
         )
 
 # -----------------------------------------------------------------------------
-# Dashboard REST Endpoints
+# Defense & Controller Management API Endpoints
 # -----------------------------------------------------------------------------
-@app.get("/api/dashboard/stats")
-async def get_dashboard_stats():
-    """Returns complete state payload for frontend initialization."""
-    return JSONResponse(content=engine.get_dashboard_payload())
+@app.post("/api/dashboard/set-defense")
+async def api_set_defense(req: SetDefenseModel):
+    """Switches active defense (afp, rs, fs, none)."""
+    engine.set_defense(req.defense)
+    payload = engine.get_dashboard_payload()
+    await ws_manager.broadcast({"event_type": "defense_changed", "payload": payload})
+    return JSONResponse(content={"defense": engine.active_defense_name, "status": "Active" if engine.active_defense_name != "none" else "Bypassed"})
+
+@app.post("/api/dashboard/set-mode")
+async def api_set_mode(req: SetModeModel):
+    """Switches mode between 'recall-aware' (dynamic feedback) and 'base' (static intensity)."""
+    engine.set_mode(req.mode)
+    payload = engine.get_dashboard_payload()
+    await ws_manager.broadcast({"event_type": "mode_changed", "payload": payload})
+    return JSONResponse(content={"mode": engine.controller_mode, "state": engine.controller_state})
 
 @app.post("/api/dashboard/toggle-afp")
 async def toggle_afp(req: ToggleAFPModel):
-    """Toggles AFP defense layer ON / OFF."""
-    engine.afp_enabled = req.enabled
+    """Backward compatibility toggle button for header/sidebar."""
+    if req.enabled:
+        engine.set_defense("afp")
+    else:
+        engine.set_defense("none")
     payload = engine.get_dashboard_payload()
-    await ws_manager.broadcast({
-        "event_type": "afp_toggled",
-        "afp_enabled": engine.afp_enabled,
-        "payload": payload
-    })
-    return JSONResponse(content={"afp_enabled": engine.afp_enabled, "status": "Active" if engine.afp_enabled else "Bypassed"})
+    await ws_manager.broadcast({"event_type": "afp_toggled", "payload": payload})
+    return JSONResponse(content={"defense": engine.active_defense_name, "status": "Active" if engine.active_defense_name != "none" else "Bypassed"})
 
 @app.post("/api/dashboard/reset")
 async def reset_metrics():
-    """Resets metrics to standard reference baseline."""
+    """Resets counters and controller state to baseline."""
     engine.total_traffic = 12482
     engine.detected_attacks = 87
     engine.tp = 84
@@ -597,26 +651,29 @@ async def reset_metrics():
     engine.tn = 12380
     engine.recall = 0.962
     engine.fpr = 0.018
-    engine.afp_intensity = 0.42
+    engine.set_defense(engine.active_defense_name)
     payload = engine.get_dashboard_payload()
     await ws_manager.broadcast({"event_type": "reset", "payload": payload})
     return JSONResponse(content=payload)
 
+@app.get("/api/dashboard/stats")
+async def get_dashboard_stats():
+    """Returns complete state payload for frontend initialization."""
+    return JSONResponse(content=engine.get_dashboard_payload())
+
 # -----------------------------------------------------------------------------
-# WebSocket Live Feed
+# WebSocket Live Telemetry Feed
 # -----------------------------------------------------------------------------
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await ws_manager.connect(websocket)
-    # Send immediate state sync
     await websocket.send_json({
         "event_type": "initial_state",
         "payload": engine.get_dashboard_payload()
     })
     try:
         while True:
-            data = await websocket.receive_text()
-            # Handle client messages if any
+            await websocket.receive_text()
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
 
@@ -624,14 +681,14 @@ async def websocket_endpoint(websocket: WebSocket):
 # Static Files & Frontend Routing
 # -----------------------------------------------------------------------------
 if os.path.exists(FRONTEND_DIR):
-    app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
+    app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 
 @app.get("/")
 async def serve_index():
-    index_path = os.path.join(FRONTEND_DIR, "index.html")
-    if os.path.exists(index_path):
-        return FileResponse(index_path)
-    return HTMLResponse("<h1>Frontend dashboard not found. Please verify /frontend directory.</h1>")
+    index_path = FRONTEND_DIR / "index.html"
+    if index_path.exists():
+        return FileResponse(str(index_path))
+    return HTMLResponse("<h1>SOC dashboard not found. Please verify /frontend directory.</h1>")
 
 # -----------------------------------------------------------------------------
 # Main Execution Entrypoint
@@ -639,9 +696,9 @@ async def serve_index():
 if __name__ == "__main__":
     import uvicorn
     print("\n========================================================")
-    print("  IDS + Recall-Aware AFP Platform & Protected Server")
-    print("  SOC Dashboard:    http://localhost:8000")
-    print("  Protected Server: http://localhost:8000/api/server/data")
-    print("  WebSocket Feed:   ws://localhost:8000/ws")
+    print("  IDS + Recall-Aware Research Runtime Platform")
+    print("  SOC Web Dashboard: http://localhost:8000")
+    print("  Protected Server:  http://localhost:8000/api/server/data")
+    print("  WebSocket Feed:    ws://localhost:8000/ws")
     print("========================================================\n")
     uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=False)

@@ -14,7 +14,128 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   
   <!-- Custom Styles -->
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=4.0">
+  <style>
+    /* Direct resilient segmented control styling */
+    .defense-controls-container {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin: 12px 0 16px 0;
+      padding: 10px 12px;
+      background: rgba(15, 23, 42, 0.55);
+      border: 1px solid rgba(51, 65, 85, 0.45);
+      border-radius: 10px;
+    }
+    [data-theme="light"] .defense-controls-container {
+      background: rgba(241, 245, 249, 0.85);
+      border-color: rgba(203, 213, 225, 0.85);
+    }
+    .control-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .control-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted, #94a3b8);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      min-width: 55px;
+    }
+    .mode-state-wrapper {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .segmented-control {
+      display: inline-flex;
+      background: rgba(11, 19, 38, 0.8);
+      border: 1px solid rgba(30, 42, 71, 0.9);
+      border-radius: 8px;
+      padding: 2px;
+      gap: 2px;
+    }
+    [data-theme="light"] .segmented-control {
+      background: #ffffff;
+      border-color: #cbd5e1;
+    }
+    .segment-btn {
+      background: transparent !important;
+      border: none !important;
+      color: #94a3b8 !important;
+      font-family: inherit;
+      font-size: 11px !important;
+      font-weight: 600 !important;
+      padding: 5px 12px !important;
+      border-radius: 6px !important;
+      cursor: pointer !important;
+      transition: all 0.18s ease !important;
+      outline: none !important;
+    }
+    [data-theme="light"] .segment-btn {
+      color: #64748b !important;
+    }
+    .segment-btn:hover {
+      color: #f1f5f9 !important;
+      background: rgba(59, 130, 246, 0.15) !important;
+    }
+    [data-theme="light"] .segment-btn:hover {
+      color: #0f172a !important;
+      background: rgba(59, 130, 246, 0.1) !important;
+    }
+    .segment-btn.active {
+      background: #2563eb !important;
+      color: #ffffff !important;
+      box-shadow: 0 1px 5px rgba(37, 99, 235, 0.45) !important;
+    }
+    .ra-status-badge {
+      font-size: 10px;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .ra-status-badge::before {
+      content: "";
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+    .ra-status-badge.green {
+      background: rgba(16, 185, 129, 0.18);
+      color: #10b981;
+      border: 1px solid rgba(16, 185, 129, 0.4);
+    }
+    .ra-status-badge.yellow {
+      background: rgba(245, 158, 11, 0.18);
+      color: #f59e0b;
+      border: 1px solid rgba(245, 158, 11, 0.4);
+    }
+    .ra-status-badge.red {
+      background: rgba(239, 68, 68, 0.18);
+      color: #ef4444;
+      border: 1px solid rgba(239, 68, 68, 0.4);
+    }
+    .ra-status-badge.base {
+      background: rgba(100, 116, 139, 0.18);
+      color: #94a3b8;
+      border: 1px solid rgba(100, 116, 139, 0.4);
+    }
+    .ra-status-badge.bypassed {
+      background: rgba(239, 68, 68, 0.12);
+      color: #f87171;
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+  </style>
 </head>
 <body>
   <div class="app-container">
@@ -228,6 +349,71 @@
                   </tbody>
                 </table>
               </div>
+
+              <!-- Selected Attack & Flow Forensics Inspector (Fills empty space) -->
+              <div class="flow-inspector-panel" id="flow-inspector-panel">
+                <div class="inspector-header">
+                  <div class="inspector-title-wrap">
+                    <svg class="inspector-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                      <line x1="12" y1="8" x2="12" y2="12"/>
+                      <line x1="12" y1="16" x2="12.01" y2="16"/>
+                    </svg>
+                    <span class="inspector-title">Selected Flow Forensics:</span>
+                    <span class="inspector-target-id" id="insp-flow-title">10.0.2.45 &rarr; 192.168.1.10 [DDoS]</span>
+                  </div>
+                  <div class="inspector-header-right">
+                    <span class="inspector-time" id="insp-time">14:28:16</span>
+                    <span class="badge-status malicious" id="insp-verdict-badge">Blocked (403)</span>
+                  </div>
+                </div>
+
+                <div class="inspector-grid">
+                  <!-- Card 1: Source Origin -->
+                  <div class="inspector-card">
+                    <div class="insp-card-label">Source Origin</div>
+                    <div class="insp-card-value font-mono" id="insp-source-ip">10.0.2.45</div>
+                    <div class="insp-card-sub" id="insp-location">Singapore (External Host)</div>
+                  </div>
+
+                  <!-- Card 2: Target Endpoint -->
+                  <div class="inspector-card">
+                    <div class="insp-card-label">Target Endpoint</div>
+                    <div class="insp-card-value font-mono" id="insp-dest-ip">192.168.1.10:8000</div>
+                    <div class="insp-card-sub" id="insp-protocol">Protected Data Service</div>
+                  </div>
+
+                  <!-- Card 3: Attack Classification -->
+                  <div class="inspector-card">
+                    <div class="insp-card-label">Classification</div>
+                    <div class="insp-card-value" id="insp-flow-type">DDoS Flood</div>
+                    <div class="insp-card-sub" id="insp-threat-level">Critical Threat Level</div>
+                  </div>
+
+                  <!-- Card 4: Model Confidence -->
+                  <div class="inspector-card">
+                    <div class="insp-card-label">Model Confidence</div>
+                    <div class="insp-card-value" id="insp-confidence-val">93.0%</div>
+                    <div class="insp-confidence-bar">
+                      <div class="insp-confidence-fill" id="insp-confidence-fill" style="width: 93%;"></div>
+                    </div>
+                  </div>
+
+                  <!-- Card 5: Inline Defense -->
+                  <div class="inspector-card">
+                    <div class="insp-card-label">Inline Defense</div>
+                    <div class="insp-card-value" id="insp-defense-name">AFP (Recall-Aware)</div>
+                    <div class="insp-card-sub font-mono" id="insp-defense-intensity">&epsilon; = 0.0003</div>
+                  </div>
+
+                  <!-- Card 6: Mitigation Action -->
+                  <div class="inspector-card">
+                    <div class="insp-card-label">Mitigation Action</div>
+                    <div class="insp-card-value text-red" id="insp-action-name">TCP RST / Drop</div>
+                    <div class="insp-card-sub" id="insp-action-sub">Inline Firewall Dropped</div>
+                  </div>
+                </div>
+              </div>
             </div>
           </section>
           
@@ -249,9 +435,31 @@
               <span class="badge-status-pill green" id="afp-header-badge">Active</span>
             </div>
             
-            <p class="panel-description">
-              Automatically adjusts perturbation intensity based on real-time recall and attack conditions.
-            </p>
+            <!-- Defense & Mode Controls Container -->
+            <div class="defense-controls-container">
+              <!-- Defense Selector Row -->
+              <div class="control-row">
+                <span class="control-label">Defense:</span>
+                <div class="segmented-control" id="defense-selector-group">
+                  <button type="button" class="segment-btn active" data-defense="afp" onclick="handleSetDefense('afp')">AFP</button>
+                  <button type="button" class="segment-btn" data-defense="rs" onclick="handleSetDefense('rs')">RS</button>
+                  <button type="button" class="segment-btn" data-defense="fs" onclick="handleSetDefense('fs')">FS</button>
+                  <button type="button" class="segment-btn" data-defense="none" onclick="handleSetDefense('none')">None</button>
+                </div>
+              </div>
+
+              <!-- Mode Selector Row -->
+              <div class="control-row">
+                <span class="control-label">Mode:</span>
+                <div class="mode-state-wrapper">
+                  <div class="segmented-control" id="mode-selector-group">
+                    <button type="button" class="segment-btn active" data-mode="recall-aware" onclick="handleSetMode('recall-aware')">Recall-Aware</button>
+                    <button type="button" class="segment-btn" data-mode="base" onclick="handleSetMode('base')">Base</button>
+                  </div>
+                  <span class="ra-status-badge green" id="controller-state-pill" title="Recall-Aware Controller State">Green</span>
+                </div>
+              </div>
+            </div>
 
             <div class="afp-metrics-row">
               
@@ -274,15 +482,15 @@
               <div class="afp-controls-details">
                 <div class="afp-intensity-box">
                   <div class="intensity-label-row">
-                    <span class="param-label">AFP Intensity</span>
-                    <span class="param-value" id="afp-intensity-val">0.42</span>
+                    <span class="param-label" id="afp-param-name">AFP Intensity</span>
+                    <span class="param-value" id="afp-intensity-val">0.0003</span>
                   </div>
                   <div class="intensity-bar-container">
-                    <div class="intensity-bar-fill" id="afp-bar-fill" style="width: 42%;"></div>
+                    <div class="intensity-bar-fill" id="afp-bar-fill" style="width: 100%;"></div>
                   </div>
                   <div class="intensity-range-labels">
-                    <span>0.20</span>
-                    <span>0.80</span>
+                    <span id="bar-min-label">0.0</span>
+                    <span id="bar-max-label">0.0003</span>
                   </div>
                 </div>
 
@@ -291,11 +499,11 @@
                     <span class="sub-card-title">Intensity Bounds</span>
                     <div class="sub-card-row">
                       <span class="sub-label">Min</span>
-                      <span class="sub-val">0.20</span>
+                      <span class="sub-val" id="afp-min-bound-val">0.0000</span>
                     </div>
                     <div class="sub-card-row">
                       <span class="sub-label">Max</span>
-                      <span class="sub-val">0.80</span>
+                      <span class="sub-val" id="afp-max-bound-val">0.0003</span>
                     </div>
                   </div>
 
@@ -377,7 +585,37 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <!-- Chart.js -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <!-- App JS -->
-  <script src="/static/app.js"></script>
+  <!-- App JS with cache busting -->
+  <script src="/static/app.js?v=7.1"></script>
+  <script>
+    // Resilient inline handlers that work regardless of cache
+    async function handleSetDefense(defName) {
+      const btns = document.querySelectorAll("#defense-selector-group .segment-btn");
+      btns.forEach(b => b.classList.toggle("active", b.dataset.defense === defName));
+      try {
+        await fetch("/api/dashboard/set-defense", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ defense: defName })
+        });
+      } catch (err) {
+        console.error("Error setting defense:", err);
+      }
+    }
+
+    async function handleSetMode(modeName) {
+      const btns = document.querySelectorAll("#mode-selector-group .segment-btn");
+      btns.forEach(b => b.classList.toggle("active", b.dataset.mode === modeName));
+      try {
+        await fetch("/api/dashboard/set-mode", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode: modeName })
+        });
+      } catch (err) {
+        console.error("Error setting mode:", err);
+      }
+    }
+  </script>
 </body>
 </html>
