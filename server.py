@@ -49,6 +49,7 @@ from controller.recall_controller import RecallAwareController
 from defenses.afp import AdaptiveFeaturePoisoning
 from defenses.randomized_smoothing import RandomizedSmoothing
 from defenses.feature_squeezing import FeatureSqueezing
+from runtime_package.data_loader import get_dataset, LoadedDataset
 
 # -----------------------------------------------------------------------------
 # Security & Defense Engine
@@ -86,6 +87,10 @@ class SecurityEngine:
         self.active_attack_scenario: str = "None"
         self.active_simulation_session: Optional[str] = None
 
+        self.data_profile: str = os.environ.get("IDS_DATA_PROFILE", "expanded").strip().lower()
+        self.dataset: Optional[LoadedDataset] = None
+        self.query_count: int = 0
+
         # Cumulative Metrics (Honest cold start: initialized to zero / session baseline)
         self.total_traffic: int = 0
         self.detected_attacks: int = 0
@@ -113,7 +118,6 @@ class SecurityEngine:
         """Loads models, feature schemas, training bounds, and defenses from runtime_package."""
         m_dir = RUNTIME_DIR / "model"
         c_dir = RUNTIME_DIR / "configs"
-        d_dir = RUNTIME_DIR / "demo_data"
 
         print(f"[Engine] Loading frozen Random Forest model from {m_dir / 'frozen_rf.joblib'}...")
         self.model = joblib.load(m_dir / "frozen_rf.joblib")
@@ -144,10 +148,11 @@ class SecurityEngine:
             self.feature_names, self.modifiable_mask, self.bounds_df
         )
 
-        # Load Demo Dataset
-        self.X_demo = pd.read_parquet(d_dir / "X_demo.parquet")
-        self.meta_demo = pd.read_parquet(d_dir / "metadata_demo.parquet")
-        print(f"[Engine] Loaded {len(self.feature_names)} features, 3 defenses, and {len(self.X_demo)} demo samples.")
+        # Load Dataset via Profile Loader
+        self.dataset = get_dataset(self.data_profile)
+        self.X_demo = self.dataset.X
+        self.meta_demo = self.dataset.metadata
+        print(f"[Engine] Loaded data profile '{self.data_profile}': {len(self.feature_names)} features, 3 defenses, and {self.dataset.total_rows:,} samples ({self.dataset.measurement_rows:,} measurement, {self.dataset.crafting_rows:,} crafting).")
 
         # Initialize default controller
         self.set_defense(self.active_defense_name)
@@ -304,7 +309,28 @@ class SecurityEngine:
 
     def get_dashboard_payload(self) -> Dict[str, Any]:
         """Assembles complete telemetry payload for WebSocket / REST clients."""
+        fingerprint = self.dataset.fingerprint if self.dataset else ""
+        total_rows = self.dataset.total_rows if self.dataset else len(self.X_demo)
+        meas_rows = self.dataset.measurement_rows if self.dataset else len(self.X_demo)
+        craft_rows = self.dataset.crafting_rows if self.dataset else 0
+
         return {
+            "data_profile": self.data_profile,
+            "data_fingerprint": fingerprint,
+            "data_stats": {
+                "profile": self.data_profile,
+                "fingerprint": fingerprint,
+                "total_rows": total_rows,
+                "measurement_rows": meas_rows,
+                "crafting_rows": craft_rows,
+                "available_target_count": meas_rows,
+                "available_reference_count": craft_rows,
+                "measurement_attack_rows": len(self.dataset.measurement_attack_indices) if self.dataset else 0,
+                "measurement_benign_rows": len(self.dataset.measurement_benign_indices) if self.dataset else 0,
+                "crafting_attack_rows": len(self.dataset.crafting_attack_indices) if self.dataset else 0,
+                "crafting_benign_rows": len(self.dataset.crafting_benign_indices) if self.dataset else 0,
+                "query_count": self.query_count
+            },
             "simulation": {
                 "active_scenario": self.active_attack_scenario,
                 "session_id": self.active_simulation_session,
@@ -321,6 +347,8 @@ class SecurityEngine:
                 "fp": self.fp,
                 "fn": self.fn,
                 "tn": self.tn,
+                "query_count": self.query_count,
+                "metric_scope": "target_flows_only" if self.data_profile == "expanded" else "all_evaluated_flows",
                 "traffic_delta": "Session Baseline",
                 "attacks_delta": "Session Baseline",
                 "recall_delta": "Session Baseline",
@@ -436,11 +464,14 @@ class ServerRequestModel(BaseModel):
     traffic_family_source: Optional[str] = None
     flow_type: Optional[str] = None
     country: Optional[str] = None
-    is_attack: Optional[bool] = False
+    is_attack: Optional[bool] = None
     attack_scenario: Optional[str] = None
     session_id: Optional[str] = None
     feature_vector: Optional[List[float]] = None
     sample_id: Optional[int] = None
+    data_profile: Optional[str] = None
+    is_query: Optional[bool] = False
+    query_stage: Optional[str] = None
 
 class SimulationSessionModel(BaseModel):
     scenario: str  # "silent_probing", "surrogate_transfer", "decision_boundary", "none"
@@ -473,7 +504,36 @@ async def protected_server_handler(req: ServerRequestModel):
     """
     t_now = datetime.now().strftime("%H:%M:%S")
 
-    # 1. Feature Vector Validation and Resolution (WHAT EXACT FLOW SHOULD THE IDS CLASSIFY?)
+    # 0. Data Profile Validation
+    if req.data_profile is not None:
+        req_prof = str(req.data_profile).strip().lower()
+        if req_prof not in ["expanded", "fixture20"]:
+            return JSONResponse(
+                status_code=400,
+                content={"status": "error", "message": f"Unknown dataset profile '{req_prof}'. Supported profiles are 'expanded' and 'fixture20'."}
+            )
+        if req_prof != engine.data_profile:
+            return JSONResponse(
+                status_code=400,
+                content={"status": "error", "message": f"Dataset profile mismatch: server is running profile '{engine.data_profile}' but request specified '{req_prof}'."}
+            )
+
+    # 1. Sample ID Range & Type Validation (When sample_id is provided)
+    if req.sample_id is not None:
+        max_id = (len(engine.X_demo) - 1) if engine.X_demo is not None else 0
+        if not isinstance(req.sample_id, int) or engine.X_demo is None or not (0 <= req.sample_id < len(engine.X_demo)):
+            return JSONResponse(
+                status_code=400,
+                content={"status": "error", "message": f"Invalid sample_id: must be an integer between 0 and {max_id}."}
+            )
+
+    # Determine Query vs Target Role (Crafting rows and explicit query stages do not inflate target metrics)
+    is_query_flow = False
+    if engine.data_profile == "expanded":
+        if bool(req.is_query) or (req.query_stage is not None) or (req.sample_id is not None and engine.dataset and engine.dataset.is_crafting(req.sample_id)):
+            is_query_flow = True
+
+    # 2. Feature Vector Validation and Resolution (WHAT EXACT FLOW SHOULD THE IDS CLASSIFY?)
     # Strict validation: accept finite 78-element vector or valid server sample_id. Reject malformed inputs with 400.
     features: Optional[np.ndarray] = None
 
@@ -491,6 +551,11 @@ async def protected_server_handler(req: ServerRequestModel):
                     content={"status": "error", "message": "Invalid feature_vector: all 78 values must be finite numbers."}
                 )
             features = np.array(fv, dtype=np.float32)
+            if not np.isfinite(features).all():
+                return JSONResponse(
+                    status_code=400,
+                    content={"status": "error", "message": "Invalid feature_vector: values overflow 32-bit float or are non-finite."}
+                )
         except (ValueError, TypeError):
             return JSONResponse(
                 status_code=400,
@@ -503,43 +568,60 @@ async def protected_server_handler(req: ServerRequestModel):
                 status_code=400,
                 content={"status": "error", "message": "Missing input: Request must include either a finite 78-element feature_vector or a valid demo sample_id."}
             )
-        max_id = (len(engine.X_demo) - 1) if engine.X_demo is not None else 0
-        if not isinstance(req.sample_id, int) or engine.X_demo is None or not (0 <= req.sample_id < len(engine.X_demo)):
-            return JSONResponse(
-                status_code=400,
-                content={"status": "error", "message": f"Invalid sample_id: must be an integer between 0 and {max_id}."}
-            )
         features = np.array(engine.X_demo.iloc[req.sample_id].values, dtype=np.float32)
 
-    # 2. Metadata Provenance Resolution (WHERE DID THIS FLOW ORIGINATE?)
-    # Preserves feature_vector precedence while binding provenance
+    # 2. Metadata Provenance Resolution & Origin Verification
+    is_exact_sample = False
+    is_session_bound = (
+        engine.active_simulation_session is not None and
+        req.session_id is not None and
+        req.session_id == engine.active_simulation_session
+    )
+
     if req.feature_vector is not None:
-        if req.sample_id is not None and engine.meta_demo is not None and 0 <= req.sample_id < len(engine.meta_demo):
-            orig_row = engine.X_demo.iloc[req.sample_id].values
-            if np.allclose(features, orig_row, atol=1e-5):
+        if req.sample_id is not None and engine.X_demo is not None and engine.meta_demo is not None and 0 <= req.sample_id < len(engine.meta_demo):
+            orig_row = engine.X_demo.iloc[req.sample_id].values.astype(np.float32)
+            if np.array_equal(features, orig_row):
+                is_exact_sample = True
                 resolved_family = str(engine.meta_demo.iloc[req.sample_id].get("attack_family", "Normal"))
                 resolved_family_source = "Dataset-derived (Exact sample)"
             else:
                 orig_fam = str(engine.meta_demo.iloc[req.sample_id].get("attack_family", "Unknown"))
-                resolved_family = f"Transformed (Original: {orig_fam})"
-                resolved_family_source = "Original sample family (Transformed)"
+                if is_session_bound:
+                    resolved_family = f"Transformed (Original: {orig_fam})"
+                    resolved_family_source = "Original sample family (Transformed via verified simulation session)"
+                else:
+                    resolved_family = f"Claimed original family: {orig_fam}"
+                    resolved_family_source = "Unverified claim (Mismatched sample ID)"
         else:
             resolved_family = "Unknown"
             resolved_family_source = "Synthetic / Non-dataset"
     else:
+        is_exact_sample = True
         resolved_family = str(engine.meta_demo.iloc[req.sample_id].get("attack_family", "Normal"))
         resolved_family_source = "Dataset-derived (Exact sample)"
 
     # 3. Ground Truth Provenance Resolution (Post-decision feedback, NOT classifier input)
+    # Production IDS has no autonomous ground truth.
+    # Ground truth is ONLY resolved if:
+    #   (a) Explicit caller feedback (is_attack is not None) within an active, server-validated simulation session
+    #   (b) Exact server-selected demo sample -> derived from authoritative metadata_demo.parquet
+    # All other flows are strictly Unlabeled and will NOT update confusion matrix or controller.
     ground_truth: Optional[int] = None
-    if req.feature_vector is None and req.sample_id is not None and engine.meta_demo is not None and 0 <= req.sample_id < len(engine.meta_demo):
+    ground_truth_status = "Unlabeled"
+
+    if is_exact_sample:
         ground_truth = int(engine.meta_demo.iloc[req.sample_id]["y_binary"])
-    elif req.is_attack is not None and req.sample_id is not None and engine.meta_demo is not None and 0 <= req.sample_id < len(engine.meta_demo):
-        ground_truth = int(engine.meta_demo.iloc[req.sample_id]["y_binary"])
-    elif req.is_attack is not None and (engine.active_attack_scenario != "None" or req.session_id is not None):
+        ground_truth_status = f"Dataset: {ground_truth}"
+        if req.is_attack is not None and (1 if req.is_attack else 0) != ground_truth:
+            # Conflicting simulator feedback is rejected/ignored; dataset label takes authoritative precedence
+            print(f"[Provenance] Ignored conflicting simulator feedback (is_attack={req.is_attack}) for exact dataset sample {req.sample_id}; authoritative dataset label is {ground_truth}")
+    elif req.is_attack is not None and is_session_bound:
         ground_truth = 1 if req.is_attack else 0
+        ground_truth_status = f"Simulator: {ground_truth}"
     else:
         ground_truth = None
+        ground_truth_status = "Unlabeled"
 
     # 4. Inline Defense & Inference
     active_def = engine.active_defense_name
@@ -619,23 +701,26 @@ async def protected_server_handler(req: ServerRequestModel):
 
     loc_display = resolve_ip_location(req.source_ip, req.country)
 
-    engine.total_traffic += 1
-    if is_malicious:
-        engine.detected_attacks += 1
-        if loc_display != "Private Network":
-            engine.record_attack_ip(req.source_ip, loc_display)
+    if is_query_flow:
+        engine.query_count += 1
+    else:
+        engine.total_traffic += 1
+        if is_malicious:
+            engine.detected_attacks += 1
+            if loc_display != "Private Network":
+                engine.record_attack_ip(req.source_ip, loc_display)
 
-    # 6. Update Engine Metrics & Controller Feedback (Using used_intensity)
-    engine.update_metrics_and_controller(ground_truth=ground_truth, predicted=pred_label, used_intensity=used_intensity)
+        # 6. Update Engine Metrics & Controller Feedback (Using used_intensity)
+        engine.update_metrics_and_controller(ground_truth=ground_truth, predicted=pred_label, used_intensity=used_intensity)
 
     # 7. Append to Telemetry Feeds
     feed_entry = {
         "timestamp": t_now,
         "source_ip": req.source_ip,
         "destination_ip": req.destination_ip or "192.168.1.10",
-        "attack_scenario": scenario_display,
-        "traffic_family": resolved_family,
-        "traffic_family_source": resolved_family_source,
+        "attack_scenario": f"[Query: {req.query_stage or 'search'}] {scenario_display}" if is_query_flow else scenario_display,
+        "traffic_family": f"[Query] {resolved_family}" if is_query_flow else resolved_family,
+        "traffic_family_source": f"Query Telemetry ({resolved_family_source})" if is_query_flow else resolved_family_source,
         "type": resolved_family,
         "confidence": round(attack_prob if is_malicious else (1.0 - attack_prob), 2),
         "status": status_str,
@@ -643,11 +728,15 @@ async def protected_server_handler(req: ServerRequestModel):
         "defense": engine.active_defense_name.upper(),
         "mode": "Recall-Aware" if engine.controller_mode == "recall-aware" else "Base",
         "intensity": used_intensity,
+        "ground_truth_status": ground_truth_status,
+        "sample_id": req.sample_id,
+        "data_profile": engine.data_profile,
+        "is_query": is_query_flow,
         "action": "BLOCKED (403)" if is_malicious else "ALLOWED (200)"
     }
     engine.recent_feed.appendleft(feed_entry)
 
-    if is_malicious:
+    if is_malicious and not is_query_flow:
         attack_entry = {
             "time": t_now,
             "source_ip": req.source_ip,
@@ -662,6 +751,9 @@ async def protected_server_handler(req: ServerRequestModel):
             "defense": engine.active_defense_name.upper(),
             "mode": "Recall-Aware" if engine.controller_mode == "recall-aware" else "Base",
             "intensity": used_intensity,
+            "ground_truth_status": ground_truth_status,
+            "sample_id": req.sample_id,
+            "data_profile": engine.data_profile,
             "action": "BLOCKED (403)"
         }
         engine.recent_attacks.appendleft(attack_entry)
@@ -673,7 +765,7 @@ async def protected_server_handler(req: ServerRequestModel):
         "payload": engine.get_dashboard_payload()
     })
 
-    # 9. Response (Includes used_intensity and next_intensity)
+    # 9. Response (Includes used_intensity, next_intensity, data_profile, is_query)
     if is_malicious:
         return JSONResponse(
             status_code=403,
@@ -693,7 +785,10 @@ async def protected_server_handler(req: ServerRequestModel):
                     "used_intensity": used_intensity,
                     "next_intensity": float(engine.current_intensity),
                     "controller_state": engine.controller_state,
-                    "ground_truth_status": f"Feedback: {ground_truth}" if ground_truth is not None else "Unlabeled",
+                    "ground_truth_status": ground_truth_status,
+                    "sample_id": req.sample_id,
+                    "data_profile": engine.data_profile,
+                    "is_query": is_query_flow,
                     "verdict": "DROPPED"
                 }
             }
@@ -716,7 +811,10 @@ async def protected_server_handler(req: ServerRequestModel):
                     "used_intensity": used_intensity,
                     "next_intensity": float(engine.current_intensity),
                     "controller_state": engine.controller_state,
-                    "ground_truth_status": f"Feedback: {ground_truth}" if ground_truth is not None else "Unlabeled",
+                    "ground_truth_status": ground_truth_status,
+                    "sample_id": req.sample_id,
+                    "data_profile": engine.data_profile,
+                    "is_query": is_query_flow,
                     "verdict": "FORWARDED"
                 }
             }
@@ -786,6 +884,7 @@ async def reset_metrics():
     engine.fp = 0
     engine.fn = 0
     engine.tn = 0
+    engine.query_count = 0
     engine.recall = None
     engine.fpr = None
     engine.batch_id = 0

@@ -19,6 +19,16 @@ let currentDefenseName = "AFP";
 let currentDefenseMode = "Recall-Aware";
 let currentDefenseIntensity = 0.0003;
 
+function escapeHtml(str) {
+  if (str === null || str === undefined) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
 // -----------------------------------------------------------------------------
 // Initialization
 // -----------------------------------------------------------------------------
@@ -152,9 +162,9 @@ function updateThreatMapMarkers(locations) {
     });
 
     const tooltipContent = `
-      <div class="tooltip-ip">${loc.ip}</div>
-      <div class="tooltip-detail">Location: ${loc.country}</div>
-      <div class="tooltip-detail">Attacks: <span class="tooltip-attacks">${loc.attacks}</span></div>
+      <div class="tooltip-ip">${escapeHtml(loc.ip)}</div>
+      <div class="tooltip-detail">Location: ${escapeHtml(loc.country)}</div>
+      <div class="tooltip-detail">Attacks: <span class="tooltip-attacks">${escapeHtml(loc.attacks)}</span></div>
     `;
 
     if (markersMap[markerKey]) {
@@ -411,11 +421,11 @@ function renderTopThreats(threats) {
       <td>
         <div class="ip-cell">
           <span class="status-dot red"></span>
-          <span>${item.ip}</span>
+          <span>${escapeHtml(item.ip)}</span>
         </div>
       </td>
-      <td>${item.location}</td>
-      <td class="text-right">${item.attacks}</td>
+      <td>${escapeHtml(item.location)}</td>
+      <td class="text-right">${escapeHtml(item.attacks)}</td>
     </tr>
   `).join("");
 }
@@ -652,23 +662,24 @@ function renderRecentFeed(feed) {
 
   tbody.innerHTML = feed.map((item, idx) => {
     const isAttack = (item.status && (item.status.toLowerCase() === "attack" || item.status.toLowerCase() === "malicious"));
-    const badgeClass = isAttack ? "malicious" : "benign";
-    const statusLabel = isAttack ? "Attack" : "Benign";
+    const badgeClass = item.is_query ? "neutral" : (isAttack ? "malicious" : "benign");
+    const statusLabel = item.is_query ? "Query" : (isAttack ? "Attack" : "Benign");
     const familyLabel = item.traffic_family || item.type || "Unknown";
-    const itemTime = item.timestamp || item.time;
+    const itemTime = item.timestamp || item.time || "";
     const isSelected = selectedFlowItem && (
       selectedFlowItem.source_ip === item.source_ip &&
       selectedTime === itemTime
     );
     const selectedClass = isSelected ? "selected-row" : "";
+    const confVal = typeof item.confidence === 'number' ? item.confidence.toFixed(2) : (item.confidence || "—");
     return `
       <tr class="${selectedClass}" data-idx="${idx}" onclick="onRowSelectFeed(${idx})" title="Click to view detailed flow forensics">
-        <td>${item.timestamp}</td>
-        <td>${item.source_ip}</td>
-        <td>${item.destination_ip || "192.168.1.10"}</td>
-        <td>${familyLabel}</td>
-        <td>${typeof item.confidence === 'number' ? item.confidence.toFixed(2) : item.confidence}</td>
-        <td><span class="badge-status ${badgeClass}">${statusLabel}</span></td>
+        <td>${escapeHtml(itemTime)}</td>
+        <td>${escapeHtml(item.source_ip)}</td>
+        <td>${escapeHtml(item.destination_ip || "192.168.1.10")}</td>
+        <td>${escapeHtml(familyLabel)}</td>
+        <td>${escapeHtml(confVal)}</td>
+        <td><span class="badge-status ${badgeClass}">${escapeHtml(statusLabel)}</span></td>
       </tr>
     `;
   }).join("");
@@ -698,7 +709,7 @@ function renderRecentAttacks(attacks) {
     const statusLabel = isAttack ? "Attack" : "Benign";
     const familyLabel = item.traffic_family || item.type || "Unknown";
     const locationLabel = (item.location && item.location !== "Unknown") ? item.location : inferLocation(item.source_ip);
-    const itemTime = item.timestamp || item.time;
+    const itemTime = item.timestamp || item.time || "";
     const isSelected = selectedFlowItem && (
       selectedFlowItem.source_ip === item.source_ip &&
       selectedTime === itemTime
@@ -706,11 +717,11 @@ function renderRecentAttacks(attacks) {
     const selectedClass = isSelected ? "selected-row" : "";
     return `
       <tr class="${selectedClass}" data-idx="${idx}" onclick="onRowSelectAttack(${idx})" title="Click to view detailed attack forensics">
-        <td>${item.time}</td>
-        <td>${item.source_ip}</td>
-        <td>${locationLabel}</td>
-        <td>${familyLabel}</td>
-        <td><span class="badge-status ${badgeClass}">${statusLabel}</span></td>
+        <td>${escapeHtml(itemTime)}</td>
+        <td>${escapeHtml(item.source_ip)}</td>
+        <td>${escapeHtml(locationLabel)}</td>
+        <td>${escapeHtml(familyLabel)}</td>
+        <td><span class="badge-status ${badgeClass}">${escapeHtml(statusLabel)}</span></td>
       </tr>
     `;
   }).join("");
@@ -731,6 +742,24 @@ function syncDashboard(payload) {
       scText.textContent = isAct ? payload.simulation.active_scenario : "None";
       scText.className = `status-val ${isAct ? "orange" : "gray"}`;
       scDot.className = `status-dot ${isAct ? "orange" : "gray"}`;
+    }
+  }
+
+  // 0b. Data Profile & Pool Badge
+  if (payload.data_profile) {
+    const dsText = document.getElementById("dataset-status-text");
+    const dsDot = document.getElementById("dataset-status-dot");
+    if (dsText && dsDot) {
+      if (payload.data_profile === "expanded") {
+        const qCount = (payload.stats && payload.stats.query_count) ? ` | ${payload.stats.query_count}q` : "";
+        dsText.textContent = `Expanded (72k)${qCount}`;
+        dsText.className = "status-val blue";
+        dsDot.className = "status-dot blue";
+      } else {
+        dsText.textContent = "Fixture20 (20)";
+        dsText.className = "status-val gray";
+        dsDot.className = "status-dot gray";
+      }
     }
   }
 

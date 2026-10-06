@@ -5,10 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>IDS + Recall-Aware AFP | Enhanced Detection with Adaptive Perturbation Defense</title>
   
-  <!-- Fonts -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <!-- Fonts: System UI font stack with offline monospace fallback -->
   
   <!-- Leaflet CSS: Local vendor with CDN fallback -->
   <link rel="stylesheet" href="/static/vendor/leaflet.css" onerror="this.onerror=null;this.href='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';" />
@@ -175,6 +172,13 @@
           <span class="status-dot gray" id="scenario-status-dot"></span>
           <span class="header-status-label">Scenario</span>
           <span class="status-val gray" id="scenario-status-text">None</span>
+        </div>
+
+        <!-- Data Profile & Pool Badge -->
+        <div class="header-status-pill" id="dataset-status-pill" title="Active Data Profile & Target Pool">
+          <span class="status-dot blue" id="dataset-status-dot"></span>
+          <span class="header-status-label">Data</span>
+          <span class="status-val blue" id="dataset-status-text">Expanded (72k)</span>
         </div>
 
         <div class="system-status-indicator">
