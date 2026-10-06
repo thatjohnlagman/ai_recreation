@@ -26,6 +26,7 @@ EXCLUDE_DIRS = {
 
 EXCLUDE_EXTS = {
     ".pyc",
+    ".zip",
 }
 
 EXCLUDE_FILES = {

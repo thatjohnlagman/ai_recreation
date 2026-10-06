@@ -527,13 +527,41 @@ async def protected_server_handler(req: ServerRequestModel):
                 content={"status": "error", "message": f"Invalid sample_id: must be an integer between 0 and {max_id}."}
             )
 
-    # Determine Query vs Target Role (Crafting rows and explicit query stages do not inflate target metrics)
+    # 2. Session Binding Resolution
+    is_session_bound = (
+        engine.active_simulation_session is not None and
+        req.session_id is not None and
+        req.session_id == engine.active_simulation_session
+    )
+
+    # 3. Determine Query vs Target Role
+    is_crafting_row = (
+        engine.data_profile == "expanded" and
+        req.sample_id is not None and
+        engine.dataset is not None and
+        engine.dataset.is_crafting(req.sample_id)
+    )
+    # Define query intent consistently; empty stage does not independently suppress target accounting
+    has_query_intent = bool(req.is_query) or bool(req.query_stage and req.query_stage.strip())
+
     is_query_flow = False
     if engine.data_profile == "expanded":
-        if bool(req.is_query) or (req.query_stage is not None) or (req.sample_id is not None and engine.dataset and engine.dataset.is_crafting(req.sample_id)):
+        if is_crafting_row:
+            # Crafting-role rows never contribute to the measurement confusion matrix
+            is_query_flow = True
+        elif has_query_intent:
+            # Query intent on measurement-origin or synthetic candidate requests requires an active matching session
+            if not is_session_bound:
+                if engine.active_simulation_session is None:
+                    err_msg = "Query scope rejected: no active simulation session on server. Start a session before submitting queries."
+                elif req.session_id is None:
+                    err_msg = "Query scope rejected: missing session_id. Queries on measurement or synthetic flows require a bound simulation session."
+                else:
+                    err_msg = f"Query scope rejected: invalid or mismatched session token '{req.session_id}'. Server active session is '{engine.active_simulation_session}'."
+                return JSONResponse(status_code=400, content={"status": "error", "message": err_msg})
             is_query_flow = True
 
-    # 2. Feature Vector Validation and Resolution (WHAT EXACT FLOW SHOULD THE IDS CLASSIFY?)
+    # 4. Feature Vector Validation and Resolution (WHAT EXACT FLOW SHOULD THE IDS CLASSIFY?)
     # Strict validation: accept finite 78-element vector or valid server sample_id. Reject malformed inputs with 400.
     features: Optional[np.ndarray] = None
 
@@ -570,13 +598,8 @@ async def protected_server_handler(req: ServerRequestModel):
             )
         features = np.array(engine.X_demo.iloc[req.sample_id].values, dtype=np.float32)
 
-    # 2. Metadata Provenance Resolution & Origin Verification
+    # 5. Metadata Provenance Resolution & Origin Verification
     is_exact_sample = False
-    is_session_bound = (
-        engine.active_simulation_session is not None and
-        req.session_id is not None and
-        req.session_id == engine.active_simulation_session
-    )
 
     if req.feature_vector is not None:
         if req.sample_id is not None and engine.X_demo is not None and engine.meta_demo is not None and 0 <= req.sample_id < len(engine.meta_demo):

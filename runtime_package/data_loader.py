@@ -98,6 +98,18 @@ def get_file_sha256(filepath: Path) -> str:
             hasher.update(chunk)
     return hasher.hexdigest()
 
+def compute_combined_fingerprint(file_paths: list) -> str:
+    """
+    Computes a deterministic combined fingerprint across ordered file paths.
+    Hashing the hex SHA-256 strings of each file in stable order ensures that
+    any change to features, metadata, or role assignments changes the contract result.
+    """
+    hasher = hashlib.sha256()
+    for fp in file_paths:
+        file_sha = get_file_sha256(Path(fp))
+        hasher.update(file_sha.encode("utf-8"))
+    return hasher.hexdigest()
+
 def get_dataset(profile: Optional[str] = None) -> LoadedDataset:
     """
     Loads and caches the specified dataset profile.
@@ -128,11 +140,11 @@ def get_dataset(profile: Optional[str] = None) -> LoadedDataset:
         X = pd.read_parquet(x_path)
         metadata = pd.read_parquet(meta_path)
         roles_df = pd.read_csv(roles_path)
-        fingerprint = get_file_sha256(x_path)
+        fingerprint = compute_combined_fingerprint([x_path, meta_path, roles_path])
 
         ds = LoadedDataset(profile="expanded", X=X, metadata=metadata, roles_df=roles_df, fingerprint=fingerprint)
         _DATASET_CACHE[profile] = ds
-        print(f"[DataLoader] Loaded expanded profile: {ds.total_rows:,} rows ({ds.measurement_rows:,} measurement, {ds.crafting_rows:,} crafting).")
+        print(f"[DataLoader] Loaded expanded profile: {ds.total_rows:,} rows ({ds.measurement_rows:,} measurement, {ds.crafting_rows:,} crafting), fingerprint={fingerprint[:16]}...")
         return ds
 
     else:  # fixture20
@@ -146,9 +158,9 @@ def get_dataset(profile: Optional[str] = None) -> LoadedDataset:
         print(f"[DataLoader] Loading fixture20 dataset from {d_dir}...")
         X = pd.read_parquet(x_path)
         metadata = pd.read_parquet(meta_path)
-        fingerprint = get_file_sha256(x_path)
+        fingerprint = compute_combined_fingerprint([x_path, meta_path])
 
         ds = LoadedDataset(profile="fixture20", X=X, metadata=metadata, roles_df=None, fingerprint=fingerprint)
         _DATASET_CACHE[profile] = ds
-        print(f"[DataLoader] Loaded fixture20 profile: {ds.total_rows} rows.")
+        print(f"[DataLoader] Loaded fixture20 profile: {ds.total_rows} rows, fingerprint={fingerprint[:16]}...")
         return ds

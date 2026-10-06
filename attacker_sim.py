@@ -135,11 +135,242 @@ BENIGN_POOL = [
 ]
 
 
+class AttackerContext:
+    """
+    Manages schemas, models, datasets, and seeded shuffled queues without replacement.
+    Supports both 'expanded' (72k measurement targets) and 'fixture20' profiles.
+    Coordinates target consumption across general attack and DDoS queues via shared consumed ledger.
+    """
+    def __init__(self, profile: Optional[str] = None, seed: int = 42):
+        self.seed = seed
+        self.rng = random.Random(seed)
+        self.profile = profile or os.environ.get("IDS_DATA_PROFILE", "expanded").strip().lower()
+
+        m_dir = RUNTIME_DIR / "model"
+        with open(m_dir / "feature_names.json", "r") as f:
+            self.feature_names = json.load(f)
+        with open(m_dir / "feature_mask.json", "r") as f:
+            mask_dict = json.load(f)
+            self.modifiable_mask = np.array(list(mask_dict.values())[0], dtype=bool)
+        self.bounds_df = pd.read_parquet(m_dir / "training_bounds.parquet")
+
+        self.dataset: Optional[LoadedDataset] = None
+        self.X_demo: Optional[pd.DataFrame] = None
+        self.meta_demo: Optional[pd.DataFrame] = None
+        self.attack_indices: np.ndarray = np.array([], dtype=int)
+        self.benign_indices: np.ndarray = np.array([], dtype=int)
+        self._ddos_set: set = set()
+
+        self.benign_queue = deque()
+        self.attack_queue = deque()
+        self.ddos_queue = deque()
+        self.consumed_attack_ids: set = set()
+        self.consumed_ddos_ids: set = set()
+        self.consumed_benign_ids: set = set()
+        self.cycle_counts = {"benign": 0, "attack": 0, "ddos": 0}
+
+        self.load_dataset(self.profile, seed=self.seed)
+
+    def load_dataset(self, profile: str, seed: Optional[int] = None):
+        """Loads dataset and initializes seeded queues without replacement."""
+        self.profile = profile
+        if seed is not None:
+            self.seed = seed
+            self.rng = random.Random(seed)
+
+        self.dataset = get_dataset(self.profile)
+        self.X_demo = self.dataset.X
+        self.meta_demo = self.dataset.metadata
+
+        if self.profile == "expanded":
+            self.attack_indices = self.dataset.measurement_attack_indices
+            self.benign_indices = self.dataset.measurement_benign_indices
+            self._ddos_set = set(self.dataset.measurement_ddos_indices)
+        else:
+            y = self.meta_demo["y_binary"].values
+            self.attack_indices = np.where(y == 1)[0]
+            self.benign_indices = np.where(y == 0)[0]
+            self._ddos_set = set(self.dataset.measurement_ddos_indices)
+
+        self.reset_queues(self.seed)
+
+    def reset_queues(self, seed: Optional[int] = None):
+        """Resets and reshuffles measurement target queues using specified or current seed."""
+        if seed is not None:
+            self.seed = seed
+            self.rng = random.Random(seed)
+
+        # Shuffle measurement targets into queues
+        b_list = list(self.benign_indices)
+        a_list = list(self.attack_indices)
+        d_list = list(self.dataset.measurement_ddos_indices)
+
+        self.rng.shuffle(b_list)
+        self.rng.shuffle(a_list)
+        self.rng.shuffle(d_list)
+
+        self.benign_queue = deque(b_list)
+        self.attack_queue = deque(a_list)
+        self.ddos_queue = deque(d_list)
+
+        self.consumed_attack_ids.clear()
+        self.consumed_ddos_ids.clear()
+        self.consumed_benign_ids.clear()
+        self.cycle_counts = {"benign": 0, "attack": 0, "ddos": 0}
+
+    def set_profile(self, profile: str, seed: Optional[int] = None):
+        """Switches active dataset profile and reinitializes queues."""
+        if profile != self.profile or seed != self.seed:
+            self.load_dataset(profile, seed=seed)
+
+    def draw_measurement_target(self, is_attack: bool = False, family_subset: Optional[str] = None) -> int:
+        """
+        Draws a measurement target ID without replacement.
+        Coordinates consumption across overlapping queues using a shared consumed ledger.
+        When a queue is exhausted, logs the transition accurately and reshuffles for a new cycle.
+        """
+        if self.profile == "fixture20":
+            indices = self.attack_indices if is_attack else self.benign_indices
+            return int(self.rng.choice(indices))
+
+        if is_attack:
+            if family_subset == "DDoS":
+                total_ddos = len(self.dataset.measurement_ddos_indices)
+                unconsumed_ddos = [x for x in self.ddos_queue if x not in self.consumed_ddos_ids]
+                if not unconsumed_ddos or len(self.consumed_ddos_ids) >= total_ddos:
+                    self.cycle_counts["ddos"] += 1
+                    self.consumed_ddos_ids.clear()
+                    rem_general = len(self.attack_indices) - len(self.consumed_attack_ids)
+                    print(f"{YELLOW}[Sampling] DDoS family subset exhausted ({total_ddos:,} rows). Reshuffling DDoS pool for cycle {self.cycle_counts['ddos']} (seed={self.seed}). General attack pool has {rem_general:,} unused targets remaining.{RESET}")
+                    d_list = list(self.dataset.measurement_ddos_indices)
+                    self.rng.shuffle(d_list)
+                    self.ddos_queue = deque(d_list)
+
+                while self.ddos_queue:
+                    tid = self.ddos_queue.popleft()
+                    if tid not in self.consumed_ddos_ids:
+                        self.consumed_ddos_ids.add(tid)
+                        self.consumed_attack_ids.add(tid)
+                        return tid
+
+                self.cycle_counts["ddos"] += 1
+                self.consumed_ddos_ids.clear()
+                rem_general = len(self.attack_indices) - len(self.consumed_attack_ids)
+                print(f"{YELLOW}[Sampling] DDoS family subset exhausted ({total_ddos:,} rows). Reshuffling DDoS pool for cycle {self.cycle_counts['ddos']} (seed={self.seed}). General attack pool has {rem_general:,} unused targets remaining.{RESET}")
+                d_list = list(self.dataset.measurement_ddos_indices)
+                self.rng.shuffle(d_list)
+                self.ddos_queue = deque(d_list)
+                tid = self.ddos_queue.popleft()
+                self.consumed_ddos_ids.add(tid)
+                self.consumed_attack_ids.add(tid)
+                return tid
+
+            else:
+                total_attack = len(self.attack_indices)
+                unconsumed_attack = [x for x in self.attack_queue if x not in self.consumed_attack_ids]
+                if not unconsumed_attack or len(self.consumed_attack_ids) >= total_attack:
+                    self.cycle_counts["attack"] += 1
+                    self.consumed_attack_ids.clear()
+                    self.consumed_ddos_ids.clear()
+                    print(f"{YELLOW}[Sampling] General attack measurement pool exhausted ({total_attack:,} rows). Reshuffling pool for cycle {self.cycle_counts['attack']} (seed={self.seed})...{RESET}")
+                    a_list = list(self.attack_indices)
+                    self.rng.shuffle(a_list)
+                    self.attack_queue = deque(a_list)
+
+                while self.attack_queue:
+                    tid = self.attack_queue.popleft()
+                    if tid not in self.consumed_attack_ids:
+                        self.consumed_attack_ids.add(tid)
+                        if tid in self._ddos_set:
+                            self.consumed_ddos_ids.add(tid)
+                        return tid
+
+                self.cycle_counts["attack"] += 1
+                self.consumed_attack_ids.clear()
+                self.consumed_ddos_ids.clear()
+                a_list = list(self.attack_indices)
+                self.rng.shuffle(a_list)
+                self.attack_queue = deque(a_list)
+                tid = self.attack_queue.popleft()
+                self.consumed_attack_ids.add(tid)
+                if tid in self._ddos_set:
+                    self.consumed_ddos_ids.add(tid)
+                return tid
+
+        else:
+            total_benign = len(self.benign_indices)
+            unconsumed_benign = [x for x in self.benign_queue if x not in self.consumed_benign_ids]
+            if not unconsumed_benign or len(self.consumed_benign_ids) >= total_benign:
+                self.cycle_counts["benign"] += 1
+                self.consumed_benign_ids.clear()
+                print(f"{YELLOW}[Sampling] Benign measurement pool exhausted ({total_benign:,} rows). Reshuffling pool for cycle {self.cycle_counts['benign']} (seed={self.seed})...{RESET}")
+                b_list = list(self.benign_indices)
+                self.rng.shuffle(b_list)
+                self.benign_queue = deque(b_list)
+
+            while self.benign_queue:
+                tid = self.benign_queue.popleft()
+                if tid not in self.consumed_benign_ids:
+                    self.consumed_benign_ids.add(tid)
+                    return tid
+
+            self.cycle_counts["benign"] += 1
+            self.consumed_benign_ids.clear()
+            b_list = list(self.benign_indices)
+            self.rng.shuffle(b_list)
+            self.benign_queue = deque(b_list)
+            tid = self.benign_queue.popleft()
+            self.consumed_benign_ids.add(tid)
+            return tid
+
+    def select_crafting_references_surrogate(self, n_benign: int = 10, n_attack: int = 10) -> List[int]:
+        """
+        Selects bounded, seeded references strictly from the crafting pool for surrogate fitting.
+        """
+        if self.profile == "expanded":
+            b_candidates = list(self.dataset.crafting_benign_indices)
+            a_candidates = list(self.dataset.crafting_attack_indices)
+            chosen_b = self.rng.sample(b_candidates, min(n_benign, len(b_candidates)))
+            chosen_a = self.rng.sample(a_candidates, min(n_attack, len(a_candidates)))
+            return chosen_b + chosen_a
+        else:
+            b_idx = self.benign_indices[:n_benign].tolist()
+            a_idx = self.attack_indices[:n_attack].tolist()
+            return b_idx + a_idx
+
+    def select_crafting_references_boundary(self, n_benign: int = 50) -> List[int]:
+        """
+        Selects bounded, seeded benign references strictly from the crafting pool for boundary search.
+        """
+        if self.profile == "expanded":
+            b_candidates = list(self.dataset.crafting_benign_indices)
+            return self.rng.sample(b_candidates, min(n_benign, len(b_candidates)))
+        else:
+            return self.benign_indices[:n_benign].tolist()
+
+
+ctx: Optional[AttackerContext] = None
+
+def get_ctx(profile: Optional[str] = None, seed: Optional[int] = None) -> AttackerContext:
+    global ctx
+    if ctx is None:
+        p = profile or os.environ.get("IDS_DATA_PROFILE", "expanded").strip().lower()
+        s = seed if seed is not None else 42
+        ctx = AttackerContext(profile=p, seed=s)
+    else:
+        if profile is not None and profile != ctx.profile:
+            ctx.set_profile(profile, seed=seed)
+        elif seed is not None and seed != ctx.seed:
+            ctx.reset_queues(seed=seed)
+    return ctx
+
+
 def print_banner():
+    c = get_ctx()
     print(f"\n{CYAN}{BOLD}======================================================================{RESET}")
     print(f"{CYAN}{BOLD}  CYBER ATTACKER SIMULATION CONSOLE — RESEARCH RUNTIME{RESET}")
     print(f"{WHITE}  Target Protected Server: {BLUE}{get_server_url()}{RESET}")
-    print(f"{WHITE}  Active Data Profile:     {YELLOW}{ctx.profile.upper()}{RESET} ({ctx.dataset.measurement_rows:,} measurement targets, {ctx.dataset.crafting_rows:,} crafting references)")
+    print(f"{WHITE}  Active Data Profile:     {YELLOW}{c.profile.upper()}{RESET} ({c.dataset.measurement_rows:,} measurement targets, {c.dataset.crafting_rows:,} crafting references)")
     print(f"{WHITE}  Defense Layer:          {GREEN}Inline IDS + Defenses (AFP/RS/FS) + Recall-Aware Controller{RESET}")
     print(f"{CYAN}{BOLD}======================================================================{RESET}\n")
 
@@ -258,6 +489,7 @@ def check_backend_compatibility(require_profile: Optional[str] = None) -> bool:
     Verifies that the target backend is running with a matching data profile and data fingerprint.
     Aborts with a clear message on mismatch or error.
     """
+    c = get_ctx(require_profile)
     try:
         req = urllib.request.Request(get_stats_url())
         with urllib.request.urlopen(req, timeout=3) as resp:
@@ -268,21 +500,36 @@ def check_backend_compatibility(require_profile: Optional[str] = None) -> bool:
 
     server_profile = str(data.get("data_profile", "")).strip().lower()
     server_fp = str(data.get("data_fingerprint", ""))
-    expected_profile = (require_profile or ctx.profile).strip().lower()
-    expected_fp = ctx.dataset.fingerprint
+    expected_profile = (require_profile or c.profile).strip().lower()
+    expected_fp = c.dataset.fingerprint
+
+    if not server_profile:
+        print(f"{RED}[Error] Target server at {get_stats_url()} did not report an active data profile.{RESET}")
+        return False
 
     if server_profile != expected_profile:
-        raise RuntimeError(
-            f"Profile mismatch: Attacker is running profile '{expected_profile}' (fingerprint {expected_fp[:12]}...) "
-            f"but server at {get_server_url()} is running profile '{server_profile}' (fingerprint {server_fp[:12]}...). "
+        print(
+            f"{RED}[Profile Mismatch]{RESET} Attacker is running profile '{expected_profile}' (fingerprint {expected_fp[:12]}...) "
+            f"but server at {get_server_url()} is running profile '{server_profile}' (fingerprint {server_fp[:12]}...).\n"
             f"Launch server with matching IDS_DATA_PROFILE or set attacker --dataset {server_profile}."
         )
+        return False
 
-    if server_fp and expected_fp and server_fp != expected_fp:
-        raise RuntimeError(
-            f"Dataset fingerprint mismatch: Attacker fingerprint is '{expected_fp}' but server fingerprint is '{server_fp}'. "
+    if not server_fp:
+        print(f"{RED}[Fingerprint Error]{RESET} Server telemetry at {get_stats_url()} did not provide a data_fingerprint.")
+        return False
+
+    if not expected_fp:
+        print(f"{RED}[Fingerprint Error]{RESET} Attacker dataset fingerprint could not be computed.")
+        return False
+
+    if server_fp != expected_fp:
+        print(
+            f"{RED}[Fingerprint Mismatch]{RESET} Attacker fingerprint is '{expected_fp}' "
+            f"but server fingerprint is '{server_fp}'.\n"
             f"Ensure identical dataset files are loaded in both processes."
         )
+        return False
 
     data_stats = data.get("data_stats", {})
     meas_rows = data_stats.get("measurement_rows", data_stats.get("total_rows", "N/A"))
@@ -301,7 +548,10 @@ class RemoteServerOracle:
         self.max_queries_per_sample = max_queries_per_sample
         self.scenario_name = scenario_name
         self.session_id = session_id
-        self.data_profile = data_profile or ctx.profile
+        if data_profile is not None:
+            self.data_profile = data_profile
+        else:
+            self.data_profile = get_ctx().profile
         self.queries = {}
 
     def predict(self, X, sample_ids=None, stage=None):
@@ -310,6 +560,7 @@ class RemoteServerOracle:
         if X.ndim == 1:
             X = X.reshape(1, -1)
 
+        c = get_ctx()
         preds = []
         sess_id = self.session_id or CURRENT_SIMULATION_SESSION_ID
         for i, row in enumerate(X):
@@ -320,14 +571,14 @@ class RemoteServerOracle:
             source_type = "Synthetic / Non-dataset"
             is_attack_val = None
 
-            if sid is not None and ctx.dataset.metadata is not None and 0 <= sid < len(ctx.dataset.metadata):
-                family = str(ctx.dataset.metadata.iloc[sid].get("attack_family", "Unknown"))
-                true_y = int(ctx.dataset.metadata.iloc[sid]["y_binary"])
+            if sid is not None and c.dataset.metadata is not None and 0 <= sid < len(c.dataset.metadata):
+                family = str(c.dataset.metadata.iloc[sid].get("attack_family", "Unknown"))
+                true_y = int(c.dataset.metadata.iloc[sid]["y_binary"])
                 is_attack_val = bool(true_y == 1)
 
                 # Check if this row is the exact dataset row or a transformed candidate
-                if ctx.dataset.X is not None and 0 <= sid < len(ctx.dataset.X):
-                    orig_row = ctx.dataset.X.iloc[sid].values.astype(np.float32)
+                if c.dataset.X is not None and 0 <= sid < len(c.dataset.X):
+                    orig_row = c.dataset.X.iloc[sid].values.astype(np.float32)
                     if np.array_equal(row.astype(np.float32), orig_row):
                         source_type = "Dataset-derived"
                     else:
@@ -378,123 +629,6 @@ class RemoteServerOracle:
 TargetOracle = RemoteServerOracle
 
 
-class AttackerContext:
-    """
-    Manages schemas, models, datasets, and seeded shuffled queues without replacement.
-    Supports both 'expanded' (72k measurement targets) and 'fixture20' profiles.
-    """
-    def __init__(self, profile: Optional[str] = None, seed: int = 42):
-        self.seed = seed
-        self.rng = random.Random(seed)
-        self.profile = profile or os.environ.get("IDS_DATA_PROFILE", "expanded").strip().lower()
-
-        m_dir = RUNTIME_DIR / "model"
-        with open(m_dir / "feature_names.json", "r") as f:
-            self.feature_names = json.load(f)
-        with open(m_dir / "feature_mask.json", "r") as f:
-            mask_dict = json.load(f)
-            self.modifiable_mask = np.array(list(mask_dict.values())[0], dtype=bool)
-        self.bounds_df = pd.read_parquet(m_dir / "training_bounds.parquet")
-
-        self.dataset: Optional[LoadedDataset] = None
-        self.X_demo: Optional[pd.DataFrame] = None
-        self.meta_demo: Optional[pd.DataFrame] = None
-        self.attack_indices: np.ndarray = np.array([], dtype=int)
-        self.benign_indices: np.ndarray = np.array([], dtype=int)
-
-        self.benign_queue = deque()
-        self.attack_queue = deque()
-        self.ddos_queue = deque()
-        self.cycle_counts = {"benign": 0, "attack": 0, "ddos": 0}
-
-        self.load_dataset(self.profile, seed=self.seed)
-
-    def load_dataset(self, profile: str, seed: Optional[int] = None):
-        """Loads dataset and initializes seeded queues without replacement."""
-        self.profile = profile
-        if seed is not None:
-            self.seed = seed
-            self.rng = random.Random(seed)
-
-        self.dataset = get_dataset(self.profile)
-        self.X_demo = self.dataset.X
-        self.meta_demo = self.dataset.metadata
-
-        if self.profile == "expanded":
-            self.attack_indices = self.dataset.measurement_attack_indices
-            self.benign_indices = self.dataset.measurement_benign_indices
-        else:
-            y = self.meta_demo["y_binary"].values
-            self.attack_indices = np.where(y == 1)[0]
-            self.benign_indices = np.where(y == 0)[0]
-
-        self.reset_queues(self.seed)
-
-    def reset_queues(self, seed: Optional[int] = None):
-        """Resets and reshuffles measurement target queues using specified or current seed."""
-        if seed is not None:
-            self.seed = seed
-            self.rng = random.Random(seed)
-
-        # Shuffle measurement targets into queues
-        b_list = list(self.benign_indices)
-        a_list = list(self.attack_indices)
-        d_list = list(self.dataset.measurement_ddos_indices)
-
-        self.rng.shuffle(b_list)
-        self.rng.shuffle(a_list)
-        self.rng.shuffle(d_list)
-
-        self.benign_queue = deque(b_list)
-        self.attack_queue = deque(a_list)
-        self.ddos_queue = deque(d_list)
-        self.cycle_counts = {"benign": 0, "attack": 0, "ddos": 0}
-
-    def set_profile(self, profile: str, seed: Optional[int] = None):
-        """Switches active dataset profile and reinitializes queues."""
-        if profile != self.profile or seed != self.seed:
-            self.load_dataset(profile, seed=seed)
-
-    def draw_measurement_target(self, is_attack: bool = False, family_subset: Optional[str] = None) -> int:
-        """
-        Draws a measurement target ID without replacement.
-        When a queue is exhausted, logs the transition and reshuffles for a new cycle.
-        """
-        if self.profile == "fixture20":
-            # Fixture mode legacy behavior
-            indices = self.attack_indices if is_attack else self.benign_indices
-            return int(self.rng.choice(indices))
-
-        if is_attack:
-            if family_subset == "DDoS":
-                if len(self.ddos_queue) == 0:
-                    self.cycle_counts["ddos"] += 1
-                    print(f"{YELLOW}[Sampling] DDoS measurement pool exhausted ({len(self.dataset.measurement_ddos_indices):,} rows). Reshuffling pool for cycle {self.cycle_counts['ddos']} (seed={self.seed})...{RESET}")
-                    d_list = list(self.dataset.measurement_ddos_indices)
-                    self.rng.shuffle(d_list)
-                    self.ddos_queue = deque(d_list)
-                return self.ddos_queue.popleft()
-            else:
-                if len(self.attack_queue) == 0:
-                    self.cycle_counts["attack"] += 1
-                    print(f"{YELLOW}[Sampling] Attack measurement pool exhausted ({len(self.dataset.measurement_attack_indices):,} rows). Reshuffling pool for cycle {self.cycle_counts['attack']} (seed={self.seed})...{RESET}")
-                    a_list = list(self.attack_indices)
-                    self.rng.shuffle(a_list)
-                    self.attack_queue = deque(a_list)
-                return self.attack_queue.popleft()
-        else:
-            if len(self.benign_queue) == 0:
-                self.cycle_counts["benign"] += 1
-                print(f"{YELLOW}[Sampling] Benign measurement pool exhausted ({len(self.dataset.measurement_benign_indices):,} rows). Reshuffling pool for cycle {self.cycle_counts['benign']} (seed={self.seed})...{RESET}")
-                b_list = list(self.benign_indices)
-                self.rng.shuffle(b_list)
-                self.benign_queue = deque(b_list)
-            return self.benign_queue.popleft()
-
-
-ctx = AttackerContext()
-
-
 def run_single_flow(
     flow_type: Optional[str] = None,
     is_attack: bool = False,
@@ -509,6 +643,7 @@ def run_single_flow(
     Sends a single network packet to the server with real dataset metadata and profile tracking.
     Draws targets without replacement from the measurement pool if sample_id is not specified.
     """
+    c = get_ctx()
     origin = random.choice(ORIGIN_POOL if is_attack else BENIGN_POOL)
     t_str = time.strftime("%H:%M:%S")
 
@@ -520,9 +655,9 @@ def run_single_flow(
         resolved_family_source = "Dataset-derived" if chosen_idx is not None else "Synthetic / Non-dataset"
     else:
         if chosen_idx is None:
-            chosen_idx = ctx.draw_measurement_target(is_attack=is_attack, family_subset=flow_type)
-        feat_list = ctx.dataset.X.iloc[chosen_idx].values.tolist()
-        resolved_family = str(ctx.dataset.metadata.iloc[chosen_idx].get("attack_family", "Normal" if not is_attack else "Unknown"))
+            chosen_idx = c.draw_measurement_target(is_attack=is_attack, family_subset=flow_type)
+        feat_list = c.dataset.X.iloc[chosen_idx].values.tolist()
+        resolved_family = str(c.dataset.metadata.iloc[chosen_idx].get("attack_family", "Normal" if not is_attack else "Unknown"))
         resolved_family_source = "Dataset-derived"
 
     active_sess = session_id if session_id is not None else CURRENT_SIMULATION_SESSION_ID
@@ -538,7 +673,7 @@ def run_single_flow(
         "session_id": active_sess,
         "sample_id": int(chosen_idx) if chosen_idx is not None else None,
         "feature_vector": feat_list,
-        "data_profile": ctx.profile,
+        "data_profile": c.profile,
         "is_query": is_query,
         "query_stage": query_stage
     }
@@ -568,20 +703,28 @@ def run_single_flow(
     return res
 
 
-def run_volumetric_burst(attack_type: str = "DDoS", count: int = 6, delay: float = 0.25):
+def run_volumetric_burst(attack_type: str = "DDoS", count: int = 6, delay: float = 0.25) -> bool:
     """Sends a rapid burst of malicious packets drawing real DDoS families from the measurement pool."""
     print(f"\n{RED}{BOLD}>>> Launching Volumetric Burst: {attack_type} ({count} packets from measurement pool)...{RESET}\n")
+    success = True
     for i in range(count):
-        run_single_flow(flow_type=attack_type, is_attack=True, scenario="Volumetric Burst")
+        r = run_single_flow(flow_type=attack_type, is_attack=True, scenario="Volumetric Burst")
+        if r is None or r.get("status_code") not in (200, 403):
+            success = False
         time.sleep(delay)
-    print(f"\n{GREEN}[OK] Volumetric burst completed.{RESET}\n")
+    if success:
+        print(f"\n{GREEN}[OK] Volumetric burst completed.{RESET}\n")
+    else:
+        print(f"\n{YELLOW}[!] Volumetric burst completed with one or more errors.{RESET}\n")
+    return success
 
 
-def run_silent_probing_attack():
+def run_silent_probing_attack() -> bool:
     """
     Executes Research Attack 1: Silent Probing
     Sequential submission of unchanged baseline flows from measurement pool without querying oracle (0 queries).
     """
+    c = get_ctx()
     print(f"\n{MAGENTA}{BOLD}======================================================================{RESET}")
     print(f"{MAGENTA}{BOLD}  RESEARCH ATTACK: SILENT PROBING ATTACK{RESET}")
     print(f"{WHITE}  Model: Sequential Submission of Unchanged Measurement Flows (0 Queries){RESET}")
@@ -589,12 +732,12 @@ def run_silent_probing_attack():
 
     sess_id = start_simulation_session("Silent Probing")
     try:
-        attack = SilentProbingAttack(ctx.feature_names, ctx.modifiable_mask, ctx.bounds_df)
+        attack = SilentProbingAttack(c.feature_names, c.modifiable_mask, c.bounds_df)
 
         # Draw attack target strictly from measurement pool
-        chosen_idx = ctx.draw_measurement_target(is_attack=True)
-        x_orig = ctx.dataset.X.iloc[chosen_idx].values
-        family = str(ctx.dataset.metadata.iloc[chosen_idx].get("attack_family", "Unknown"))
+        chosen_idx = c.draw_measurement_target(is_attack=True)
+        x_orig = c.dataset.X.iloc[chosen_idx].values
+        family = str(c.dataset.metadata.iloc[chosen_idx].get("attack_family", "Unknown"))
 
         print(f"{WHITE}Selected Measurement Target: {CYAN}{family}{RESET} (Evaluation ID: {chosen_idx}, Role: Measurement)")
         print(f"{DIM}Preparing unchanged baseline flow (Silent Probing makes 0 oracle queries)...{RESET}")
@@ -612,10 +755,14 @@ def run_silent_probing_attack():
             is_query=False
         )
 
-        if resp is None or resp["status_code"] not in [200, 403]:
-            return
-
         t_str = time.strftime("%H:%M:%S")
+        if resp is None or resp.get("status_code") not in [200, 403]:
+            status = resp.get("status_code") if resp else "No response"
+            err = resp.get("error", "Unknown error") if resp else "Failed"
+            print(f"[{t_str}] {RED}{BOLD}[EXECUTION ERROR] Submission failed (HTTP {status}: {err}){RESET}")
+            print(f"{YELLOW}No IDS classification or defense verdict could be obtained due to server/transport error.{RESET}\n")
+            return False
+
         if resp["blocked"]:
             details = resp["body"].get("details", {})
             print(f"[{t_str}] {BG_RED}{WHITE}{BOLD} DETECTED & BLOCKED (403) {RESET}")
@@ -625,16 +772,18 @@ def run_silent_probing_attack():
             print(f"[{t_str}] {BG_GREEN}{WHITE}{BOLD} EVADED & ALLOWED (200) {RESET}")
             print(f"IDS Classification: BENIGN | Family: {family}")
             print(f"{YELLOW}Warning: Attack penetrated protected server under current defense configuration.{RESET}\n")
+        return True
     finally:
         stop_simulation_session()
 
 
-def run_surrogate_transfer_attack():
+def run_surrogate_transfer_attack() -> bool:
     """
     Executes Research Attack 2: Surrogate Transferability
     Trains a local Decision Tree surrogate from crafting query pool, then crafts candidate
     against a measurement target and submits the final candidate once as a measured flow.
     """
+    c = get_ctx()
     print(f"\n{MAGENTA}{BOLD}======================================================================{RESET}")
     print(f"{MAGENTA}{BOLD}  RESEARCH ATTACK: SURROGATE TRANSFERABILITY ATTACK{RESET}")
     print(f"{WHITE}  Model: Local Decision Tree Surrogate with Boundary Transfer{RESET}")
@@ -643,38 +792,30 @@ def run_surrogate_transfer_attack():
 
     sess_id = start_simulation_session("Surrogate Transferability")
     try:
-        attack = SurrogateTransferAttack(ctx.feature_names, ctx.modifiable_mask, ctx.bounds_df)
+        attack = SurrogateTransferAttack(c.feature_names, c.modifiable_mask, c.bounds_df)
         oracle = RemoteServerOracle(target_url=get_server_url(), scenario_name="Surrogate Transferability", session_id=sess_id)
 
-        # Select reference query pool strictly from CRAFTING pool
-        if ctx.profile == "expanded":
-            # Select bounded set of 20 crafting samples (10 benign, 10 attack)
-            ref_b = ctx.dataset.crafting_benign_indices[:10]
-            ref_a = ctx.dataset.crafting_attack_indices[:10]
-            ref_ids = np.concatenate([ref_b, ref_a]).tolist()
-            x_pool = ctx.dataset.X.iloc[ref_ids].values
-            print(f"{DIM}Selecting 20 bounded reference flows from 18,000 crafting pool (10 benign, 10 attack)...{RESET}")
-            print(f"{WHITE}Crafting Query Sample IDs: {CYAN}{ref_ids[:5]}... + {len(ref_ids)-5} more{RESET}")
-        else:
-            ref_ids = list(range(len(ctx.dataset.X)))
-            x_pool = ctx.dataset.X.values
-            print(f"{DIM}Using {len(ref_ids)} fixture samples for surrogate training...{RESET}")
+        # Select reference query pool strictly from CRAFTING pool using seeded selection
+        ref_ids = c.select_crafting_references_surrogate(n_benign=10, n_attack=10)
+        x_pool = c.dataset.X.iloc[ref_ids].values
+        print(f"{DIM}Selecting {len(ref_ids)} bounded reference flows from crafting pool (10 benign, 10 attack) with seed={c.seed}...{RESET}")
+        print(f"{WHITE}Crafting Query Sample IDs (Role: Crafting): {CYAN}{ref_ids}{RESET}")
 
         print(f"{DIM}Fitting surrogate model via query telemetry (is_query=True)...{RESET}")
         y_oracle = oracle.predict(x_pool, sample_ids=ref_ids, stage="surrogate_fitting")
         attack.fit_surrogate(x_pool, y_oracle)
-        print(f"{GREEN}[OK] Surrogate decision tree fitted successfully with benign class resolved.{RESET}")
+        print(f"{GREEN}[OK] Surrogate decision tree fitted successfully with classes {attack.surrogate.classes_}.{RESET}")
 
         # Draw target flow strictly from MEASUREMENT pool
-        target_idx = ctx.draw_measurement_target(is_attack=True)
-        x_orig = ctx.dataset.X.iloc[target_idx].values
-        family = str(ctx.dataset.metadata.iloc[target_idx].get("attack_family", "Unknown"))
+        target_idx = c.draw_measurement_target(is_attack=True)
+        x_orig = c.dataset.X.iloc[target_idx].values
+        family = str(c.dataset.metadata.iloc[target_idx].get("attack_family", "Unknown"))
 
         print(f"{WHITE}Targeting Measurement Attack Sample: {CYAN}{family}{RESET} (Evaluation ID: {target_idx}, Role: Measurement)")
         x_cand, mags = attack.generate_candidate(x_orig)
         if x_cand is None:
             print(f"{YELLOW}[!] Surrogate yielded no feasible candidate for target {target_idx}.{RESET}\n")
-            return
+            return False
 
         print(f"{DIM}Submitting finalized candidate once as measured target flow...{RESET}")
         resp = run_single_flow(
@@ -688,24 +829,33 @@ def run_surrogate_transfer_attack():
         )
 
         t_str = time.strftime("%H:%M:%S")
-        if resp is not None and resp.get("status_code") == 200:
+        if resp is None or resp.get("status_code") not in (200, 403):
+            status = resp.get("status_code") if resp else "No response"
+            err = resp.get("error", "Unknown error") if resp else "Failed"
+            print(f"[{t_str}] {RED}{BOLD}[EXECUTION ERROR] Submission failed (HTTP {status}: {err}){RESET}")
+            print(f"{YELLOW}No IDS classification or defense verdict could be obtained due to server/transport error.{RESET}\n")
+            return False
+        elif resp.get("status_code") == 200:
             print(f"[{t_str}] {BG_GREEN}{WHITE}{BOLD} TRANSFER SUCCESS (200 OK) {RESET}")
             print(f"IDS Classification: BENIGN (EVASION SUCCESS) | Family: {family}")
             print(f"{YELLOW}Result: Adversarial candidate transferred and evaded target classifier!{RESET}\n")
-        else:
+            return True
+        elif resp.get("status_code") == 403:
             print(f"[{t_str}] {BG_RED}{WHITE}{BOLD} TRANSFER BLOCKED (403 FORBIDDEN) {RESET}")
             print(f"IDS Classification: ATTACK (DEFENSE HELD) | Family: {family}")
             print(f"{CYAN}Result: Target IDS defense prevented surrogate boundary transfer.{RESET}\n")
+            return True
     finally:
         stop_simulation_session()
 
 
-def run_decision_boundary_attack(max_queries: int = 50, steps: int = 10):
+def run_decision_boundary_attack(max_queries: int = 50, steps: int = 10) -> bool:
     """
     Executes Research Attack 3: Decision Boundary Bisection Search
     Uses crafting benign references for binary search, targeting a measurement attack flow.
     Submits the final candidate once as a measured flow.
     """
+    c = get_ctx()
     print(f"\n{MAGENTA}{BOLD}======================================================================{RESET}")
     print(f"{MAGENTA}{BOLD}  RESEARCH ATTACK: DECISION BOUNDARY ATTACK (1D BISECTION){RESET}")
     print(f"{WHITE}  Model: Query-Guided Binary Search Boundary Finding{RESET}")
@@ -715,38 +865,37 @@ def run_decision_boundary_attack(max_queries: int = 50, steps: int = 10):
     sess_id = start_simulation_session("Decision-Boundary Attack")
     try:
         attack = DecisionBoundaryAttack(
-            ctx.feature_names, ctx.modifiable_mask, ctx.bounds_df,
+            c.feature_names, c.modifiable_mask, c.bounds_df,
             max_queries=max_queries, binary_search_steps=steps
         )
         oracle = RemoteServerOracle(target_url=get_server_url(), max_queries_per_sample=max_queries, scenario_name="Decision-Boundary Attack", session_id=sess_id)
 
-        # Benign reference pool drawn strictly from CRAFTING pool
-        if ctx.profile == "expanded":
-            ref_ids = ctx.dataset.crafting_benign_indices[:50].tolist()
-            reference_pool = ctx.dataset.X.iloc[ref_ids].values
-            print(f"{DIM}Selecting 50 crafting benign references from 14,936 crafting benign pool...{RESET}")
-            print(f"{WHITE}Crafting Benign Reference IDs: {CYAN}{ref_ids[:5]}... + {len(ref_ids)-5} more{RESET}")
-        else:
-            ref_ids = ctx.benign_indices.tolist()
-            reference_pool = ctx.dataset.X.iloc[ref_ids].values
-            print(f"{DIM}Using {len(ref_ids)} fixture benign references...{RESET}")
+        # Benign reference pool drawn strictly from CRAFTING pool using seeded selection
+        ref_ids = c.select_crafting_references_boundary(n_benign=50)
+        reference_pool = c.dataset.X.iloc[ref_ids].values
+        print(f"{DIM}Selecting {len(ref_ids)} crafting benign references from crafting benign pool with seed={c.seed}...{RESET}")
+        print(f"{WHITE}Crafting Benign Reference IDs (Role: Crafting): {CYAN}{ref_ids[:10]}... ({len(ref_ids)} total){RESET}")
 
         # Draw target flow strictly from MEASUREMENT pool
-        target_idx = ctx.draw_measurement_target(is_attack=True)
-        x_orig = ctx.dataset.X.iloc[target_idx].values
-        family = str(ctx.dataset.metadata.iloc[target_idx].get("attack_family", "Unknown"))
+        target_idx = c.draw_measurement_target(is_attack=True)
+        x_orig = c.dataset.X.iloc[target_idx].values
+        family = str(c.dataset.metadata.iloc[target_idx].get("attack_family", "Unknown"))
 
         print(f"{WHITE}Target Measurement Attack Sample: {CYAN}{family}{RESET} (Evaluation ID: {target_idx}, Role: Measurement)")
-        print(f"{DIM}Running bisection search via query telemetry (max query budget: {max_queries})...{RESET}")
+        print(f"{DIM}Running bisection search via query telemetry (budget: {max_queries}; candidate queries retain measurement target origin ID {target_idx})...{RESET}")
 
         res = attack.generate(x_orig, oracle, sample_id=target_idx, true_label=1, reference_pool=reference_pool)
         queries_used = oracle.get_query_count(target_idx)
 
         print(f"\n{BOLD}Boundary Search Finished:{RESET} queries_used={queries_used}/{max_queries}, status={res.status_code}, message={res.message}")
 
-        # Submit finalized candidate once as measured target flow
-        final_cand = res.X_adv if (res.success and res.X_adv is not None) else x_orig
-        print(f"{DIM}Submitting finalized candidate once as measured target flow...{RESET}")
+        is_fallback = (not res.success or res.X_adv is None)
+        final_cand = res.X_adv if not is_fallback else x_orig
+        if is_fallback:
+            print(f"{YELLOW}[!] Bisection search was unsuccessful or ineligible ({res.message}). Submitting unchanged original flow as baseline fallback...{RESET}")
+        else:
+            print(f"{DIM}Submitting generated boundary evasion candidate once as measured target flow...{RESET}")
+
         resp = run_single_flow(
             flow_type=family,
             is_attack=True,
@@ -758,41 +907,75 @@ def run_decision_boundary_attack(max_queries: int = 50, steps: int = 10):
         )
 
         t_str = time.strftime("%H:%M:%S")
-        if resp is not None and resp.get("status_code") == 200:
-            print(f"\n[{t_str}] {BG_GREEN}{WHITE}{BOLD} EVADED BOUNDARY (200 OK) {RESET}")
-            print(f"Verdict: Adversarial candidate evaded target classifier!\n")
-        else:
-            print(f"\n[{t_str}] {BG_RED}{WHITE}{BOLD} DEFENSE HELD (403 BLOCKED) {RESET}")
-            print(f"Verdict: Target IDS defense detected and blocked flow.\n")
+        if resp is None or resp.get("status_code") not in (200, 403):
+            status = resp.get("status_code") if resp else "No response"
+            err = resp.get("error", "Unknown error") if resp else "Failed"
+            print(f"\n[{t_str}] {RED}{BOLD}[EXECUTION ERROR] Submission failed (HTTP {status}: {err}){RESET}")
+            print(f"{YELLOW}No IDS classification or defense verdict could be obtained due to server/transport error.{RESET}\n")
+            return False
+        elif resp.get("status_code") == 200:
+            if is_fallback:
+                print(f"\n[{t_str}] {YELLOW}{BOLD} ORIGINAL FLOW ALLOWED (200 OK - BASELINE FALSE NEGATIVE) {RESET}")
+                print(f"Verdict: Unperturbed baseline attack was not detected by classifier (fallback flow, not an evasion candidate).\n")
+            else:
+                print(f"\n[{t_str}] {BG_GREEN}{WHITE}{BOLD} EVADED BOUNDARY (200 OK) {RESET}")
+                print(f"Verdict: Generated adversarial candidate crossed decision boundary and evaded target classifier!\n")
+            return True
+        elif resp.get("status_code") == 403:
+            if is_fallback:
+                print(f"\n[{t_str}] {BG_RED}{WHITE}{BOLD} BASELINE FLOW BLOCKED (403 BLOCKED) {RESET}")
+                print(f"Verdict: Unperturbed baseline attack was correctly detected and blocked.\n")
+            else:
+                print(f"\n[{t_str}] {BG_RED}{WHITE}{BOLD} DEFENSE HELD (403 BLOCKED) {RESET}")
+                print(f"Verdict: Target IDS defense detected and blocked boundary candidate.\n")
+            return True
     finally:
         stop_simulation_session()
 
 
-def run_comparative_benchmark(defense: Optional[str] = None):
+def run_comparative_benchmark(defense: Optional[str] = None) -> bool:
     """
     Local Control-Path Demonstration:
     Compares Base (fixed intensity) versus Recall-Aware (adaptive controller)
     for the selected defense across an identical 5-flow measurement sequence.
+    If defense is None, obtains the current defense from validated dashboard telemetry.
     """
-    target_def = (defense or "afp").lower()
+    c = get_ctx()
+    if defense:
+        target_def = defense.lower().strip()
+    else:
+        # Obtain current defense from validated dashboard telemetry
+        try:
+            req = urllib.request.Request(get_stats_url())
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            telemetry_def = data.get("afp", {}).get("defense_name")
+            if not telemetry_def or telemetry_def.lower() not in ["afp", "rs", "fs", "none"]:
+                print(f"{RED}[Error] Current defense telemetry is unavailable or invalid ('{telemetry_def}'). Cannot run comparative benchmark without a valid defense.{RESET}")
+                return False
+            target_def = telemetry_def.lower()
+        except Exception as e:
+            print(f"{RED}[Error] Failed to fetch current defense telemetry from server: {e}. Cannot run comparative benchmark.{RESET}")
+            return False
+
     print(f"\n{YELLOW}{BOLD}======================================================================{RESET}")
     print(f"{YELLOW}{BOLD}  LOCAL CONTROL-PATH DEMONSTRATION: BASE vs. RECALL-AWARE ({target_def.upper()}){RESET}")
     print(f"{WHITE}  Evaluating identical 5-flow measurement sequence under fixed vs adaptive controller{RESET}")
     print(f"{YELLOW}{BOLD}======================================================================{RESET}\n")
 
     # Pick 5 fixed measurement attack samples for exact repeatability
-    if ctx.profile == "fixture20":
-        fixed_indices = ctx.attack_indices[:5].tolist()
+    if c.profile == "fixture20":
+        fixed_indices = c.attack_indices[:5].tolist()
     else:
-        fixed_indices = ctx.dataset.measurement_attack_indices[:5].tolist()
+        fixed_indices = c.dataset.measurement_attack_indices[:5].tolist()
 
-    print(f"{WHITE}Saved Measurement Target IDs: {CYAN}{fixed_indices}{RESET} (Profile: {ctx.profile})\n")
+    print(f"{WHITE}Saved Measurement Target IDs: {CYAN}{fixed_indices}{RESET} (Profile: {c.profile})\n")
 
     # Step 1: Base Mode
     print(f"{WHITE}Step 1: Setting {target_def.upper()} Defense to {YELLOW}BASE MODE (Static Calibrated Intensity){RESET}...")
     if not set_server_defense(target_def) or not set_server_mode("base"):
         print(f"{RED}[FAIL] Setup failed for Base mode.{RESET}")
-        return
+        return False
 
     # Reset dashboard metrics to clean baseline
     try:
@@ -800,18 +983,19 @@ def run_comparative_benchmark(defense: Optional[str] = None):
         urllib.request.urlopen(req, timeout=3)
     except Exception as e:
         print(f"{RED}[FAIL] Reset failed: {e}{RESET}")
-        return
+        return False
     time.sleep(0.5)
 
     print(f"{DIM}Sending 5 fixed attack flows under Base {target_def.upper()}...{RESET}")
     results_base = []
     for idx in fixed_indices:
-        x_row = ctx.dataset.X.iloc[idx].values
-        fam = str(ctx.dataset.metadata.iloc[idx].get("attack_family", "Unknown"))
+        x_row = c.dataset.X.iloc[idx].values
+        fam = str(c.dataset.metadata.iloc[idx].get("attack_family", "Unknown"))
         r = run_single_flow(flow_type=fam, is_attack=True, vector=x_row, sample_id=idx, scenario="Base Demonstration")
         if r is None or r.get("status_code") not in (200, 403):
-            print(f"{RED}[FAIL] Error during Base mode flow transmission.{RESET}")
-            return
+            status = r.get("status_code") if r else "No response"
+            print(f"{RED}[FAIL] Error during Base mode flow transmission (HTTP {status}).{RESET}")
+            return False
         results_base.append(r)
         time.sleep(0.2)
 
@@ -819,9 +1003,9 @@ def run_comparative_benchmark(defense: Optional[str] = None):
 
     # Step 2: Recall-Aware Mode
     print(f"\n{WHITE}Step 2: Activating {GREEN}RECALL-AWARE CONTROLLER (Dynamic Feedback Window){RESET}...")
-    if not set_server_mode("recall-aware"):
+    if not set_server_defense(target_def) or not set_server_mode("recall-aware"):
         print(f"{RED}[FAIL] Setup failed for Recall-Aware mode.{RESET}")
-        return
+        return False
 
     # Reset dashboard metrics to clean baseline
     try:
@@ -829,7 +1013,7 @@ def run_comparative_benchmark(defense: Optional[str] = None):
         urllib.request.urlopen(req, timeout=3)
     except Exception as e:
         print(f"{RED}[FAIL] Reset failed: {e}{RESET}")
-        return
+        return False
     time.sleep(0.5)
 
     sess_id = start_simulation_session("Recall-Aware Demonstration")
@@ -837,12 +1021,13 @@ def run_comparative_benchmark(defense: Optional[str] = None):
     try:
         print(f"{DIM}Sending the SAME 5 attack flows under Recall-Aware {target_def.upper()}...{RESET}")
         for idx in fixed_indices:
-            x_row = ctx.dataset.X.iloc[idx].values
-            fam = str(ctx.dataset.metadata.iloc[idx].get("attack_family", "Unknown"))
+            x_row = c.dataset.X.iloc[idx].values
+            fam = str(c.dataset.metadata.iloc[idx].get("attack_family", "Unknown"))
             r = run_single_flow(flow_type=fam, is_attack=True, vector=x_row, sample_id=idx, scenario="Recall-Aware Demonstration", session_id=sess_id)
             if r is None or r.get("status_code") not in (200, 403):
-                print(f"{RED}[FAIL] Error during Recall-Aware mode flow transmission.{RESET}")
-                return
+                status = r.get("status_code") if r else "No response"
+                print(f"{RED}[FAIL] Error during Recall-Aware mode flow transmission (HTTP {status}).{RESET}")
+                return False
             results_recall.append(r)
             time.sleep(0.2)
     finally:
@@ -877,39 +1062,53 @@ def run_comparative_benchmark(defense: Optional[str] = None):
 
     if not has_controller_telemetry:
         print(f"{YELLOW}Controller telemetry is unavailable; cannot confirm final intensity or state.{RESET}\n")
-    elif detected_count == total_count:
-        print(f"{WHITE}With all {total_count} attack flows detected (Recall = 1.000 >= Rmin), the controller maintained intensity={obs_intensity_str} in {obs_state} state.{RESET}")
-        print(f"{DIM}Note: If lower recall occurs (e.g., under adversarial evasion), the controller adapts downward (0.00030 -> 0.00012). See the automated test suite for the verified adaptation sequence.{RESET}\n")
+    elif target_def == "afp":
+        if detected_count == total_count:
+            print(f"{WHITE}With all {total_count} attack flows detected (Recall = 1.000 >= Rmin), the controller maintained calibrated baseline intensity={obs_intensity_str} in {obs_state} state.{RESET}")
+            print(f"{DIM}Note: When evasion causes lower recall (e.g. under genuine adversarial evasion), the controller adapts downward (0.00030 -> 0.00012). See tests/verify_defense_readiness.py Check 7 for the verified adaptation sequence.{RESET}\n")
+        else:
+            print(f"{WHITE}Observed evasion resulted in controller adaptation: intensity={obs_intensity_str}, state={obs_state}.{RESET}\n")
+    elif target_def == "rs":
+        print(f"{WHITE}Randomized Smoothing evaluated in {obs_state} mode (sigma parameter: {obs_intensity_str}). Confidence scores reflect 11-member ensemble vote fractions.{RESET}\n")
+    elif target_def == "fs":
+        print(f"{WHITE}Feature Squeezing evaluated in {obs_state} mode (bit depth: {obs_intensity_str}).{RESET}\n")
     else:
-        print(f"{WHITE}Observed evasion resulted in controller adaptation: intensity={obs_intensity_str}, state={obs_state}.{RESET}\n")
+        print(f"{WHITE}Baseline classifier (No defense) evaluated with zero perturbation (intensity={obs_intensity_str}).{RESET}\n")
+
+    return True
 
 
-def run_cross_defense_comparison(count: int = 5):
+def run_cross_defense_comparison(count: int = 5) -> bool:
     """
     Replays one saved measurement sequence across AFP, RS, FS, and None in Base mode.
     Sequence contains both benign and attack rows to evaluate TP, FN, FP, TN, Recall, and FPR.
+    Note: The comparison sequence is intentionally bounded to 5 flows for rapid inspection.
     """
+    c = get_ctx()
     print(f"\n{CYAN}{BOLD}======================================================================{RESET}")
     print(f"{CYAN}{BOLD}  CROSS-DEFENSE BENCHMARK: REPLAY IDENTICAL SEQUENCE (BASE MODE){RESET}")
-    print(f"{WHITE}  Evaluating AFP, RS, FS, and None across identical saved measurement flows{RESET}")
+    print(f"{WHITE}  Evaluating AFP, RS, FS, and None across identical saved measurement flows (bounded to 5 flows){RESET}")
     print(f"{CYAN}{BOLD}======================================================================{RESET}\n")
 
-    # Select saved sequence containing both classes (e.g. 2 benign, 3 attack)
-    if ctx.profile == "fixture20":
+    # Select saved sequence containing both classes (2 benign, 3 attack)
+    if c.profile == "fixture20":
         sample_sequence = [0, 1, 10, 11, 12]
     else:
-        sample_sequence = list(ctx.dataset.measurement_benign_indices[:2]) + list(ctx.dataset.measurement_attack_indices[:3])
+        sample_sequence = list(c.dataset.measurement_benign_indices[:2]) + list(c.dataset.measurement_attack_indices[:3])
 
-    print(f"{WHITE}Replay Sequence IDs: {CYAN}{sample_sequence}{RESET} (Profile: {ctx.profile}, Seed: {ctx.seed})")
-    print(f"{DIM}Classes in sequence: {sum(1 for sid in sample_sequence if ctx.dataset.metadata.iloc[sid]['y_binary'] == 0)} Benign, {sum(1 for sid in sample_sequence if ctx.dataset.metadata.iloc[sid]['y_binary'] == 1)} Attack{RESET}\n")
+    print(f"{WHITE}Replay Sequence IDs: {CYAN}{sample_sequence}{RESET} (Profile: {c.profile}, Seed: {c.seed})")
+    print(f"{DIM}Classes in sequence: {sum(1 for sid in sample_sequence if c.dataset.metadata.iloc[sid]['y_binary'] == 0)} Benign, {sum(1 for sid in sample_sequence if c.dataset.metadata.iloc[sid]['y_binary'] == 1)} Attack{RESET}\n")
 
     defenses = ["afp", "rs", "fs", "none"]
     arm_results = {}
+    all_arms_completed = True
 
     for def_name in defenses:
         print(f"{WHITE}Evaluating Defense: {YELLOW}{def_name.upper()}{RESET} (Base Mode)...")
         if not set_server_defense(def_name) or not set_server_mode("base"):
             print(f"{RED}[FAIL] Setup failed for {def_name}.{RESET}")
+            arm_results[def_name] = {"defense": def_name.upper(), "status": "FAILED", "error": "Setup failed"}
+            all_arms_completed = False
             continue
 
         # Reset counters & controller before arm
@@ -918,29 +1117,50 @@ def run_cross_defense_comparison(count: int = 5):
             urllib.request.urlopen(req, timeout=3)
         except Exception as e:
             print(f"{RED}[FAIL] Reset failed for {def_name}: {e}{RESET}")
+            arm_results[def_name] = {"defense": def_name.upper(), "status": "FAILED", "error": f"Reset failed: {e}"}
+            all_arms_completed = False
             continue
         time.sleep(0.3)
 
         flow_verdicts = []
+        failed_transmissions = []
         for sid in sample_sequence:
-            x_row = ctx.dataset.X.iloc[sid].values
-            true_y = int(ctx.dataset.metadata.iloc[sid]["y_binary"])
-            fam = str(ctx.dataset.metadata.iloc[sid].get("attack_family", "Normal" if true_y == 0 else "Unknown"))
+            x_row = c.dataset.X.iloc[sid].values
+            true_y = int(c.dataset.metadata.iloc[sid]["y_binary"])
+            fam = str(c.dataset.metadata.iloc[sid].get("attack_family", "Normal" if true_y == 0 else "Unknown"))
             r = run_single_flow(flow_type=fam, is_attack=(true_y == 1), vector=x_row, sample_id=sid, scenario=f"Benchmark-{def_name.upper()}")
-            if r and r.get("status_code") in (200, 403):
+            if r is None or r.get("status_code") not in (200, 403):
+                sc = r.get("status_code") if r else "No response"
+                failed_transmissions.append((sid, sc))
+            else:
                 flow_verdicts.append(r)
             time.sleep(0.15)
+
+        if failed_transmissions:
+            print(f"{RED}[FAIL] Arm {def_name.upper()} had {len(failed_transmissions)} failed transmissions: {failed_transmissions}. Arm incomplete.{RESET}")
+            arm_results[def_name] = {"defense": def_name.upper(), "status": "FAILED", "error": f"{len(failed_transmissions)} transmissions failed"}
+            all_arms_completed = False
+            continue
 
         # Retrieve server stats
         try:
             req = urllib.request.Request(get_stats_url())
             with urllib.request.urlopen(req, timeout=3) as resp:
                 stats_payload = json.loads(resp.read().decode())
-        except Exception:
-            stats_payload = {}
+        except Exception as e:
+            print(f"{RED}[FAIL] Telemetry retrieval failed for {def_name}: {e}{RESET}")
+            arm_results[def_name] = {"defense": def_name.upper(), "status": "FAILED", "error": f"Telemetry failed: {e}"}
+            all_arms_completed = False
+            continue
 
-        st = stats_payload.get("stats", {})
-        afp_info = stats_payload.get("afp", {})
+        st = stats_payload.get("stats") if isinstance(stats_payload, dict) else None
+        afp_info = stats_payload.get("afp") if isinstance(stats_payload, dict) else None
+
+        if not isinstance(st, dict) or "tp" not in st or "fn" not in st:
+            print(f"{RED}[FAIL] Malformed or missing telemetry stats for {def_name}.{RESET}")
+            arm_results[def_name] = {"defense": def_name.upper(), "status": "FAILED", "error": "Malformed telemetry"}
+            all_arms_completed = False
+            continue
 
         tp = st.get("tp", 0)
         fn = st.get("fn", 0)
@@ -953,10 +1173,11 @@ def run_cross_defense_comparison(count: int = 5):
         fpr_val = f"{(fp / negatives):.3f}" if negatives > 0 else "N/A"
 
         conf_type = "Vote fraction (ensemble)" if def_name == "rs" else "RF probability"
-        intensity_val = afp_info.get("intensity", "N/A")
+        intensity_val = afp_info.get("intensity", "N/A") if isinstance(afp_info, dict) else "N/A"
 
         arm_results[def_name] = {
             "defense": def_name.upper(),
+            "status": "COMPLETED",
             "tp": tp, "fn": fn, "fp": fp, "tn": tn,
             "recall": recall_val, "fpr": fpr_val,
             "intensity": intensity_val,
@@ -973,10 +1194,17 @@ def run_cross_defense_comparison(count: int = 5):
     for def_name in defenses:
         if def_name in arm_results:
             r = arm_results[def_name]
-            int_str = f"{r['intensity']:.5f}" if isinstance(r['intensity'], (int, float)) else str(r['intensity'])
-            print(f"{r['defense']:<10} {'Base':<8} {r['tp']:<5} {r['fn']:<5} {r['fp']:<5} {r['tn']:<5} {r['recall']:<10} {r['fpr']:<10} {int_str:<12} {r['conf_semantics']:<24}")
+            if r.get("status") == "COMPLETED":
+                int_str = f"{r['intensity']:.5f}" if isinstance(r['intensity'], (int, float)) else str(r['intensity'])
+                print(f"{r['defense']:<10} {'Base':<8} {r['tp']:<5} {r['fn']:<5} {r['fp']:<5} {r['tn']:<5} {r['recall']:<10} {r['fpr']:<10} {int_str:<12} {r['conf_semantics']:<24}")
+            else:
+                print(f"{r['defense']:<10} {'Base':<8} {'FAIL':<5} {'—':<5} {'—':<5} {'—':<5} {'—':<10} {'—':<10} {'—':<12} {r.get('error', 'Arm failed'):<24}")
+        else:
+            print(f"{def_name.upper():<10} {'Base':<8} {'FAIL':<5} {'—':<5} {'—':<5} {'—':<5} {'—':<10} {'—':<10} {'—':<12} {'Arm not executed':<24}")
     print(f"{'-'*96}")
     print(f"{DIM}Note: RS confidence reflects ensemble vote fractions (11 sub-models), whereas AFP, FS, and None report direct Random Forest probability estimates. Equal verdicts do not imply identical internal representations.{RESET}\n")
+
+    return all_arms_completed
 
 
 def run_continuous_stream(delay: float = 1.0):
@@ -1071,11 +1299,11 @@ def main():
     parser = argparse.ArgumentParser(description="Attacker Simulation Console for IDS + Recall-Aware Platform")
     parser.add_argument("--mode", choices=["menu", "silent", "surrogate", "boundary", "ddos", "benign", "stream", "compare", "compare-all"], default="menu")
     parser.add_argument("--dataset", choices=["expanded", "fixture20"], default=None, help="Dataset profile (expanded or fixture20)")
-    parser.add_argument("--seed", type=int, default=42, help="RNG seed for target sampling without replacement")
+    parser.add_argument("--seed", type=int, default=42, help="RNG seed for target sampling without replacement (default: 42 for deterministic session replay)")
     parser.add_argument("--defense", choices=["afp", "rs", "fs", "none"], default=None)
     parser.add_argument("--controller", choices=["recall-aware", "base"], default=None)
     parser.add_argument("--target", default=DEFAULT_SERVER_URL, help="Target URL for protected server endpoint")
-    parser.add_argument("--count", type=int, default=5)
+    parser.add_argument("--count", type=int, default=5, help="Number of flows for burst/stream actions (note: comparison modes use their validated bounded sequence)")
     parser.add_argument("--delay", type=float, default=0.3)
 
     args = parser.parse_args()
@@ -1084,36 +1312,52 @@ def main():
     if args.target:
         set_target_url(args.target)
 
-    # Initialize / update profile and seed based on CLI flags
+    # Initialize profile and seed based on CLI flags
     active_profile = args.dataset or os.environ.get("IDS_DATA_PROFILE", "expanded").strip().lower()
-    ctx.set_profile(active_profile, seed=args.seed)
+    try:
+        current_ctx = get_ctx(active_profile, seed=args.seed)
+    except Exception as e:
+        print(f"{RED}[Fatal] Failed to initialize dataset profile '{active_profile}': {e}{RESET}")
+        sys.exit(1)
 
-    # Check backend compatibility before sending flows
-    check_backend_compatibility()
+    # Check backend compatibility before sending flows; halt with nonzero exit if unsuccessful
+    if not check_backend_compatibility(require_profile=active_profile):
+        print(f"{RED}[Fatal] Backend compatibility check failed. Halting.{RESET}")
+        sys.exit(1)
 
     if args.defense:
-        set_server_defense(args.defense)
-    if args.controller:
-        set_server_mode(args.controller)
+        if not set_server_defense(args.defense):
+            print(f"{RED}[Fatal] Failed to set requested defense '{args.defense}'. Halting.{RESET}")
+            sys.exit(1)
 
+    if args.controller:
+        if not set_server_mode(args.controller):
+            print(f"{RED}[Fatal] Failed to set requested controller mode '{args.controller}'. Halting.{RESET}")
+            sys.exit(1)
+
+    success = True
     if args.mode == "menu":
         interactive_menu()
     elif args.mode == "silent":
-        run_silent_probing_attack()
+        success = run_silent_probing_attack()
     elif args.mode == "surrogate":
-        run_surrogate_transfer_attack()
+        success = run_surrogate_transfer_attack()
     elif args.mode == "boundary":
-        run_decision_boundary_attack(max_queries=50)
+        success = run_decision_boundary_attack(max_queries=50)
     elif args.mode == "compare":
-        run_comparative_benchmark(defense=args.defense)
+        success = run_comparative_benchmark(defense=args.defense)
     elif args.mode == "compare-all":
-        run_cross_defense_comparison(count=args.count)
+        success = run_cross_defense_comparison(count=args.count)
     elif args.mode == "ddos":
-        run_volumetric_burst("DDoS", count=args.count, delay=args.delay)
+        success = run_volumetric_burst("DDoS", count=args.count, delay=args.delay)
     elif args.mode == "benign":
-        run_single_flow("Normal", is_attack=False)
+        r = run_single_flow("Normal", is_attack=False)
+        success = (r is not None and r.get("status_code") == 200)
     elif args.mode == "stream":
         run_continuous_stream(delay=args.delay)
+
+    if not success:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

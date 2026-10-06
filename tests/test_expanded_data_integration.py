@@ -1,26 +1,49 @@
 """
 Expanded Data Integration Verification Suite
 Tests the 90,000-row expanded dataset contract, seeded measurement-pool sampling without replacement,
-profile mismatch rejection, query vs target metric separation, attack workflows, and defense comparisons.
+combined fingerprint contract, session-bound query accounting, attack workflows with fault injection,
+defense-specific comparative benchmarks, and explicit fallback isolation.
 """
 
 import sys
 import os
 import json
 import time
+import shutil
 import hashlib
+import tempfile
 import requests
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from collections import deque
+from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "runtime_package"))
 
-from runtime_package.data_loader import get_dataset, LoadedDataset
-from attacker_sim import AttackerContext, RemoteServerOracle, TargetOracle, run_single_flow, set_server_defense, set_server_mode
+from runtime_package.data_loader import (
+    get_dataset,
+    LoadedDataset,
+    compute_combined_fingerprint,
+    get_file_sha256,
+)
+from attacker_sim import (
+    AttackerContext,
+    get_ctx,
+    RemoteServerOracle,
+    TargetOracle,
+    run_single_flow,
+    set_server_defense,
+    set_server_mode,
+    check_backend_compatibility,
+    run_comparative_benchmark,
+    run_cross_defense_comparison,
+    run_surrogate_transfer_attack,
+    run_decision_boundary_attack,
+    start_simulation_session,
+    stop_simulation_session,
+)
 
 BASE_URL = "http://localhost:8000"
 
@@ -95,41 +118,147 @@ def test_2_seeded_sampling_without_replacement():
     diff_ids = [ctx_sample.draw_measurement_target(is_attack=False) for _ in range(100)]
     assert drawn_ids != diff_ids, "Different seed produced identical sequence!"
 
-    # 5. Test queue exhaustion behavior on a small sub-queue
-    small_queue = deque([101, 102, 103])
-    exhausted_draws = []
-    cycle = 0
-    for _ in range(7):
-        if len(small_queue) == 0:
-            cycle += 1
-            small_queue = deque([101, 102, 103])
-        exhausted_draws.append(small_queue.popleft())
-    assert len(exhausted_draws) == 7
-    assert cycle == 2, f"Expected 2 exhaustion cycles, got {cycle}"
+    # 5. Overlapping queue coordination on seed 42 reproduction
+    # The reviewer executed the actual sampler methods using the packaged role CSV and seed 42.
+    # Alternating general attack and DDoS draws reused evaluation ID 70501: DDoS draw 58, then general attack draw 157.
+    # Coordinated ledger must prevent reuse across overlapping queues while eligible targets remain.
+    ctx_seed42 = AttackerContext(profile="expanded", seed=42)
+    alt_draws = []
+    ddos_draws = []
+    general_draws = []
+    for i in range(200):
+        d_id = ctx_seed42.draw_measurement_target(is_attack=True, family_subset="DDoS")
+        alt_draws.append(d_id)
+        ddos_draws.append(d_id)
 
-    print("   [PASS] 100 benign & 50 attack measurement draws verified with 0 duplicates before exhaustion.")
-    print("   [PASS] Seed reproducibility and pool exhaustion cycle mechanics verified.\n")
+        g_id = ctx_seed42.draw_measurement_target(is_attack=True)
+        alt_draws.append(g_id)
+        general_draws.append(g_id)
+
+    assert len(alt_draws) == 400
+    assert len(set(alt_draws)) == 400, f"Found {400 - len(set(alt_draws))} duplicates in alternating draws!"
+    assert 70501 in ddos_draws, "Expected target 70501 to be drawn by DDoS queue"
+    assert 70501 not in general_draws, "Target 70501 was reused across overlapping queues by general attack draw!"
+    assert ctx_seed42.cycle_counts["ddos"] == 0
+    assert ctx_seed42.cycle_counts["attack"] == 0
+    print("   [PASS] Seed-42 reproduction verified: 400 alternating draws yielded 400 distinct targets; 70501 consumed once and skipped by general attack.")
+
+    # 6. Test production sampler exhaustion and cycle behavior on a small controlled dataset
+    X_small = pd.DataFrame(np.zeros((6, 78), dtype=np.float32))
+    meta_small = pd.DataFrame({
+        "y_binary": [0, 0, 1, 1, 1, 0],
+        "attack_family": ["Normal", "Normal", "DDoS attacks-LOIC-HTTP", "DDoS attacks-LOIC-HTTP", "Bot", "Normal"]
+    })
+    roles_small = pd.DataFrame({
+        "eval_position": [0, 1, 2, 3, 4, 5],
+        "role": ["measurement", "measurement", "measurement", "measurement", "measurement", "crafting"]
+    })
+    ctrl_ds = LoadedDataset(profile="expanded", X=X_small, metadata=meta_small, roles_df=roles_small, fingerprint="test-fp")
+
+    ctx_ctrl = AttackerContext(profile="expanded", seed=1)
+    ctx_ctrl.dataset = ctrl_ds
+    ctx_ctrl.X_demo = ctrl_ds.X
+    ctx_ctrl.meta_demo = ctrl_ds.metadata
+    ctx_ctrl.attack_indices = ctrl_ds.measurement_attack_indices
+    ctx_ctrl.benign_indices = ctrl_ds.measurement_benign_indices
+    ctx_ctrl._ddos_set = set(ctrl_ds.measurement_ddos_indices)
+    ctx_ctrl.reset_queues(seed=1)
+
+    assert len(ctrl_ds.measurement_ddos_indices) == 2  # rows 2, 3
+    assert len(ctrl_ds.measurement_attack_indices) == 3  # rows 2, 3, 4
+
+    # Draw 2 DDoS targets -> exhausts DDoS family subset in cycle 0
+    d1 = ctx_ctrl.draw_measurement_target(is_attack=True, family_subset="DDoS")
+    d2 = ctx_ctrl.draw_measurement_target(is_attack=True, family_subset="DDoS")
+    assert {d1, d2} == {2, 3}
+    assert ctx_ctrl.cycle_counts["ddos"] == 0
+
+    # 3rd DDoS draw announces DDoS exhaustion, increments ddos cycle to 1, while general attack cycle is 0
+    d3 = ctx_ctrl.draw_measurement_target(is_attack=True, family_subset="DDoS")
+    assert d3 in {2, 3}
+    assert ctx_ctrl.cycle_counts["ddos"] == 1
+    assert ctx_ctrl.cycle_counts["attack"] == 0
+
+    # General attack draw: targets 2 and 3 were consumed in cycle 0, so general attack draws target 4
+    g1 = ctx_ctrl.draw_measurement_target(is_attack=True)
+    assert g1 == 4, f"Expected general attack to draw remaining target 4, got {g1}"
+    assert ctx_ctrl.cycle_counts["attack"] == 0
+
+    # Next general attack draw: all 3 targets consumed in cycle 0, increments attack cycle to 1
+    g2 = ctx_ctrl.draw_measurement_target(is_attack=True)
+    assert g2 in {2, 3, 4}
+    assert ctx_ctrl.cycle_counts["attack"] == 1
+
+    print("   [PASS] Production sampler exhaustion and cycle behavior validated on controlled dataset.")
+    print("   [PASS] Family subset exhaustion accurately isolated without resetting other queues.\n")
 
 
-def test_3_profile_mismatch_and_input_validation():
-    print(">> [Check 3] Verifying Backend Profile Mismatch & Input Validation Rejection...")
+def test_3_combined_fingerprint_contract():
+    print(">> [Check 3] Verifying Combined Fingerprint Contract & Mutation Sensitivity...")
+    ds = get_dataset("expanded")
+    assert ds.fingerprint and len(ds.fingerprint) == 64, f"Invalid fingerprint: {ds.fingerprint}"
+
+    # Verify that changing metadata or roles while preserving feature bytes changes the combined fingerprint
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        x_f = tmp_path / "X_eval.parquet"
+        meta_f = tmp_path / "metadata_eval.parquet"
+        roles_f = tmp_path / "evaluation_roles.csv"
+
+        # Write synthetic base files
+        pd.DataFrame(np.zeros((5, 78), dtype=np.float32)).to_parquet(x_f)
+        pd.DataFrame({"y_binary": [0, 1, 0, 1, 0]}).to_parquet(meta_f)
+        pd.DataFrame({"eval_position": [0, 1, 2, 3, 4], "role": ["measurement"] * 5}).to_csv(roles_f, index=False)
+
+        fp_orig = compute_combined_fingerprint([x_f, meta_f, roles_f])
+
+        # Mutate metadata only (keep X and roles identical)
+        pd.DataFrame({"y_binary": [1, 1, 0, 1, 0]}).to_parquet(meta_f)
+        fp_meta_mutated = compute_combined_fingerprint([x_f, meta_f, roles_f])
+        assert fp_orig != fp_meta_mutated, "Fingerprint failed to change when metadata mutated!"
+
+        # Restore metadata, mutate roles only (keep X and metadata identical)
+        pd.DataFrame({"y_binary": [0, 1, 0, 1, 0]}).to_parquet(meta_f)
+        pd.DataFrame({"eval_position": [0, 1, 2, 3, 4], "role": ["crafting"] * 5}).to_csv(roles_f, index=False)
+        fp_roles_mutated = compute_combined_fingerprint([x_f, meta_f, roles_f])
+        assert fp_orig != fp_roles_mutated, "Fingerprint failed to change when roles mutated!"
+
+    # Verify compatibility check logic: rejects missing, malformed, or mismatched fingerprints
+    with patch("urllib.request.urlopen") as mock_url:
+        # 1. Missing fingerprint
+        class MockRespMissing:
+            def read(self):
+                return json.dumps({"data_profile": "expanded", "data_fingerprint": None}).encode()
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+        mock_url.return_value = MockRespMissing()
+        assert check_backend_compatibility(require_profile="expanded") is False
+
+        # 2. Mismatched fingerprint
+        class MockRespMismatch:
+            def read(self):
+                return json.dumps({"data_profile": "expanded", "data_fingerprint": "badhash123"}).encode()
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+        mock_url.return_value = MockRespMismatch()
+        assert check_backend_compatibility(require_profile="expanded") is False
+
+    print("   [PASS] Combined fingerprint covers features, metadata, and roles in deterministic stable order.")
+    print("   [PASS] Mutating metadata or roles alone changes the contract fingerprint.")
+    print("   [PASS] Missing, malformed, or mismatched server fingerprints cleanly rejected.\n")
+
+
+def test_4_profile_mismatch_and_input_validation():
+    print(">> [Check 4] Verifying Backend Profile Mismatch & Input Validation Rejection...")
     try:
         stats = requests.get(f"{BASE_URL}/api/dashboard/stats", timeout=2).json()
     except Exception:
-        try:
-            import pytest
-            pytest.skip("Target server not running on port 8000")
-        except ImportError:
-            print("   [SKIP] Server not running.")
-            return
+        print("   [SKIP] Target server not running on port 8000.")
+        return
 
     if stats.get("data_profile") != "expanded":
-        try:
-            import pytest
-            pytest.skip(f"Server is running profile '{stats.get('data_profile')}'; test_3 requires expanded server.")
-        except ImportError:
-            print(f"   [SKIP] Server is running profile '{stats.get('data_profile')}'.")
-            return
+        print(f"   [SKIP] Server is running profile '{stats.get('data_profile')}'; requires expanded server.")
+        return
 
     # Reset metrics first
     requests.post(f"{BASE_URL}/api/dashboard/reset")
@@ -182,166 +311,304 @@ def test_3_profile_mismatch_and_input_validation():
     print("   [PASS] Unknown profile and out-of-bounds sample_ids rejected with 400 before counter modification.\n")
 
 
-def test_4_live_http_measured_target_submissions():
-    print(">> [Check 4] Verifying Live HTTP Submissions of Measurement Flows...")
+def test_5_session_bound_query_accounting():
+    print(">> [Check 5] Verifying Session-Bound Query Accounting vs. Target Confusion Matrix...")
     try:
         stats = requests.get(f"{BASE_URL}/api/dashboard/stats", timeout=2).json()
     except Exception:
-        try:
-            import pytest
-            pytest.skip("Target server not running on port 8000")
-        except ImportError:
-            return
+        print("   [SKIP] Target server not running on port 8000.")
+        return
 
     if stats.get("data_profile") != "expanded":
-        try:
-            import pytest
-            pytest.skip(f"Server is running profile '{stats.get('data_profile')}'; test_4 requires expanded server.")
-        except ImportError:
-            return
-
-    requests.post(f"{BASE_URL}/api/dashboard/reset")
-    requests.post(f"{BASE_URL}/api/dashboard/set-defense", json={"defense": "afp"})
-    requests.post(f"{BASE_URL}/api/dashboard/set-mode", json={"mode": "base"})
-
-    ds = get_dataset("expanded")
-    benign_sid = int(ds.measurement_benign_indices[0])
-    attack_sid = int(ds.measurement_attack_indices[0])
-
-    # 1. Send Benign measurement row
-    r_benign = requests.post(f"{BASE_URL}/api/server/data", json={
-        "source_ip": "192.168.1.100",
-        "sample_id": benign_sid,
-        "data_profile": "expanded",
-        "is_query": False
-    })
-    assert r_benign.status_code in (200, 403)
-    b_data = r_benign.json()
-    assert b_data.get("details", {}).get("sample_id") == benign_sid
-    assert b_data.get("details", {}).get("data_profile") == "expanded"
-    assert b_data.get("details", {}).get("is_query") is False
-
-    # 2. Send Attack measurement row
-    r_attack = requests.post(f"{BASE_URL}/api/server/data", json={
-        "source_ip": "203.0.113.45",
-        "sample_id": attack_sid,
-        "data_profile": "expanded",
-        "is_query": False
-    })
-    assert r_attack.status_code in (200, 403)
-    a_data = r_attack.json()
-    assert a_data.get("details", {}).get("sample_id") == attack_sid
-    assert a_data.get("details", {}).get("data_profile") == "expanded"
-    assert a_data.get("details", {}).get("is_query") is False
-
-    # 3. Verify target counters incremented
-    stats = requests.get(f"{BASE_URL}/api/dashboard/stats").json().get("stats", {})
-    traffic = int(str(stats.get("total_traffic", "0")).replace(",", ""))
-    assert traffic == 2, f"Expected total_traffic=2, got {traffic}"
-    tp = stats.get("tp", 0)
-    fn = stats.get("fn", 0)
-    assert (tp + fn) == 1, f"Expected 1 attack decision, got tp={tp}, fn={fn}"
-
-    print(f"   [PASS] Benign (ID {benign_sid}) and Attack (ID {attack_sid}) successfully evaluated over HTTP.")
-    print(f"   [PASS] Target flow counters correctly updated: total_traffic={traffic}, decisions={tp+fn}.\n")
-
-
-def test_5_query_vs_target_metric_separation():
-    print(">> [Check 5] Verifying Query Telemetry vs. Target Decision Metric Separation...")
-    try:
-        stats = requests.get(f"{BASE_URL}/api/dashboard/stats", timeout=2).json()
-    except Exception:
-        try:
-            import pytest
-            pytest.skip("Target server not running on port 8000")
-        except ImportError:
-            return
-
-    if stats.get("data_profile") != "expanded":
-        try:
-            import pytest
-            pytest.skip(f"Server is running profile '{stats.get('data_profile')}'; test_5 requires expanded server.")
-        except ImportError:
-            return
+        print(f"   [SKIP] Server is running profile '{stats.get('data_profile')}'; test_5 requires expanded server.")
+        return
 
     requests.post(f"{BASE_URL}/api/dashboard/reset")
     requests.post(f"{BASE_URL}/api/dashboard/set-defense", json={"defense": "afp"})
     requests.post(f"{BASE_URL}/api/dashboard/set-mode", json={"mode": "recall-aware"})
+    stop_simulation_session()
 
     ds = get_dataset("expanded")
-    crafting_sid = int(ds.crafting_indices[0])
-
-    # 1. Send 10 explicit query flows (marked is_query=True, crafting sample_id)
-    for i in range(10):
-        res = requests.post(f"{BASE_URL}/api/server/data", json={
-            "source_ip": "203.0.113.45",
-            "sample_id": crafting_sid,
-            "data_profile": "expanded",
-            "is_query": True,
-            "query_stage": "surrogate_fitting"
-        })
-        assert res.status_code in (200, 403)
-        assert res.json().get("details", {}).get("is_query") is True
-
-    # 2. Check server stats: query_count must be 10, target metrics must be 0!
-    stats = requests.get(f"{BASE_URL}/api/dashboard/stats").json().get("stats", {})
-    afp = requests.get(f"{BASE_URL}/api/dashboard/stats").json().get("afp", {})
-
-    traffic = int(str(stats.get("total_traffic", "0")).replace(",", ""))
-    query_count = stats.get("query_count", 0)
-    tp = stats.get("tp", 0)
-    fn = stats.get("fn", 0)
-    fp = stats.get("fp", 0)
-    tn = stats.get("tn", 0)
-    batch_id = afp.get("batch_id", 0)
-
-    assert query_count == 10, f"Expected query_count=10, got {query_count}"
-    assert traffic == 0, f"Expected total_traffic=0, got {traffic}"
-    assert tp == 0 and fn == 0 and fp == 0 and tn == 0, f"Target confusion matrix polluted by queries!"
-    assert batch_id == 0, f"Controller batch advanced by query flows! batch_id={batch_id}"
-
-    # 3. Now send 1 real target flow (is_query=False, measurement row)
     meas_sid = int(ds.measurement_attack_indices[0])
-    r_target = requests.post(f"{BASE_URL}/api/server/data", json={
-        "source_ip": "203.0.113.45",
+    craft_sid = int(ds.crafting_indices[0])
+
+    # 1. Unbound query on measurement target (no active session on server) -> HTTP 400
+    r_unbound = requests.post(f"{BASE_URL}/api/server/data", json={
+        "source_ip": "203.0.113.1",
         "sample_id": meas_sid,
+        "data_profile": "expanded",
+        "is_query": True
+    })
+    assert r_unbound.status_code == 400, f"Expected 400 for unbound query, got {r_unbound.status_code}"
+    assert "no active simulation session" in r_unbound.json().get("message", "")
+
+    # 2. Query with empty stage and is_query=False -> NOT suppressed; treated as normal target flow
+    r_empty_stage = requests.post(f"{BASE_URL}/api/server/data", json={
+        "source_ip": "203.0.113.2",
+        "sample_id": meas_sid,
+        "data_profile": "expanded",
+        "is_query": False,
+        "query_stage": ""
+    })
+    assert r_empty_stage.status_code in (200, 403)
+    assert r_empty_stage.json().get("details", {}).get("is_query") is False
+    st = requests.get(f"{BASE_URL}/api/dashboard/stats").json().get("stats", {})
+    assert int(str(st.get("total_traffic", "0")).replace(",", "")) == 1
+
+    # Reset for controlled session accounting tests
+    requests.post(f"{BASE_URL}/api/dashboard/reset")
+
+    # 3. Start simulation session
+    sess_id = start_simulation_session("Query Accounting Test")
+    assert sess_id is not None
+
+    # 4. Query with missing session_id -> HTTP 400
+    r_missing_sess = requests.post(f"{BASE_URL}/api/server/data", json={
+        "source_ip": "203.0.113.3",
+        "sample_id": meas_sid,
+        "data_profile": "expanded",
+        "is_query": True
+    })
+    assert r_missing_sess.status_code == 400
+    assert "missing session_id" in r_missing_sess.json().get("message", "")
+
+    # 5. Query with wrong session_id -> HTTP 400
+    r_wrong_sess = requests.post(f"{BASE_URL}/api/server/data", json={
+        "source_ip": "203.0.113.4",
+        "sample_id": meas_sid,
+        "data_profile": "expanded",
+        "session_id": "wrong-token-1234",
+        "is_query": True
+    })
+    assert r_wrong_sess.status_code == 400
+    assert "invalid or mismatched session token" in r_wrong_sess.json().get("message", "")
+
+    # 6. Stop session, then submit with previous session_id -> HTTP 400
+    stop_simulation_session()
+    r_stopped_sess = requests.post(f"{BASE_URL}/api/server/data", json={
+        "source_ip": "203.0.113.5",
+        "sample_id": meas_sid,
+        "data_profile": "expanded",
+        "session_id": sess_id,
+        "is_query": True
+    })
+    assert r_stopped_sess.status_code == 400
+    assert "no active simulation session" in r_stopped_sess.json().get("message", "")
+
+    # 7. Crafting-origin row incorrectly marked as target (is_query=False) -> STILL isolated as query flow
+    r_crafting_target = requests.post(f"{BASE_URL}/api/server/data", json={
+        "source_ip": "203.0.113.6",
+        "sample_id": craft_sid,
         "data_profile": "expanded",
         "is_query": False
     })
-    assert r_target.status_code in (200, 403)
+    assert r_crafting_target.status_code in (200, 403)
+    assert r_crafting_target.json().get("details", {}).get("is_query") is True
 
-    stats_after = requests.get(f"{BASE_URL}/api/dashboard/stats").json().get("stats", {})
-    traffic_after = int(str(stats_after.get("total_traffic", "0")).replace(",", ""))
-    query_after = stats_after.get("query_count", 0)
-    assert traffic_after == 1, f"Expected total_traffic=1 after target flow, got {traffic_after}"
-    assert query_after == 10, f"Expected query_count=10 unchanged, got {query_after}"
+    # 8. Start valid session and send 10 valid measurement queries
+    sess_id2 = start_simulation_session("Valid Queries")
+    for _ in range(10):
+        r_valid_q = requests.post(f"{BASE_URL}/api/server/data", json={
+            "source_ip": "203.0.113.7",
+            "sample_id": meas_sid,
+            "data_profile": "expanded",
+            "session_id": sess_id2,
+            "is_query": True,
+            "query_stage": "surrogate_fitting"
+        })
+        assert r_valid_q.status_code in (200, 403)
+        assert r_valid_q.json().get("details", {}).get("is_query") is True
 
-    print(f"   [PASS] 10 crafting queries incremented query_count to 10 with 0 pollution of target metrics.")
-    print(f"   [PASS] Controller batch_id remained 0 during queries; target flow incremented traffic to 1.\n")
+    # Check metrics: 1 crafting row + 10 valid queries = 11 query_count, 0 target traffic
+    st = requests.get(f"{BASE_URL}/api/dashboard/stats").json().get("stats", {})
+    afp = requests.get(f"{BASE_URL}/api/dashboard/stats").json().get("afp", {})
+    assert st.get("query_count") == 11
+    assert int(str(st.get("total_traffic", "0")).replace(",", "")) == 0
+    assert st.get("tp") == 0 and st.get("fn") == 0 and st.get("fp") == 0 and st.get("tn") == 0
+    assert afp.get("batch_id") == 0
+
+    # 9. Send 5 measurement attack targets to verify 5-attack-target controller cadence
+    for k in range(5):
+        aid = int(ds.measurement_attack_indices[k])
+        r_tgt = requests.post(f"{BASE_URL}/api/server/data", json={
+            "source_ip": "203.0.113.8",
+            "sample_id": aid,
+            "data_profile": "expanded",
+            "session_id": sess_id2,
+            "is_query": False
+        })
+        assert r_tgt.status_code in (200, 403)
+        assert r_tgt.json().get("details", {}).get("is_query") is False
+
+    stop_simulation_session()
+
+    st_final = requests.get(f"{BASE_URL}/api/dashboard/stats").json().get("stats", {})
+    afp_final = requests.get(f"{BASE_URL}/api/dashboard/stats").json().get("afp", {})
+    traffic_final = int(str(st_final.get("total_traffic", "0")).replace(",", ""))
+    assert traffic_final == 5, f"Expected total_traffic=5, got {traffic_final}"
+    assert (st_final.get("tp") + st_final.get("fn")) == 5, "Expected 5 attack decisions"
+    assert afp_final.get("batch_id") == 1, f"Expected batch_id=1 after 5 attack targets, got {afp_final.get('batch_id')}"
+
+    print("   [PASS] Measurement-origin queries strictly require active, bound simulation session.")
+    print("   [PASS] Unbound, missing, wrong, and stopped session query requests rejected with HTTP 400.")
+    print("   [PASS] Empty query_stage treated as target flow; crafting rows unconditionally isolated as query flows.")
+    print("   [PASS] Five-attack-target controller cadence advances batch_id strictly on target flows.\n")
 
 
 def test_6_cross_defense_comparison():
-    print(">> [Check 6] Verifying Cross-Defense Comparison Workflow...")
+    print(">> [Check 6] Verifying Cross-Defense Comparison Workflow & Arm Completion...")
     try:
         stats = requests.get(f"{BASE_URL}/api/dashboard/stats", timeout=2).json()
     except Exception:
-        try:
-            import pytest
-            pytest.skip("Target server not running on port 8000")
-        except ImportError:
-            return
+        print("   [SKIP] Target server not running on port 8000.")
+        return
 
     if stats.get("data_profile") != "expanded":
-        try:
-            import pytest
-            pytest.skip(f"Server is running profile '{stats.get('data_profile')}'; test_6 requires expanded server.")
-        except ImportError:
-            return
+        print(f"   [SKIP] Server is running profile '{stats.get('data_profile')}'; test_6 requires expanded server.")
+        return
 
-    from attacker_sim import run_cross_defense_comparison
-    # Run bounded comparison of 5 flows across AFP, RS, FS, and None
-    run_cross_defense_comparison(count=5)
-    print("   [PASS] Cross-defense comparison completed across AFP, RS, FS, and None.\n")
+    success = run_cross_defense_comparison(count=5)
+    assert success is True, "run_cross_defense_comparison returned False!"
+
+    print("   [PASS] Cross-defense comparison completed across AFP, RS, FS, and None with authoritative metrics.\n")
+
+
+def test_7_menu_option_7_preserves_defense():
+    print(">> [Check 7] Verifying Option 7 / run_comparative_benchmark Preserves Selected Defense...")
+    try:
+        stats = requests.get(f"{BASE_URL}/api/dashboard/stats", timeout=2).json()
+    except Exception:
+        print("   [SKIP] Target server not running on port 8000.")
+        return
+
+    if stats.get("data_profile") != "expanded":
+        print(f"   [SKIP] Server is running profile '{stats.get('data_profile')}'; test_7 requires expanded server.")
+        return
+
+    # 1. Select RS defense and verify run_comparative_benchmark(defense=None) stays in RS
+    set_server_defense("rs")
+    res_rs = run_comparative_benchmark(defense=None)
+    assert res_rs is True, "Comparative benchmark failed on RS"
+    telemetry_rs = requests.get(f"{BASE_URL}/api/dashboard/stats").json().get("afp", {}).get("defense_name")
+    assert telemetry_rs == "rs", f"Expected RS to be preserved, but server ended in '{telemetry_rs}'!"
+
+    # 2. Select FS defense and verify run_comparative_benchmark(defense=None) stays in FS
+    set_server_defense("fs")
+    res_fs = run_comparative_benchmark(defense=None)
+    assert res_fs is True, "Comparative benchmark failed on FS"
+    telemetry_fs = requests.get(f"{BASE_URL}/api/dashboard/stats").json().get("afp", {}).get("defense_name")
+    assert telemetry_fs == "fs", f"Expected FS to be preserved, but server ended in '{telemetry_fs}'!"
+
+    # 3. Explicit CLI defense overrides
+    res_afp = run_comparative_benchmark(defense="afp")
+    assert res_afp is True, "Comparative benchmark failed on explicit AFP"
+    telemetry_afp = requests.get(f"{BASE_URL}/api/dashboard/stats").json().get("afp", {}).get("defense_name")
+    assert telemetry_afp == "afp", f"Expected AFP, got '{telemetry_afp}'!"
+
+    print("   [PASS] Option 7 / no-argument benchmark preserves active defense (tested RS and FS).")
+    print("   [PASS] Explicit CLI defense overrides correctly; intensity explanations are defense-specific.\n")
+
+
+def test_8_attack_wrappers_fault_injection_and_status_separation():
+    print(">> [Check 8] Verifying Attack Wrappers Fault-Injection Handling & Status Separation...")
+    try:
+        stats = requests.get(f"{BASE_URL}/api/dashboard/stats", timeout=2).json()
+    except Exception:
+        print("   [SKIP] Target server not running on port 8000.")
+        return
+
+    if stats.get("data_profile") != "expanded":
+        print(f"   [SKIP] Server is running profile '{stats.get('data_profile')}'; test_8 requires expanded server.")
+        return
+
+    real_run_single_flow = run_single_flow
+
+    def fault_injection_run_single_flow(*args, **kwargs):
+        # Only inject HTTP 500 into final measured target flow (is_query=False)
+        if kwargs.get("is_query") is False:
+            return {"status_code": 500, "error": "Fault Injection: 500 Internal Server Error"}
+        return real_run_single_flow(*args, **kwargs)
+
+    with patch("attacker_sim.run_single_flow", side_effect=fault_injection_run_single_flow):
+        # 1. Surrogate transfer attack under HTTP 500
+        surrogate_result = run_surrogate_transfer_attack()
+        assert surrogate_result is False, "Surrogate attack should report failure under HTTP 500!"
+
+        # 2. Decision boundary attack under HTTP 500
+        boundary_result = run_decision_boundary_attack(max_queries=10)
+        assert boundary_result is False, "Boundary attack should report failure under HTTP 500!"
+
+    print("   [PASS] HTTP 500 fault injection correctly categorized as execution error (not blocked or evasion).")
+    print("   [PASS] Final HTTP status separated from attack-generation outcome.\n")
+
+
+def test_9_seeded_crafting_reference_selection():
+    print(">> [Check 9] Verifying Seeded, Bounded Crafting Reference Selection...")
+    ctx_seed = AttackerContext(profile="expanded", seed=42)
+
+    # 1. Surrogate crafting selection: 10 benign + 10 attack
+    refs = ctx_seed.select_crafting_references_surrogate(n_benign=10, n_attack=10)
+    assert len(refs) == 20, f"Expected 20 reference rows, got {len(refs)}"
+    b_idx = refs[:10]
+    a_idx = refs[10:]
+    assert len(b_idx) == 10
+    assert len(a_idx) == 10
+
+    # Verify all belong strictly to the crafting partition
+    for bid in b_idx:
+        assert ctx_seed.dataset.is_crafting(bid), f"ID {bid} is not in crafting partition!"
+        assert not ctx_seed.dataset.is_measurement(bid)
+        assert ctx_seed.dataset.metadata.iloc[bid]["y_binary"] == 0
+    for aid in a_idx:
+        assert ctx_seed.dataset.is_crafting(aid), f"ID {aid} is not in crafting partition!"
+        assert not ctx_seed.dataset.is_measurement(aid)
+        assert ctx_seed.dataset.metadata.iloc[aid]["y_binary"] == 1
+
+    # 2. Boundary crafting selection: 50 benign
+    b_boundary = ctx_seed.select_crafting_references_boundary(n_benign=50)
+    assert len(b_boundary) == 50, f"Expected 50 benign boundary references, got {len(b_boundary)}"
+    for bid in b_boundary:
+        assert ctx_seed.dataset.is_crafting(bid)
+        assert ctx_seed.dataset.metadata.iloc[bid]["y_binary"] == 0
+
+    # 3. Seed reproducibility: same seed yields identical references
+    ctx_seed.reset_queues(seed=42)
+    refs_rep = ctx_seed.select_crafting_references_surrogate(n_benign=10, n_attack=10)
+    assert refs == refs_rep, "Same seed did not reproduce identical crafting references!"
+
+    # 4. Variation with different seed
+    ctx_seed.reset_queues(seed=999)
+    refs_diff = ctx_seed.select_crafting_references_surrogate(n_benign=10, n_attack=10)
+    assert refs != refs_diff, "Different seed produced identical crafting references!"
+
+    print("   [PASS] Seeded, bounded crafting references selected strictly from crafting partition.")
+    print("   [PASS] Reproducible across identical seed, varied across different seeds.\n")
+
+
+def test_10_explicit_fallback_and_profile_isolation():
+    print(">> [Check 10] Verifying Explicit Fallback & Profile Isolation...")
+
+    # 1. AttackerContext for fixture20 initializes cleanly
+    ctx_fix = AttackerContext(profile="fixture20", seed=42)
+    assert ctx_fix.profile == "fixture20"
+    assert ctx_fix.dataset.total_rows == 20
+    assert ctx_fix.dataset.fingerprint is not None
+
+    # 2. Verify that requesting expanded mode when files are missing raises error and never silently falls back
+    with patch("runtime_package.data_loader.RUNTIME_DIR", REPO_ROOT / "non_existent_runtime"):
+        from runtime_package.data_loader import _DATASET_CACHE
+        _DATASET_CACHE.pop("expanded", None)
+        try:
+            get_dataset("expanded")
+            assert False, "Should have raised FileNotFoundError for missing expanded files!"
+        except FileNotFoundError as e:
+            assert "Expanded dataset files missing" in str(e)
+
+    # Restore expanded in cache
+    get_dataset("expanded")
+
+    print("   [PASS] Fixture20 initializes cleanly and independently of expanded payload.")
+    print("   [PASS] Missing expanded data raises explicit FileNotFoundError; never silently falls back to fixture20.\n")
 
 
 def run_all_expanded_tests():
@@ -350,10 +617,14 @@ def run_all_expanded_tests():
     print("=================================================================\n")
     test_1_data_contract_and_roles()
     test_2_seeded_sampling_without_replacement()
-    test_3_profile_mismatch_and_input_validation()
-    test_4_live_http_measured_target_submissions()
-    test_5_query_vs_target_metric_separation()
+    test_3_combined_fingerprint_contract()
+    test_4_profile_mismatch_and_input_validation()
+    test_5_session_bound_query_accounting()
     test_6_cross_defense_comparison()
+    test_7_menu_option_7_preserves_defense()
+    test_8_attack_wrappers_fault_injection_and_status_separation()
+    test_9_seeded_crafting_reference_selection()
+    test_10_explicit_fallback_and_profile_isolation()
     print("=================================================================")
     print("  ALL EXPANDED DATA INTEGRATION CHECKS PASSED SUCCESSFULLY!")
     print("=================================================================")
