@@ -6,3 +6,5 @@ __pycache__/
 .DS_Store
 .venv/
 datasets/demo/*_20k.csv
+operator_token.txt
+ids_standalone_tool_defense_ready.zip

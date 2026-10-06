@@ -34,15 +34,19 @@ from attacker_sim import (
     RemoteServerOracle,
     TargetOracle,
     run_single_flow,
-    set_server_defense,
-    set_server_mode,
     check_backend_compatibility,
-    run_comparative_benchmark,
-    run_cross_defense_comparison,
     run_surrogate_transfer_attack,
     run_decision_boundary_attack,
     start_simulation_session,
     stop_simulation_session,
+)
+from operator_benchmarks import (
+    set_server_defense,
+    set_server_mode,
+    reset_server_state,
+    run_comparative_benchmark,
+    run_cross_defense_comparison,
+    get_operator_token,
 )
 
 BASE_URL = "http://localhost:8000"
@@ -261,7 +265,7 @@ def test_4_profile_mismatch_and_input_validation():
         return
 
     # Reset metrics first
-    requests.post(f"{BASE_URL}/api/dashboard/reset")
+    reset_server_state()
     stats_before = requests.get(f"{BASE_URL}/api/dashboard/stats").json().get("stats", {})
     traffic_before = int(str(stats_before.get("total_traffic", "0")).replace(",", ""))
     assert traffic_before == 0
@@ -323,9 +327,9 @@ def test_5_session_bound_query_accounting():
         print(f"   [SKIP] Server is running profile '{stats.get('data_profile')}'; test_5 requires expanded server.")
         return
 
-    requests.post(f"{BASE_URL}/api/dashboard/reset")
-    requests.post(f"{BASE_URL}/api/dashboard/set-defense", json={"defense": "afp"})
-    requests.post(f"{BASE_URL}/api/dashboard/set-mode", json={"mode": "recall-aware"})
+    reset_server_state()
+    set_server_defense("afp")
+    set_server_mode("recall-aware")
     stop_simulation_session()
 
     ds = get_dataset("expanded")
@@ -356,10 +360,10 @@ def test_5_session_bound_query_accounting():
     assert int(str(st.get("total_traffic", "0")).replace(",", "")) == 1
 
     # Reset for controlled session accounting tests
-    requests.post(f"{BASE_URL}/api/dashboard/reset")
+    reset_server_state()
 
     # 3. Start simulation session
-    sess_id = start_simulation_session("Query Accounting Test")
+    sess_id = start_simulation_session("Silent Probing")
     assert sess_id is not None
 
     # 4. Query with missing session_id -> HTTP 400
@@ -406,7 +410,7 @@ def test_5_session_bound_query_accounting():
     assert r_crafting_target.json().get("details", {}).get("is_query") is True
 
     # 8. Start valid session and send 10 valid measurement queries
-    sess_id2 = start_simulation_session("Valid Queries")
+    sess_id2 = start_simulation_session("Decision-Boundary Attack")
     for _ in range(10):
         r_valid_q = requests.post(f"{BASE_URL}/api/server/data", json={
             "source_ip": "203.0.113.7",
@@ -611,10 +615,95 @@ def test_10_explicit_fallback_and_profile_isolation():
     print("   [PASS] Missing expanded data raises explicit FileNotFoundError; never silently falls back to fixture20.\n")
 
 
+
+def test_11_role_separation_and_operator_authorization():
+    print(">> [Check 11] Verifying Role Separation, Operator Authorization, & Canonical Procedures...")
+    import attacker_sim
+    import operator_benchmarks
+
+    # 1. Attacker console does NOT export or expose management/comparison functions
+    assert not hasattr(attacker_sim, "run_volumetric_burst"), "attacker_sim.py still has run_volumetric_burst!"
+    assert not hasattr(attacker_sim, "run_comparative_benchmark"), "attacker_sim.py still has run_comparative_benchmark!"
+    assert not hasattr(attacker_sim, "run_cross_defense_comparison"), "attacker_sim.py still has run_cross_defense_comparison!"
+    assert not hasattr(attacker_sim, "set_server_defense"), "attacker_sim.py still has set_server_defense!"
+    assert not hasattr(attacker_sim, "set_server_mode"), "attacker_sim.py still has set_server_mode!"
+
+    # 2. Operator script exports authorized management & benchmark functions
+    assert hasattr(operator_benchmarks, "set_server_defense"), "operator_benchmarks missing set_server_defense!"
+    assert hasattr(operator_benchmarks, "set_server_mode"), "operator_benchmarks missing set_server_mode!"
+    assert hasattr(operator_benchmarks, "reset_server_state"), "operator_benchmarks missing reset_server_state!"
+    assert hasattr(operator_benchmarks, "run_comparative_benchmark"), "operator_benchmarks missing run_comparative_benchmark!"
+    assert hasattr(operator_benchmarks, "run_cross_defense_comparison"), "operator_benchmarks missing run_cross_defense_comparison!"
+
+    # 3. Live Server Endpoint Authorization Checks (if live server running)
+    try:
+        resp = requests.get(f"{BASE_URL}/api/dashboard/stats", timeout=2)
+        live_server = (resp.status_code == 200)
+    except Exception:
+        live_server = False
+
+    if live_server:
+        initial_stats = requests.get(f"{BASE_URL}/api/dashboard/stats").json()
+        curr_def = initial_stats.get("afp", {}).get("defense_name", "afp")
+
+        # (a) Unauthorized management call without token MUST fail with 401
+        res_unauth = requests.post(f"{BASE_URL}/api/dashboard/set-defense", json={"defense": "none"})
+        assert res_unauth.status_code == 401, f"Expected 401 Unauthorized for unauthenticated set-defense, got {res_unauth.status_code}"
+        
+        # Verify server defense remains unchanged after rejected call
+        after_unauth = requests.get(f"{BASE_URL}/api/dashboard/stats").json().get("afp", {}).get("defense_name")
+        assert after_unauth == curr_def, f"Defense changed despite 401 Unauthorized rejection! Expected {curr_def}, got {after_unauth}"
+
+        # Unauthorized set-mode MUST fail with 401
+        res_mode_unauth = requests.post(f"{BASE_URL}/api/dashboard/set-mode", json={"mode": "base"})
+        assert res_mode_unauth.status_code == 401, f"Expected 401 for unauthenticated set-mode, got {res_mode_unauth.status_code}"
+
+        # Unauthorized reset MUST fail with 401
+        res_reset_unauth = requests.post(f"{BASE_URL}/api/dashboard/reset", json={})
+        assert res_reset_unauth.status_code == 401, f"Expected 401 for unauthenticated reset, got {res_reset_unauth.status_code}"
+
+        # (b) Authorized management call WITH valid X-Operator-Token MUST succeed (200)
+        token = operator_benchmarks.get_operator_token()
+        headers = {"X-Operator-Token": token}
+        res_auth = requests.post(f"{BASE_URL}/api/dashboard/set-defense", json={"defense": "afp"}, headers=headers)
+        assert res_auth.status_code == 200, f"Expected 200 for authorized set-defense, got {res_auth.status_code}"
+
+        # (c) Unsupported procedure names in simulation/start MUST be rejected with 400
+        res_bad_sim = requests.post(f"{BASE_URL}/api/simulation/start", json={"scenario": "Volumetric Burst"})
+        assert res_bad_sim.status_code == 400, f"Expected 400 for unsupported scenario 'Volumetric Burst', got {res_bad_sim.status_code}"
+
+        res_bad_sim2 = requests.post(f"{BASE_URL}/api/simulation/start", json={"scenario": "Recall-Aware Demonstration"})
+        assert res_bad_sim2.status_code == 400, f"Expected 400 for unsupported scenario 'Recall-Aware Demonstration', got {res_bad_sim2.status_code}"
+
+        # (d) Unsupported procedure names in /api/server/data MUST be rejected with 400
+        ds = get_dataset("expanded")
+        test_feat = ds.X.iloc[0].values.tolist()
+        res_bad_flow = requests.post(f"{BASE_URL}/api/server/data", json={
+            "source_ip": "10.0.1.22",
+            "feature_vector": test_feat,
+            "sample_id": 0,
+            "attack_scenario": "Volumetric Burst"
+        })
+        assert res_bad_flow.status_code == 400, f"Expected 400 for unsupported scenario in flow submission, got {res_bad_flow.status_code}"
+
+        # (e) Canonical procedure names MUST be accepted
+        res_good_sim = requests.post(f"{BASE_URL}/api/simulation/start", json={"scenario": "Silent Probing"})
+        assert res_good_sim.status_code == 200, f"Expected 200 for canonical 'Silent Probing', got {res_good_sim.status_code}"
+        requests.post(f"{BASE_URL}/api/simulation/stop", json={})
+
+        print("   [PASS] Unauthorized management attempts fail with 401 without modifying server state.")
+        print("   [PASS] Authorized operator calls succeed with valid X-Operator-Token.")
+        print("   [PASS] Unsupported procedure names ('Volumetric Burst', etc.) rejected with HTTP 400.")
+    else:
+        print("   [INFO] Live server not running on port 8000; skipped live HTTP auth assertions.")
+
+    print("   [PASS] Attacker console contains only attacker/traffic actions; operator workflows isolated in operator_benchmarks.py.\n")
+
+
 def run_all_expanded_tests():
     print("=================================================================")
     print("  EXPANDED SIMULATION DATA INTEGRATION VERIFICATION")
-    print("=================================================================\n")
+    print("=================================================================")
     test_1_data_contract_and_roles()
     test_2_seeded_sampling_without_replacement()
     test_3_combined_fingerprint_contract()
@@ -625,6 +714,7 @@ def run_all_expanded_tests():
     test_8_attack_wrappers_fault_injection_and_status_separation()
     test_9_seeded_crafting_reference_selection()
     test_10_explicit_fallback_and_profile_isolation()
+    test_11_role_separation_and_operator_authorization()
     print("=================================================================")
     print("  ALL EXPANDED DATA INTEGRATION CHECKS PASSED SUCCESSFULLY!")
     print("=================================================================")

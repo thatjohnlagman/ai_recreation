@@ -52,6 +52,78 @@ from defenses.feature_squeezing import FeatureSqueezing
 from runtime_package.data_loader import get_dataset, LoadedDataset
 
 # -----------------------------------------------------------------------------
+# Operator Authorization Configuration & Verification
+# -----------------------------------------------------------------------------
+DEFAULT_OPERATOR_TOKEN = "ids-operator-secret-2026"
+TOKEN_FILE = BASE_DIR / "operator_token.txt"
+
+def get_configured_operator_token() -> str:
+    """Resolves authorized operator token from env var, local token file, or default demo secret."""
+    env_token = os.environ.get("IDS_OPERATOR_TOKEN")
+    if env_token and env_token.strip():
+        return env_token.strip()
+    if TOKEN_FILE.exists():
+        try:
+            content = TOKEN_FILE.read_text(encoding="utf-8").strip()
+            if content:
+                return content
+        except Exception:
+            pass
+    return DEFAULT_OPERATOR_TOKEN
+
+def verify_operator_authorization(request: Request) -> bool:
+    """
+    Verifies that incoming management request includes a valid operator token.
+    Accepts token via 'X-Operator-Token' header or 'Authorization: Bearer <token>'.
+    """
+    expected = get_configured_operator_token()
+    token = request.headers.get("X-Operator-Token")
+    if not token:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip()
+    return bool(token and token == expected)
+
+# -----------------------------------------------------------------------------
+# Canonical Attack Procedure Validation
+# Active demonstration permits only the 3 canonical study procedures or None.
+# -----------------------------------------------------------------------------
+CANONICAL_ATTACK_PROCEDURES = {
+    "silent probing": "Silent Probing",
+    "silent": "Silent Probing",
+    "silent_probing": "Silent Probing",
+    "surrogate transferability": "Surrogate Transferability",
+    "surrogate": "Surrogate Transferability",
+    "surrogate_transfer": "Surrogate Transferability",
+    "surrogate_transferability": "Surrogate Transferability",
+    "decision-boundary attack": "Decision-Boundary Attack",
+    "decision boundary attack": "Decision-Boundary Attack",
+    "decision_boundary_attack": "Decision-Boundary Attack",
+    "decision_boundary": "Decision-Boundary Attack",
+    "boundary": "Decision-Boundary Attack",
+    "boundary_attack": "Decision-Boundary Attack",
+}
+
+def validate_attack_procedure(scenario: Optional[str]) -> Optional[str]:
+    """
+    Validates attack procedure name.
+    Permits only the three canonical study procedures, their deliberate aliases, or absent/None.
+    Rejects unsupported procedure names with ValueError.
+    """
+    if scenario is None:
+        return None
+    s = str(scenario).strip()
+    if s.lower() in ["", "none"]:
+        return None
+    canonical = CANONICAL_ATTACK_PROCEDURES.get(s.lower())
+    if canonical is None:
+        raise ValueError(
+            f"Unsupported attack procedure '{s}'. Active demonstration supports only the three canonical "
+            f"study procedures: 'Silent Probing', 'Surrogate Transferability', 'Decision-Boundary Attack' (or None)."
+        )
+    return canonical
+
+# -----------------------------------------------------------------------------
 # Security & Defense Engine
 # -----------------------------------------------------------------------------
 class SecurityEngine:
@@ -288,18 +360,10 @@ class SecurityEngine:
         self.top_threat_ips.sort(key=lambda x: x["attacks"], reverse=True)
         self.top_threat_ips = self.top_threat_ips[:5]
 
-    def start_simulation(self, scenario: str, session_id: Optional[str] = None):
+    def start_simulation(self, scenario: Optional[str], session_id: Optional[str] = None):
         """Starts an active black-box attack simulation session."""
-        canonical = {
-            "silent_probing": "Silent Probing",
-            "silent": "Silent Probing",
-            "surrogate_transfer": "Surrogate Transferability",
-            "surrogate": "Surrogate Transferability",
-            "boundary_attack": "Decision-Boundary Attack",
-            "boundary": "Decision-Boundary Attack",
-            "decision_boundary": "Decision-Boundary Attack"
-        }
-        self.active_attack_scenario = canonical.get(scenario.lower(), scenario)
+        canonical = validate_attack_procedure(scenario) if scenario else None
+        self.active_attack_scenario = canonical if canonical else "None"
         self.active_simulation_session = session_id or f"sim-{int(time.time()*1000)%1000000:06d}"
 
     def stop_simulation(self):
@@ -474,7 +538,7 @@ class ServerRequestModel(BaseModel):
     query_stage: Optional[str] = None
 
 class SimulationSessionModel(BaseModel):
-    scenario: str  # "silent_probing", "surrogate_transfer", "decision_boundary", "none"
+    scenario: Optional[str] = None  # Canonical study procedures: "Silent Probing", "Surrogate Transferability", "Decision-Boundary Attack" (or None)
     session_id: Optional[str] = None
 
 class SetDefenseModel(BaseModel):
@@ -516,6 +580,16 @@ async def protected_server_handler(req: ServerRequestModel):
             return JSONResponse(
                 status_code=400,
                 content={"status": "error", "message": f"Dataset profile mismatch: server is running profile '{engine.data_profile}' but request specified '{req_prof}'."}
+            )
+
+    # 0b. Attack Scenario Procedure Validation
+    if req.attack_scenario is not None:
+        try:
+            validate_attack_procedure(req.attack_scenario)
+        except ValueError as e:
+            return JSONResponse(
+                status_code=400,
+                content={"status": "error", "message": str(e)}
             )
 
     # 1. Sample ID Range & Type Validation (When sample_id is provided)
@@ -704,21 +778,11 @@ async def protected_server_handler(req: ServerRequestModel):
     is_malicious = (pred_label == 1)
     status_str = "Attack" if is_malicious else "Benign"
 
-    # Resolve active attack scenario display (truthfully distinguish verified session from unverified claim)
+    # Resolve active attack scenario display (truthfully limited to canonical study procedures or None)
     if engine.active_attack_scenario != "None":
         scenario_display = engine.active_attack_scenario
     elif req.attack_scenario and req.attack_scenario.strip() not in ["None", "", "none"]:
-        canonical_map = {
-            "silent_probing": "Silent Probing",
-            "silent": "Silent Probing",
-            "surrogate_transfer": "Surrogate Transferability",
-            "surrogate": "Surrogate Transferability",
-            "boundary_attack": "Decision-Boundary Attack",
-            "boundary": "Decision-Boundary Attack",
-            "decision_boundary": "Decision-Boundary Attack"
-        }
-        clean_sc = canonical_map.get(req.attack_scenario.strip().lower(), req.attack_scenario.strip())
-        scenario_display = f"Claimed: {clean_sc}"
+        scenario_display = validate_attack_procedure(req.attack_scenario) or "None"
     else:
         scenario_display = "None"
 
@@ -795,7 +859,7 @@ async def protected_server_handler(req: ServerRequestModel):
             content={
                 "status": "blocked",
                 "code": "IDS_INTRUSION_BLOCKED",
-                "message": f"Connection dropped by IDS: Attack detected ({resolved_family}).",
+                "message": "Connection dropped by IDS: Attack detected.",
                 "details": {
                     "source_ip": req.source_ip,
                     "ids_classification": "Attack",
@@ -848,7 +912,12 @@ async def protected_server_handler(req: ServerRequestModel):
 # -----------------------------------------------------------------------------
 @app.post("/api/simulation/start")
 async def start_simulation_session(req: SimulationSessionModel):
-    engine.start_simulation(req.scenario, req.session_id)
+    try:
+        canonical_sc = validate_attack_procedure(req.scenario)
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"status": "error", "message": str(e)})
+
+    engine.start_simulation(canonical_sc, req.session_id)
     await ws_manager.broadcast({
         "event_type": "simulation_session_change",
         "payload": engine.get_dashboard_payload()
@@ -869,27 +938,42 @@ async def stop_simulation_session():
     return {"status": "stopped", "scenario": "None"}
 
 # -----------------------------------------------------------------------------
-# Defense & Controller Management API Endpoints
+# Defense & Controller Management API Endpoints (Authorized Operators Only)
 # -----------------------------------------------------------------------------
 @app.post("/api/dashboard/set-defense")
-async def api_set_defense(req: SetDefenseModel):
-    """Switches active defense (afp, rs, fs, none)."""
+async def api_set_defense(req: SetDefenseModel, request: Request):
+    """Switches active defense (afp, rs, fs, none) with operator authorization."""
+    if not verify_operator_authorization(request):
+        return JSONResponse(
+            status_code=401,
+            content={"status": "error", "message": "Unauthorized: Valid operator token required in 'X-Operator-Token' header."}
+        )
     engine.set_defense(req.defense)
     payload = engine.get_dashboard_payload()
     await ws_manager.broadcast({"event_type": "defense_changed", "payload": payload})
     return JSONResponse(content={"defense": engine.active_defense_name, "status": "Active" if engine.active_defense_name != "none" else "Bypassed"})
 
 @app.post("/api/dashboard/set-mode")
-async def api_set_mode(req: SetModeModel):
-    """Switches mode between 'recall-aware' (dynamic feedback) and 'base' (static intensity)."""
+async def api_set_mode(req: SetModeModel, request: Request):
+    """Switches mode between 'recall-aware' and 'base' with operator authorization."""
+    if not verify_operator_authorization(request):
+        return JSONResponse(
+            status_code=401,
+            content={"status": "error", "message": "Unauthorized: Valid operator token required in 'X-Operator-Token' header."}
+        )
     engine.set_mode(req.mode)
     payload = engine.get_dashboard_payload()
     await ws_manager.broadcast({"event_type": "mode_changed", "payload": payload})
     return JSONResponse(content={"mode": engine.controller_mode, "state": engine.controller_state})
 
 @app.post("/api/dashboard/toggle-afp")
-async def toggle_afp(req: ToggleAFPModel):
-    """Backward compatibility toggle button for header/sidebar."""
+async def toggle_afp(req: ToggleAFPModel, request: Request):
+    """Backward compatibility toggle button with operator authorization."""
+    if not verify_operator_authorization(request):
+        return JSONResponse(
+            status_code=401,
+            content={"status": "error", "message": "Unauthorized: Valid operator token required in 'X-Operator-Token' header."}
+        )
     if req.enabled:
         engine.set_defense("afp")
     else:
@@ -899,8 +983,13 @@ async def toggle_afp(req: ToggleAFPModel):
     return JSONResponse(content={"defense": engine.active_defense_name, "status": "Active" if engine.active_defense_name != "none" else "Bypassed"})
 
 @app.post("/api/dashboard/reset")
-async def reset_metrics():
-    """Resets counters and controller state to cold start baseline."""
+async def reset_metrics(request: Request):
+    """Resets counters and controller state to cold start baseline with operator authorization."""
+    if not verify_operator_authorization(request):
+        return JSONResponse(
+            status_code=401,
+            content={"status": "error", "message": "Unauthorized: Valid operator token required in 'X-Operator-Token' header."}
+        )
     engine.total_traffic = 0
     engine.detected_attacks = 0
     engine.tp = 0

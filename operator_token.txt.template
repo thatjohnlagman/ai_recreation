@@ -1,0 +1,4 @@
+# IDS Operator Token Configuration Template
+# Copy this file to operator_token.txt or configure the IDS_OPERATOR_TOKEN environment variable.
+# Local demonstration default token:
+ids-operator-secret-2026

@@ -13,7 +13,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "runtime_package"))
 
+from operator_benchmarks import get_operator_token
+
 BASE_URL = "http://localhost:8000"
+OPERATOR_HEADERS = {"X-Operator-Token": get_operator_token()}
+
 
 def run_all_audit_tests():
     results = {}
@@ -56,6 +60,11 @@ def run_all_audit_tests():
     X_demo = pd.read_parquet("runtime_package/demo_data/X_demo.parquet")
     meta_demo = pd.read_parquet("runtime_package/demo_data/metadata_demo.parquet")
 
+    from runtime_package.data_loader import get_dataset
+    stats_info = requests.get(f"{BASE_URL}/api/dashboard/stats").json()
+    prof_audit = stats_info.get("data_profile", "fixture20")
+    ds_audit = get_dataset(prof_audit)
+
     start_b = requests.post(
         f"{BASE_URL}/api/simulation/start",
         json={"scenario": "Silent Probing", "session_id": "audit-sim-b"}
@@ -64,8 +73,8 @@ def run_all_audit_tests():
 
     # Instantiate real attack and generate candidate (makes 0 queries, unchanged copy)
     attack_b = SilentProbingAttack(f_names, mod_mask, bounds_df)
-    chosen_idx_b = 11
-    x_orig_b = X_demo.iloc[chosen_idx_b].values
+    chosen_idx_b = int(ds_audit.measurement_attack_indices[0])
+    x_orig_b = ds_audit.X.iloc[chosen_idx_b].values
     res_b_atk = attack_b.generate(x_orig_b, oracle=None, sample_id=chosen_idx_b, true_label=1)
     assert res_b_atk.query_count == 0
     assert np.array_equal(res_b_atk.X_adv, x_orig_b)
@@ -113,20 +122,24 @@ def run_all_audit_tests():
     from attacks.boundary_attack import DecisionBoundaryAttack
     from attacker_sim import TargetOracle
     attack_c = DecisionBoundaryAttack(f_names, mod_mask, bounds_df, max_queries=50, binary_search_steps=10)
-    oracle_c = TargetOracle(target_url=f"{BASE_URL}/api/server/data", max_queries_per_sample=50, scenario_name="Decision-Boundary Attack")
-    ref_pool = X_demo[meta_demo["y_binary"] == 0].values
+    oracle_c = TargetOracle(target_url=f"{BASE_URL}/api/server/data", max_queries_per_sample=50, scenario_name="Decision-Boundary Attack", session_id="audit-sim-c")
+    if len(ds_audit.crafting_benign_indices) > 0:
+        ref_pool = ds_audit.X.iloc[ds_audit.crafting_benign_indices[:100]].values
+    else:
+        ref_pool = ds_audit.X.iloc[ds_audit.measurement_benign_indices].values
 
     # Run genuine DecisionBoundaryAttack.generate querying server over HTTP
-    orig_atk = X_demo.iloc[10].values
-    res_c_atk = attack_c.generate(orig_atk, oracle_c, sample_id=10, true_label=1, reference_pool=ref_pool)
-    print(f"   [INFO] DecisionBoundaryAttack generated: status={res_c_atk.status_code}, queries={oracle_c.get_query_count(10)}, success={res_c_atk.success}")
+    chosen_idx_c = int(ds_audit.measurement_attack_indices[0])
+    orig_atk = ds_audit.X.iloc[chosen_idx_c].values
+    res_c_atk = attack_c.generate(orig_atk, oracle_c, sample_id=chosen_idx_c, true_label=1, reference_pool=ref_pool)
+    print(f"   [INFO] DecisionBoundaryAttack generated: status={res_c_atk.status_code}, queries={oracle_c.get_query_count(chosen_idx_c)}, success={res_c_atk.success}")
 
     # Now verify the final candidate flow against the server
     req_c = {
         "source_ip": "10.0.3.77",
         "destination_ip": "192.168.1.10",
         "attack_scenario": "Decision-Boundary Attack",
-        "sample_id": 10,
+        "sample_id": chosen_idx_c,
         "is_attack": True,  # True attack label / ground truth
         "feature_vector": res_c_atk.X_adv.tolist()
     }
@@ -145,7 +158,7 @@ def run_all_audit_tests():
         "ids_classification": details_c.get("ids_classification"),
         "verdict": details_c.get("verdict"),
         "attack_success": res_c_atk.success,
-        "queries_used": oracle_c.get_query_count(10)
+        "queries_used": oracle_c.get_query_count(chosen_idx_c)
     }
     print(f"   [PASS] Boundary Search Completed -> Scenario: {details_c.get('attack_scenario')} | Traffic Family: {details_c.get('traffic_family')} | IDS Classification: {details_c.get('ids_classification')} | Verdict: {details_c.get('verdict')}\n")
     requests.post(f"{BASE_URL}/api/simulation/stop")
@@ -229,14 +242,14 @@ def run_all_audit_tests():
     # -------------------------------------------------------------------------
     print(">> Running Test G: Defense Switching (Base vs Recall-Aware)...")
     # Set to Base mode
-    requests.post(f"{BASE_URL}/api/dashboard/set-defense", json={"defense": "afp"})
-    res_base = requests.post(f"{BASE_URL}/api/dashboard/set-mode", json={"mode": "base"}).json()
+    requests.post(f"{BASE_URL}/api/dashboard/set-defense", json={"defense": "afp"}, headers=OPERATOR_HEADERS)
+    res_base = requests.post(f"{BASE_URL}/api/dashboard/set-mode", json={"mode": "base"}, headers=OPERATOR_HEADERS).json()
     assert res_base["mode"] == "base"
     stats_base = requests.get(f"{BASE_URL}/api/dashboard/stats").json()
     assert stats_base["afp"]["mode"] == "base"
 
     # Set to Recall-Aware mode
-    res_ra = requests.post(f"{BASE_URL}/api/dashboard/set-mode", json={"mode": "recall-aware"}).json()
+    res_ra = requests.post(f"{BASE_URL}/api/dashboard/set-mode", json={"mode": "recall-aware"}, headers=OPERATOR_HEADERS).json()
     assert res_ra["mode"] == "recall-aware"
     stats_ra = requests.get(f"{BASE_URL}/api/dashboard/stats").json()
     assert stats_ra["afp"]["mode"] == "recall-aware"

@@ -167,11 +167,11 @@
           <span class="status-val cyan" id="afp-status-text">Active</span>
         </div>
 
-        <!-- Active Black-Box Attack Scenario Badge -->
-        <div class="header-status-pill" id="scenario-status-pill" title="Active Black-Box Simulation Scenario">
-          <span class="status-dot gray" id="scenario-status-dot"></span>
-          <span class="header-status-label">Scenario</span>
-          <span class="status-val gray" id="scenario-status-text">None</span>
+        <!-- Operator Authentication Status Badge -->
+        <div class="header-status-pill clickable" id="operator-auth-btn" title="Click to configure Operator Authentication">
+          <span class="status-dot green" id="operator-auth-dot"></span>
+          <span class="header-status-label">Operator</span>
+          <span class="status-val green" id="operator-auth-text">Configured</span>
         </div>
 
         <!-- Data Profile & Pool Badge -->
@@ -350,13 +350,12 @@
                       <th>Timestamp</th>
                       <th>Source IP</th>
                       <th>Destination IP</th>
-                      <th>Traffic Family</th>
                       <th>Confidence</th>
                       <th>IDS Classification</th>
                     </tr>
                   </thead>
                   <tbody id="recent-feed-tbody">
-                    <tr><td colspan="6" class="text-center" style="color: var(--text-muted); padding: 14px;">No traffic flows recorded in session</td></tr>
+                    <tr><td colspan="5" class="text-center" style="color: var(--text-muted); padding: 14px;">No traffic flows recorded in session</td></tr>
                   </tbody>
                 </table>
               </div>
@@ -394,23 +393,9 @@
                     <div class="insp-card-sub" id="insp-protocol">Protected Data Service</div>
                   </div>
 
-                  <!-- Card 3: Attack Scenario -->
+                  <!-- Card 3: IDS Classification & Confidence -->
                   <div class="inspector-card">
-                    <div class="insp-card-label">Attack Scenario</div>
-                    <div class="insp-card-value" id="insp-attack-scenario">—</div>
-                    <div class="insp-card-sub" id="insp-scenario-sub">No session active</div>
-                  </div>
-
-                  <!-- Card 4: Traffic Family -->
-                  <div class="inspector-card">
-                    <div class="insp-card-label">Traffic Family</div>
-                    <div class="insp-card-value" id="insp-traffic-family">—</div>
-                    <div class="insp-card-sub" id="insp-traffic-source">—</div>
-                  </div>
-
-                  <!-- Card 5: IDS Classification -->
-                  <div class="inspector-card">
-                    <div class="insp-card-label">IDS Classification</div>
+                    <div class="insp-card-label">IDS Classification &amp; Confidence</div>
                     <div class="insp-card-value" id="insp-ids-classification">—</div>
                     <div class="insp-card-sub" id="insp-confidence-val">—</div>
                     <div class="insp-confidence-bar">
@@ -418,9 +403,9 @@
                     </div>
                   </div>
 
-                  <!-- Card 6: Defense & Mitigation -->
+                  <!-- Card 4: Defense & Action -->
                   <div class="inspector-card">
-                    <div class="insp-card-label">Defense & Mitigation</div>
+                    <div class="insp-card-label">Defense &amp; Action</div>
                     <div class="insp-card-value" id="insp-defense-name">—</div>
                     <div class="insp-card-sub font-mono" id="insp-defense-intensity">—</div>
                     <div class="insp-card-sub" id="insp-action-name" style="margin-top: 2px; font-weight: 600;">—</div>
@@ -575,12 +560,11 @@
                     <th>Time</th>
                     <th>Source IP</th>
                     <th>Location</th>
-                    <th>Traffic Family</th>
                     <th>IDS Classification</th>
                   </tr>
                 </thead>
                 <tbody id="recent-attacks-tbody">
-                  <tr><td colspan="5" class="text-center" style="color: var(--text-muted); padding: 14px;">No attack flows recorded in session</td></tr>
+                  <tr><td colspan="4" class="text-center" style="color: var(--text-muted); padding: 14px;">No attack flows recorded in session</td></tr>
                 </tbody>
               </table>
             </div>
@@ -600,36 +584,6 @@
   <script src="/static/vendor/chart.umd.min.js"></script>
   <script>if (typeof Chart === 'undefined') document.write('<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"><\\/script>');</script>
   <!-- App JS with cache busting -->
-  <script src="/static/app.js?v=8.0"></script>
-  <script>
-    // Resilient inline handlers that work regardless of cache
-    async function handleSetDefense(defName) {
-      const btns = document.querySelectorAll("#defense-selector-group .segment-btn");
-      btns.forEach(b => b.classList.toggle("active", b.dataset.defense === defName));
-      try {
-        await fetch("/api/dashboard/set-defense", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ defense: defName })
-        });
-      } catch (err) {
-        console.error("Error setting defense:", err);
-      }
-    }
-
-    async function handleSetMode(modeName) {
-      const btns = document.querySelectorAll("#mode-selector-group .segment-btn");
-      btns.forEach(b => b.classList.toggle("active", b.dataset.mode === modeName));
-      try {
-        await fetch("/api/dashboard/set-mode", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ mode: modeName })
-        });
-      } catch (err) {
-        console.error("Error setting mode:", err);
-      }
-    }
-  </script>
+  <script src="/static/app.js?v=9.0"></script>
 </body>
 </html>

@@ -20,7 +20,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "runtime_package"))
 
+from operator_benchmarks import get_operator_token
+
 BASE_URL = "http://localhost:8000"
+OPERATOR_HEADERS = {"X-Operator-Token": get_operator_token()}
+
 
 
 def test_1_model_integrity_and_specs():
@@ -120,7 +124,7 @@ def test_5_cold_start_and_reset_truthfulness():
     """Verify dashboard stats show honest empty states and no fabricated data."""
     print(">> [Check 5] Verifying Cold Start & Reset Truthfulness...")
     # Reset state
-    res_reset = requests.post(f"{BASE_URL}/api/dashboard/reset")
+    res_reset = requests.post(f"{BASE_URL}/api/dashboard/reset", headers=OPERATOR_HEADERS)
     assert res_reset.status_code == 200
 
     stats_res = requests.get(f"{BASE_URL}/api/dashboard/stats")
@@ -171,30 +175,35 @@ def test_6_input_validation_and_inference_independence():
     assert res.status_code == 400, f"Expected 400, got {res.status_code}"
 
     # 7. Exact origin match: Sample 0 vector with sample_id 0 -> verified exact dataset sample
-    X_demo = pd.read_parquet(REPO_ROOT / "runtime_package" / "demo_data" / "X_demo.parquet")
-    sample_0_vec = X_demo.iloc[0].values.tolist()
+    from runtime_package.data_loader import get_dataset
+    stats_profile = requests.get(f"{BASE_URL}/api/dashboard/stats").json().get("data_profile", "fixture20")
+    ds_active = get_dataset(stats_profile)
+    benign_sample_id = int(ds_active.measurement_benign_indices[0])
+    attack_sample_id = int(ds_active.measurement_attack_indices[0])
+    sample_0_vec = ds_active.X.iloc[benign_sample_id].values.tolist()
+    sample_atk_vec = ds_active.X.iloc[attack_sample_id].values.tolist()
+
     res_exact = requests.post(
         f"{BASE_URL}/api/server/data",
-        json={"source_ip": "10.0.1.1", "sample_id": 0, "feature_vector": sample_0_vec}
+        json={"source_ip": "10.0.1.1", "sample_id": benign_sample_id, "feature_vector": sample_0_vec}
     )
     assert res_exact.status_code in (200, 403)
     det_exact = res_exact.json().get("details", {})
     assert det_exact.get("traffic_family") == "Benign"
     assert det_exact.get("ground_truth_status") == "Dataset: 0"
 
-    # 8. Mismatched vector: Sample 10's attack vector claiming sample_id 0 (without verified session)
+    # 8. Mismatched vector: Attack vector claiming benign sample_id (without verified session)
     # Reset stats to observe metric isolation
-    requests.post(f"{BASE_URL}/api/dashboard/reset")
+    requests.post(f"{BASE_URL}/api/dashboard/reset", headers=OPERATOR_HEADERS)
     stats_before = requests.get(f"{BASE_URL}/api/dashboard/stats").json().get("stats", {})
 
-    sample_10_vec = X_demo.iloc[10].values.tolist()
     res_mismatch = requests.post(
         f"{BASE_URL}/api/server/data",
-        json={"source_ip": "10.0.1.20", "sample_id": 0, "feature_vector": sample_10_vec}
+        json={"source_ip": "10.0.1.20", "sample_id": benign_sample_id, "feature_vector": sample_atk_vec}
     )
     assert res_mismatch.status_code in (200, 403)
     details_mismatch = res_mismatch.json().get("details", {})
-    # Classification must evaluate vector (Attack), NOT sample_id 0
+    # Classification must evaluate vector (Attack), NOT benign_sample_id
     assert details_mismatch.get("ids_classification") == "Attack", f"Inference must evaluate vector! Got {details_mismatch.get('ids_classification')}"
     # Must label as Claimed original family, NOT verified origin
     assert "Claimed original family" in details_mismatch.get("traffic_family"), f"Must indicate unverified claimed origin: {details_mismatch.get('traffic_family')}"
@@ -210,7 +219,7 @@ def test_6_input_validation_and_inference_independence():
     # 9. Session Authorization: Fake session ID "made-up" with is_attack=True must NOT update metrics
     res_fake = requests.post(
         f"{BASE_URL}/api/server/data",
-        json={"source_ip": "10.0.1.30", "feature_vector": sample_10_vec, "is_attack": True, "session_id": "made-up"}
+        json={"source_ip": "10.0.1.30", "feature_vector": sample_atk_vec, "is_attack": True, "session_id": "made-up"}
     )
     det_fake = res_fake.json().get("details", {})
     assert det_fake.get("ground_truth_status") == "Unlabeled", f"Fake session must not be trusted: {det_fake.get('ground_truth_status')}"
@@ -222,7 +231,7 @@ def test_6_input_validation_and_inference_independence():
     assert sim_start.status_code == 200
     res_valid_sim = requests.post(
         f"{BASE_URL}/api/server/data",
-        json={"source_ip": "10.0.1.40", "feature_vector": sample_10_vec, "is_attack": True, "session_id": "test-sim-001"}
+        json={"source_ip": "10.0.1.40", "feature_vector": sample_atk_vec, "is_attack": True, "session_id": "test-sim-001"}
     )
     det_valid = res_valid_sim.json().get("details", {})
     assert det_valid.get("ground_truth_status") == "Simulator: 1"
@@ -232,16 +241,16 @@ def test_6_input_validation_and_inference_independence():
 
     # 11. Exact Dataset Label Precedence vs Conflicting Simulator Feedback
     # Exact benign row + active session + is_attack=True must remain Dataset: 0
-    requests.post(f"{BASE_URL}/api/dashboard/reset")
-    sim_prec = requests.post(f"{BASE_URL}/api/simulation/start", json={"scenario": "precedence_test", "session_id": "prec-sess-001"})
+    requests.post(f"{BASE_URL}/api/dashboard/reset", headers=OPERATOR_HEADERS)
+    sim_prec = requests.post(f"{BASE_URL}/api/simulation/start", json={"scenario": "Silent Probing", "session_id": "prec-sess-001"})
     assert sim_prec.status_code == 200
 
-    # Submit exact benign row (sample 0) with conflicting is_attack=True
+    # Submit exact benign row with conflicting is_attack=True
     res_conf_benign = requests.post(
         f"{BASE_URL}/api/server/data",
         json={
             "source_ip": "10.0.1.50",
-            "sample_id": 0,
+            "sample_id": benign_sample_id,
             "feature_vector": sample_0_vec,
             "is_attack": True,  # Conflicting!
             "session_id": "prec-sess-001"
@@ -253,13 +262,13 @@ def test_6_input_validation_and_inference_independence():
     assert stats_conf.get("fn") == 0, "Exact benign must NOT increment FN!"
     assert stats_conf.get("tn") == 1, "Exact benign must increment TN when predicted benign"
 
-    # Submit exact attack row (sample 10) with conflicting is_attack=False
+    # Submit exact attack row with conflicting is_attack=False
     res_conf_attack = requests.post(
         f"{BASE_URL}/api/server/data",
         json={
             "source_ip": "10.0.1.51",
-            "sample_id": 10,
-            "feature_vector": sample_10_vec,
+            "sample_id": attack_sample_id,
+            "feature_vector": sample_atk_vec,
             "is_attack": False,  # Conflicting!
             "session_id": "prec-sess-001"
         }
@@ -279,21 +288,25 @@ def test_6_input_validation_and_inference_independence():
 def test_7_used_vs_next_intensity_tracking():
     """Verify flow response records used_intensity, next_intensity, and proves dynamic controller adaptation."""
     print(">> [Check 7] Verifying Used vs Next Intensity & Proving Controller Adaptation...")
-    X_demo = pd.read_parquet(REPO_ROOT / "runtime_package" / "demo_data" / "X_demo.parquet")
-    meta_demo = pd.read_parquet(REPO_ROOT / "runtime_package" / "demo_data" / "metadata_demo.parquet")
+    from runtime_package.data_loader import get_dataset
+    stats_profile = requests.get(f"{BASE_URL}/api/dashboard/stats").json().get("data_profile", "fixture20")
+    ds_active = get_dataset(stats_profile)
+    atk_indices = [int(i) for i in ds_active.measurement_attack_indices[:5]]
+    target_atk_id = atk_indices[0]
 
     # -------------------------------------------------------------------------
     # Part A: Ceiling Hold Verification (5 True Positives)
     # -------------------------------------------------------------------------
-    requests.post(f"{BASE_URL}/api/dashboard/reset")
-    requests.post(f"{BASE_URL}/api/dashboard/set-defense", json={"defense": "afp"})
-    requests.post(f"{BASE_URL}/api/dashboard/set-mode", json={"mode": "recall-aware"})
+    requests.post(f"{BASE_URL}/api/dashboard/reset", headers=OPERATOR_HEADERS)
+    requests.post(f"{BASE_URL}/api/dashboard/set-defense", json={"defense": "afp"}, headers=OPERATOR_HEADERS)
+    requests.post(f"{BASE_URL}/api/dashboard/set-mode", json={"mode": "recall-aware"}, headers=OPERATOR_HEADERS)
 
     for i in range(4):
-        vec = X_demo.iloc[10 + i].values.tolist()
+        sample_id = atk_indices[i]
+        vec = ds_active.X.iloc[sample_id].values.tolist()
         res = requests.post(
             f"{BASE_URL}/api/server/data",
-            json={"source_ip": f"10.0.1.{i+1}", "sample_id": 10 + i, "is_attack": True, "feature_vector": vec}
+            json={"source_ip": f"10.0.1.{i+1}", "sample_id": sample_id, "is_attack": True, "feature_vector": vec}
         )
         assert res.status_code in (200, 403)
         details = res.json().get("details", {})
@@ -301,10 +314,10 @@ def test_7_used_vs_next_intensity_tracking():
         assert details.get("next_intensity") == 0.0003, f"Flow {i+1} next_intensity expected 0.0003, got {details.get('next_intensity')}"
 
     # Flow 5: The 5th labeled attack decision (detected TP)
-    vec_5 = X_demo.iloc[14].values.tolist()
+    vec_5 = ds_active.X.iloc[atk_indices[4]].values.tolist()
     res_5 = requests.post(
         f"{BASE_URL}/api/server/data",
-        json={"source_ip": "10.0.1.5", "sample_id": 14, "is_attack": True, "feature_vector": vec_5}
+        json={"source_ip": "10.0.1.5", "sample_id": atk_indices[4], "is_attack": True, "feature_vector": vec_5}
     )
     details_5 = res_5.json().get("details", {})
     assert details_5.get("used_intensity") == 0.0003
@@ -317,15 +330,15 @@ def test_7_used_vs_next_intensity_tracking():
     # -------------------------------------------------------------------------
     # Functional Rehearsal:
     # 1. In static Base AFP mode, use DecisionBoundaryAttack to craft an evasive candidate
-    #    from real attack sample 10. Verify original dataset label is Attack (1), protected
+    #    from real attack sample. Verify original dataset label is Attack (1), protected
     #    features are preserved, vector is finite and bounded, and server verdict is Benign.
     # 2. Freeze the candidate. Reset to Recall-Aware AFP, then replay five correctly labeled
     #    copies in a valid simulator session (small functional replay, not a statistical benchmark).
     # 3. Assert live verdicts, flow 5 used intensity (0.00030), next intensity (0.00012),
     #    state (Red), and flow 6 used intensity (0.00012).
-    requests.post(f"{BASE_URL}/api/dashboard/reset")
-    requests.post(f"{BASE_URL}/api/dashboard/set-defense", json={"defense": "afp"})
-    requests.post(f"{BASE_URL}/api/dashboard/set-mode", json={"mode": "base"})
+    requests.post(f"{BASE_URL}/api/dashboard/reset", headers=OPERATOR_HEADERS)
+    requests.post(f"{BASE_URL}/api/dashboard/set-defense", json={"defense": "afp"}, headers=OPERATOR_HEADERS)
+    requests.post(f"{BASE_URL}/api/dashboard/set-mode", json={"mode": "base"}, headers=OPERATOR_HEADERS)
 
     from attacks.boundary_attack import DecisionBoundaryAttack
     from attacker_sim import TargetOracle
@@ -336,31 +349,34 @@ def test_7_used_vs_next_intensity_tracking():
         mod_mask = np.array(list(json.load(f).values())[0], dtype=bool)
     bounds_df = pd.read_parquet(REPO_ROOT / "runtime_package" / "model" / "training_bounds.parquet")
 
-    x_orig_10 = X_demo.iloc[10].values.astype(np.float32)
-    assert int(meta_demo.iloc[10]["y_binary"]) == 1, "Sample 10 must be Attack in metadata"
+    x_orig_atk = ds_active.X.iloc[target_atk_id].values.astype(np.float32)
+    assert int(ds_active.metadata.iloc[target_atk_id]["y_binary"]) == 1, "Target sample must be Attack in metadata"
 
-    craft_sim = requests.post(f"{BASE_URL}/api/simulation/start", json={"scenario": "boundary_crafting", "session_id": "craft-sess-001"})
+    craft_sim = requests.post(f"{BASE_URL}/api/simulation/start", json={"scenario": "Decision-Boundary Attack", "session_id": "craft-sess-001"})
     assert craft_sim.status_code == 200
 
     boundary_crafter = DecisionBoundaryAttack(f_names, mod_mask, bounds_df, max_queries=50, binary_search_steps=10)
-    oracle_crafter = TargetOracle(target_url=f"{BASE_URL}/api/server/data", max_queries_per_sample=50, scenario_name="Decision-Boundary Search")
-    ref_pool = X_demo[meta_demo["y_binary"] == 0].values
+    oracle_crafter = TargetOracle(target_url=f"{BASE_URL}/api/server/data", max_queries_per_sample=50, scenario_name="Decision-Boundary Attack", session_id="craft-sess-001")
+    if len(ds_active.crafting_benign_indices) > 0:
+        ref_pool = ds_active.X.iloc[ds_active.crafting_benign_indices[:100]].values
+    else:
+        ref_pool = ds_active.X.iloc[ds_active.measurement_benign_indices].values
 
-    craft_res = boundary_crafter.generate(x_orig_10, oracle_crafter, sample_id=10, true_label=1, reference_pool=ref_pool)
+    craft_res = boundary_crafter.generate(x_orig_atk, oracle_crafter, sample_id=target_atk_id, true_label=1, reference_pool=ref_pool)
     assert craft_res.success is True, f"Crafting failed: status={craft_res.status_code}"
 
     # Verify candidate properties
     x_adv_evasion = np.array(craft_res.X_adv, dtype=np.float32)
-    assert np.array_equal(x_adv_evasion[~mod_mask], x_orig_10[~mod_mask]), "Protected features must match original attack!"
+    assert np.array_equal(x_adv_evasion[~mod_mask], x_orig_atk[~mod_mask]), "Protected features must match original attack!"
     assert np.isfinite(x_adv_evasion).all(), "Candidate must be finite!"
-    assert not np.array_equal(x_adv_evasion, x_orig_10), "Candidate must be transformed from original!"
+    assert not np.array_equal(x_adv_evasion, x_orig_atk), "Candidate must be transformed from original!"
 
     # Verify server classification of candidate in Base mode
     test_cand_res = requests.post(
         f"{BASE_URL}/api/server/data",
         json={
             "source_ip": "10.0.1.99",
-            "sample_id": 10,
+            "sample_id": target_atk_id,
             "feature_vector": x_adv_evasion.tolist(),
             "is_attack": True,
             "session_id": "craft-sess-001"
@@ -372,11 +388,11 @@ def test_7_used_vs_next_intensity_tracking():
     requests.post(f"{BASE_URL}/api/simulation/stop")
 
     # Replay Phase: Reset and configure Recall-Aware AFP
-    requests.post(f"{BASE_URL}/api/dashboard/reset")
-    requests.post(f"{BASE_URL}/api/dashboard/set-defense", json={"defense": "afp"})
-    requests.post(f"{BASE_URL}/api/dashboard/set-mode", json={"mode": "recall-aware"})
+    requests.post(f"{BASE_URL}/api/dashboard/reset", headers=OPERATOR_HEADERS)
+    requests.post(f"{BASE_URL}/api/dashboard/set-defense", json={"defense": "afp"}, headers=OPERATOR_HEADERS)
+    requests.post(f"{BASE_URL}/api/dashboard/set-mode", json={"mode": "recall-aware"}, headers=OPERATOR_HEADERS)
 
-    replay_sim = requests.post(f"{BASE_URL}/api/simulation/start", json={"scenario": "genuine_evasion_replay", "session_id": "replay-001"})
+    replay_sim = requests.post(f"{BASE_URL}/api/simulation/start", json={"scenario": "Decision-Boundary Attack", "session_id": "replay-001"})
     assert replay_sim.status_code == 200
 
     # Replay first 4 genuine evasions (False Negatives: Model says Benign, True label is Attack)
@@ -386,7 +402,7 @@ def test_7_used_vs_next_intensity_tracking():
             f"{BASE_URL}/api/server/data",
             json={
                 "source_ip": f"10.0.3.{i+1}",
-                "sample_id": 10,
+                "sample_id": target_atk_id,
                 "feature_vector": adv_list,
                 "is_attack": True,
                 "session_id": "replay-001"
@@ -404,7 +420,7 @@ def test_7_used_vs_next_intensity_tracking():
         f"{BASE_URL}/api/server/data",
         json={
             "source_ip": "10.0.3.5",
-            "sample_id": 10,
+            "sample_id": target_atk_id,
             "feature_vector": adv_list,
             "is_attack": True,
             "session_id": "replay-001"
@@ -423,7 +439,7 @@ def test_7_used_vs_next_intensity_tracking():
         f"{BASE_URL}/api/server/data",
         json={
             "source_ip": "10.0.3.6",
-            "sample_id": 10,
+            "sample_id": target_atk_id,
             "feature_vector": adv_list,
             "is_attack": True,
             "session_id": "replay-001"
@@ -457,22 +473,25 @@ def test_7_used_vs_next_intensity_tracking():
 def test_8_scenario_seed_independence():
     """Verify caller req.attack_scenario does not alter defense perturbation RNG."""
     print(">> [Check 8] Verifying Scenario Seed Independence...")
-    X_demo = pd.read_parquet(REPO_ROOT / "runtime_package" / "demo_data" / "X_demo.parquet")
-    test_vec = X_demo.iloc[10].values.tolist()
+    from runtime_package.data_loader import get_dataset
+    stats_profile = requests.get(f"{BASE_URL}/api/dashboard/stats").json().get("data_profile", "fixture20")
+    ds_active = get_dataset(stats_profile)
+    atk_id = int(ds_active.measurement_attack_indices[0])
+    test_vec = ds_active.X.iloc[atk_id].values.tolist()
 
     # Reset and configure static Base AFP mode
-    requests.post(f"{BASE_URL}/api/dashboard/set-defense", json={"defense": "afp"})
-    requests.post(f"{BASE_URL}/api/dashboard/set-mode", json={"mode": "base"})
+    requests.post(f"{BASE_URL}/api/dashboard/set-defense", json={"defense": "afp"}, headers=OPERATOR_HEADERS)
+    requests.post(f"{BASE_URL}/api/dashboard/set-mode", json={"mode": "base"}, headers=OPERATOR_HEADERS)
 
     res_a = requests.post(
         f"{BASE_URL}/api/server/data",
-        json={"source_ip": "10.0.9.1", "sample_id": 10, "attack_scenario": "Scenario_ALPHA", "feature_vector": test_vec}
+        json={"source_ip": "10.0.9.1", "sample_id": atk_id, "attack_scenario": "Silent Probing", "feature_vector": test_vec}
     )
     details_a = res_a.json().get("details", {})
 
     res_b = requests.post(
         f"{BASE_URL}/api/server/data",
-        json={"source_ip": "10.0.9.2", "sample_id": 10, "attack_scenario": "Scenario_BETA", "feature_vector": test_vec}
+        json={"source_ip": "10.0.9.2", "sample_id": atk_id, "attack_scenario": "Surrogate Transferability", "feature_vector": test_vec}
     )
     details_b = res_b.json().get("details", {})
 
@@ -524,37 +543,44 @@ def test_10_attack_classes_smoke():
     from attacks.silent_probing import SilentProbingAttack
     from attacks.boundary_attack import DecisionBoundaryAttack
     from attacker_sim import TargetOracle
+    from runtime_package.data_loader import get_dataset
 
     with open(REPO_ROOT / "runtime_package" / "model" / "feature_names.json") as f:
         f_names = json.load(f)
     with open(REPO_ROOT / "runtime_package" / "model" / "feature_mask.json") as f:
         mod_mask = np.array(list(json.load(f).values())[0], dtype=bool)
     bounds_df = pd.read_parquet(REPO_ROOT / "runtime_package" / "model" / "training_bounds.parquet")
-    X_demo = pd.read_parquet(REPO_ROOT / "runtime_package" / "demo_data" / "X_demo.parquet")
-    meta_demo = pd.read_parquet(REPO_ROOT / "runtime_package" / "demo_data" / "metadata_demo.parquet")
+    stats_profile = requests.get(f"{BASE_URL}/api/dashboard/stats").json().get("data_profile", "fixture20")
+    ds_active = get_dataset(stats_profile)
+    atk_id = int(ds_active.measurement_attack_indices[0])
 
     # 1. Silent Probing Attack
     silent = SilentProbingAttack(f_names, mod_mask, bounds_df)
-    x_sample = X_demo.iloc[10].values
-    res_silent = silent.generate(x_sample, oracle=None, sample_id=10, true_label=1)
+    x_sample = ds_active.X.iloc[atk_id].values
+    res_silent = silent.generate(x_sample, oracle=None, sample_id=atk_id, true_label=1)
     assert res_silent.query_count == 0
     assert np.array_equal(res_silent.X_adv, x_sample)
     print("   [PASS] SilentProbingAttack: 0 queries, exact unperturbed copy verified.")
 
     # 2. Decision Boundary Attack against live server
+    requests.post(f"{BASE_URL}/api/simulation/start", json={"scenario": "Decision-Boundary Attack", "session_id": "bound-test-sess"})
     boundary = DecisionBoundaryAttack(f_names, mod_mask, bounds_df, max_queries=50, binary_search_steps=10)
-    oracle = TargetOracle(target_url=f"{BASE_URL}/api/server/data", max_queries_per_sample=50, scenario_name="Decision-Boundary Attack")
-    ref_pool = X_demo[meta_demo["y_binary"] == 0].values
+    oracle = TargetOracle(target_url=f"{BASE_URL}/api/server/data", max_queries_per_sample=50, scenario_name="Decision-Boundary Attack", session_id="bound-test-sess")
+    if len(ds_active.crafting_benign_indices) > 0:
+        ref_pool = ds_active.X.iloc[ds_active.crafting_benign_indices[:100]].values
+    else:
+        ref_pool = ds_active.X.iloc[ds_active.measurement_benign_indices].values
 
-    res_boundary = boundary.generate(x_sample, oracle, sample_id=10, true_label=1, reference_pool=ref_pool)
-    assert oracle.get_query_count(10) <= 50, f"Query count exceeded budget: {oracle.get_query_count(10)}"
-    print(f"   [PASS] DecisionBoundaryAttack completed: status={res_boundary.status_code}, queries_used={oracle.get_query_count(10)}/50")
+    res_boundary = boundary.generate(x_sample, oracle, sample_id=atk_id, true_label=1, reference_pool=ref_pool)
+    requests.post(f"{BASE_URL}/api/simulation/stop")
+    assert oracle.get_query_count(atk_id) <= 50, f"Query count exceeded budget: {oracle.get_query_count(atk_id)}"
+    print(f"   [PASS] DecisionBoundaryAttack completed: status={res_boundary.status_code}, queries_used={oracle.get_query_count(atk_id)}/50")
 
     # 3. Surrogate Fitting HTTP Path Verification
     from attacks.surrogate_transfer import SurrogateTransferAttack
-    requests.post(f"{BASE_URL}/api/dashboard/reset")
-    requests.post(f"{BASE_URL}/api/dashboard/set-defense", json={"defense": "afp"})
-    requests.post(f"{BASE_URL}/api/dashboard/set-mode", json={"mode": "recall-aware"})
+    requests.post(f"{BASE_URL}/api/dashboard/reset", headers=OPERATOR_HEADERS)
+    requests.post(f"{BASE_URL}/api/dashboard/set-defense", json={"defense": "afp"}, headers=OPERATOR_HEADERS)
+    requests.post(f"{BASE_URL}/api/dashboard/set-mode", json={"mode": "recall-aware"}, headers=OPERATOR_HEADERS)
 
     stats_before = requests.get(f"{BASE_URL}/api/dashboard/stats").json().get("stats", {})
     assert stats_before.get("tp") == stats_before.get("fp") == stats_before.get("tn") == stats_before.get("fn") == 0
@@ -565,24 +591,36 @@ def test_10_attack_classes_smoke():
     surr_attack = SurrogateTransferAttack(f_names, mod_mask, bounds_df)
     surr_oracle = TargetOracle(target_url=f"{BASE_URL}/api/server/data", scenario_name="Surrogate Transferability", session_id="surr-fit-sess-001")
 
-    x_pool = X_demo.values
-    y_oracle = surr_oracle.predict(x_pool, sample_ids=list(range(len(x_pool))), stage="surrogate_fitting")
-    surr_attack.fit_surrogate(x_pool, y_oracle)
+    if stats_profile == "fixture20":
+        X_demo = pd.read_parquet(REPO_ROOT / "runtime_package" / "demo_data" / "X_demo.parquet")
+        x_pool = X_demo.values
+        y_oracle = surr_oracle.predict(x_pool, sample_ids=list(range(len(x_pool))), stage="surrogate_fitting")
+        surr_attack.fit_surrogate(x_pool, y_oracle)
 
-    stats_after_fit = requests.get(f"{BASE_URL}/api/dashboard/stats").json().get("stats", {})
-    afp_after_fit = requests.get(f"{BASE_URL}/api/dashboard/stats").json().get("afp", {})
+        stats_after_fit = requests.get(f"{BASE_URL}/api/dashboard/stats").json().get("stats", {})
+        afp_after_fit = requests.get(f"{BASE_URL}/api/dashboard/stats").json().get("afp", {})
 
-    # Benign references in pool (samples 0-9) must contribute to TN (or FP), NOT FN/TP
-    assert stats_after_fit.get("tn") == 10, f"Expected 10 TNs from benign pool, got {stats_after_fit.get('tn')}"
-    assert stats_after_fit.get("fp") == 0, f"Expected 0 FPs from benign pool, got {stats_after_fit.get('fp')}"
+        # Benign references in pool (samples 0-9) must contribute to TN (or FP), NOT FN/TP
+        assert stats_after_fit.get("tn") == 10, f"Expected 10 TNs from benign pool, got {stats_after_fit.get('tn')}"
+        assert stats_after_fit.get("fp") == 0, f"Expected 0 FPs from benign pool, got {stats_after_fit.get('fp')}"
 
-    # Only attack references (samples 10-19) contribute to TP/FN
-    assert stats_after_fit.get("tp") + stats_after_fit.get("fn") == 10, f"Expected 10 attack decisions, got {stats_after_fit.get('tp') + stats_after_fit.get('fn')}"
+        # Only attack references (samples 10-19) contribute to TP/FN
+        assert stats_after_fit.get("tp") + stats_after_fit.get("fn") == 10, f"Expected 10 attack decisions, got {stats_after_fit.get('tp') + stats_after_fit.get('fn')}"
 
-    # Verify controller batch progression: exactly 2 batches of 5 completed
-    assert afp_after_fit.get("batch_id") == 2, f"Expected batch_id=2 after 10 attack decisions, got {afp_after_fit.get('batch_id')}"
+        # Verify controller batch progression: exactly 2 batches of 5 completed
+        assert afp_after_fit.get("batch_id") == 2, f"Expected batch_id=2 after 10 attack decisions, got {afp_after_fit.get('batch_id')}"
+    else:
+        # In expanded profile, query accounting and surrogate execution are tested in test_expanded_data_integration.py
+        craft_ids = ds_active.crafting_indices[:20].tolist()
+        x_pool = ds_active.X.iloc[craft_ids].values
+        y_oracle = surr_oracle.predict(x_pool, sample_ids=craft_ids, stage="surrogate_fitting")
+        surr_attack.fit_surrogate(x_pool, y_oracle)
+        stats_after_fit = requests.get(f"{BASE_URL}/api/dashboard/stats").json().get("stats", {})
+        # Crafting pool queries do not pollute target metrics
+        assert stats_after_fit.get("tp") == 0 and stats_after_fit.get("fp") == 0
+
     requests.post(f"{BASE_URL}/api/simulation/stop")
-    print("   [PASS] Surrogate Fitting HTTP Path: 10 Benign references -> 10 TN, 0 FN; 10 Attack references -> batch_id progressed to 2.\n")
+    print("   [PASS] Surrogate Fitting HTTP Path verified successfully.\n")
 
 
 def test_11_html_escaping_and_injection():
@@ -627,7 +665,7 @@ def test_12_dynamic_target_resolution():
     assert attacker_sim.get_sim_start_url() == "http://127.0.0.1:8888/api/simulation/start"
     assert attacker_sim.get_sim_stop_url() == "http://127.0.0.1:8888/api/simulation/stop"
 
-    oracle = attacker_sim.RemoteServerOracle(scenario_name="Test")
+    oracle = attacker_sim.RemoteServerOracle(scenario_name="Silent Probing")
     assert oracle.target_url == custom_target
 
     # Restore default target

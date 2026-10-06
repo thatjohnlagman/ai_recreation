@@ -459,39 +459,27 @@ function updateInspectorUI(item) {
   if (!item) return;
 
   const isAttack = (item.status && (item.status.toLowerCase() === "attack" || item.status.toLowerCase() === "malicious"));
-  const timeStr = item.timestamp || item.time || "Recent";
-  const srcIp = item.source_ip || "192.168.1.45";
-  const dstIp = item.destination_ip || "192.168.1.10:8000";
+  const timeStr = item.timestamp || item.time || "—";
+  const srcIp = item.source_ip || "—";
+  const dstIp = item.destination_ip || "—";
 
-  // 1. Attack Scenario (What the attacker is doing)
-  const attackScenario = item.attack_scenario || "None";
-  const scenarioSub = (attackScenario && attackScenario !== "None" && attackScenario !== "Background Traffic")
-    ? "Simulation Session"
-    : "Background Traffic";
-
-  // 2. Traffic Family (What the data represents)
-  const trafficFamily = item.traffic_family || item.type || "Unknown";
-  const trafficSource = item.traffic_family_source || (trafficFamily !== "Unknown" ? "Dataset-derived" : "Synthetic / Non-dataset");
-
-  // 3. IDS Classification (Binary authoritative model prediction)
+  // IDS Classification (Authoritative binary classification: Benign vs Attack)
   const idsClassification = isAttack ? "Attack" : "Benign";
 
-  // 4. Geolocation (Legitimate IP location or Private Network / Unknown)
-  const location = (item.location && item.location !== "Unknown") ? item.location : inferLocation(srcIp);
+  // Geolocation: truthful location or Private Network / Unknown
+  const location = (item.location && item.location !== "Unknown") ? item.location : (srcIp !== "—" ? inferLocation(srcIp) : "—");
 
-  // Confidence calculation
-  let conf = 0.93;
-  if (typeof item.confidence === "number") {
+  // Confidence calculation without invented defaults (0.93 / 0.95 removed; real zeros preserved)
+  let conf = null;
+  if (typeof item.confidence === "number" && !isNaN(item.confidence)) {
     conf = item.confidence;
-  } else if (item.confidence) {
-    conf = parseFloat(item.confidence) || 0.93;
-  } else {
-    conf = isAttack ? 0.93 : 0.95;
+  } else if (item.confidence !== undefined && item.confidence !== null && item.confidence !== "" && !isNaN(parseFloat(item.confidence))) {
+    conf = parseFloat(item.confidence);
   }
 
   // Active Defense & Intensity
-  const defense = item.defense || currentDefenseName || "AFP";
-  const mode = item.mode || currentDefenseMode || "Recall-Aware";
+  const defense = item.defense || currentDefenseName || "—";
+  const mode = item.mode || currentDefenseMode || "—";
   const intensity = (item.intensity !== undefined) ? item.intensity : currentDefenseIntensity;
 
   // Mitigation Action
@@ -499,7 +487,7 @@ function updateInspectorUI(item) {
 
   // Top header in inspector
   const titleEl = document.getElementById("insp-flow-title");
-  if (titleEl) titleEl.textContent = `${srcIp} → ${dstIp} [${trafficFamily}]`;
+  if (titleEl) titleEl.textContent = (srcIp !== "—" && dstIp !== "—") ? `${srcIp} → ${dstIp}` : "Selected Flow";
 
   const timeEl = document.getElementById("insp-time");
   if (timeEl) timeEl.textContent = timeStr;
@@ -524,42 +512,35 @@ function updateInspectorUI(item) {
   const protoEl = document.getElementById("insp-protocol");
   if (protoEl) protoEl.textContent = "Protected Data Service (HTTP)";
 
-  // Card 3: Attack Scenario
-  const scenarioEl = document.getElementById("insp-attack-scenario");
-  if (scenarioEl) scenarioEl.textContent = attackScenario;
-
-  const scenarioSubEl = document.getElementById("insp-scenario-sub");
-  if (scenarioSubEl) scenarioSubEl.textContent = scenarioSub;
-
-  // Card 4: Traffic Family
-  const familyEl = document.getElementById("insp-traffic-family");
-  if (familyEl) familyEl.textContent = trafficFamily;
-
-  const sourceEl = document.getElementById("insp-traffic-source");
-  if (sourceEl) sourceEl.textContent = trafficSource;
-
-  // Card 5: IDS Classification
+  // Card 3: IDS Classification & Confidence
   const idsClassEl = document.getElementById("insp-ids-classification");
   if (idsClassEl) {
-    idsClassEl.textContent = idsClassification;
+    idsClassEl.textContent = idsClassification + (item.is_query ? " [Query]" : "");
     idsClassEl.style.color = isAttack ? "#f87171" : "#34d399";
   }
 
   const confValEl = document.getElementById("insp-confidence-val");
-  if (confValEl) confValEl.textContent = `${(conf * 100).toFixed(1)}% Confidence`;
-
   const confFillEl = document.getElementById("insp-confidence-fill");
-  if (confFillEl) {
-    confFillEl.style.width = `${Math.min(100, Math.max(5, conf * 100))}%`;
-    confFillEl.style.background = isAttack ? "#ef4444" : "#10b981";
+  if (conf !== null) {
+    if (confValEl) confValEl.textContent = `${(conf * 100).toFixed(1)}% Confidence`;
+    if (confFillEl) {
+      confFillEl.style.width = `${Math.min(100, Math.max(0, conf * 100))}%`;
+      confFillEl.style.background = isAttack ? "#ef4444" : "#10b981";
+    }
+  } else {
+    if (confValEl) confValEl.textContent = "Unavailable";
+    if (confFillEl) {
+      confFillEl.style.width = "0%";
+      confFillEl.style.background = "";
+    }
   }
 
-  // Card 6: Defense & Mitigation
+  // Card 4: Defense & Action
   const defNameEl = document.getElementById("insp-defense-name");
   if (defNameEl) defNameEl.textContent = `${defense} (${mode})`;
 
   const defIntEl = document.getElementById("insp-defense-intensity");
-  if (defIntEl) defIntEl.textContent = `ε = ${formatIntensityDecimal(intensity)}`;
+  if (defIntEl) defIntEl.textContent = (intensity !== undefined && intensity !== null) ? `ε = ${formatIntensityDecimal(intensity)}` : "—";
 
   const actionNameEl = document.getElementById("insp-action-name");
   if (actionNameEl) {
@@ -607,14 +588,6 @@ function resetInspectorUI() {
   if (locEl) locEl.textContent = "—";
   const dstIpEl = document.getElementById("insp-dest-ip");
   if (dstIpEl) dstIpEl.textContent = "—";
-  const scenarioEl = document.getElementById("insp-attack-scenario");
-  if (scenarioEl) scenarioEl.textContent = "—";
-  const scenarioSubEl = document.getElementById("insp-scenario-sub");
-  if (scenarioSubEl) scenarioSubEl.textContent = "No session active";
-  const familyEl = document.getElementById("insp-traffic-family");
-  if (familyEl) familyEl.textContent = "—";
-  const sourceEl = document.getElementById("insp-traffic-source");
-  if (sourceEl) sourceEl.textContent = "—";
   const idsClassEl = document.getElementById("insp-ids-classification");
   if (idsClassEl) {
     idsClassEl.textContent = "—";
@@ -642,7 +615,7 @@ function renderRecentFeed(feed) {
   const tbody = document.getElementById("recent-feed-tbody");
   if (!tbody) return;
   if (!feed || feed.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" class="text-center" style="color: var(--text-muted); padding: 14px;">No traffic flows recorded in session</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" class="text-center" style="color: var(--text-muted); padding: 14px;">No traffic flows recorded in session</td></tr>';
     currentFeedList = [];
     resetInspectorUI();
     return;
@@ -662,24 +635,28 @@ function renderRecentFeed(feed) {
 
   tbody.innerHTML = feed.map((item, idx) => {
     const isAttack = (item.status && (item.status.toLowerCase() === "attack" || item.status.toLowerCase() === "malicious"));
-    const badgeClass = item.is_query ? "neutral" : (isAttack ? "malicious" : "benign");
-    const statusLabel = item.is_query ? "Query" : (isAttack ? "Attack" : "Benign");
-    const familyLabel = item.traffic_family || item.type || "Unknown";
+    const badgeClass = isAttack ? "malicious" : "benign";
+    const statusLabel = isAttack ? "Attack" : "Benign";
+    const queryBadge = item.is_query ? ' <span class="badge-status neutral" style="font-size: 10px; margin-left: 4px;">Query</span>' : '';
     const itemTime = item.timestamp || item.time || "";
     const isSelected = selectedFlowItem && (
       selectedFlowItem.source_ip === item.source_ip &&
       selectedTime === itemTime
     );
     const selectedClass = isSelected ? "selected-row" : "";
-    const confVal = typeof item.confidence === 'number' ? item.confidence.toFixed(2) : (item.confidence || "—");
+    let confVal = "—";
+    if (typeof item.confidence === 'number' && !isNaN(item.confidence)) {
+      confVal = item.confidence.toFixed(2);
+    } else if (item.confidence !== undefined && item.confidence !== null && item.confidence !== "" && !isNaN(parseFloat(item.confidence))) {
+      confVal = parseFloat(item.confidence).toFixed(2);
+    }
     return `
       <tr class="${selectedClass}" data-idx="${idx}" onclick="onRowSelectFeed(${idx})" title="Click to view detailed flow forensics">
         <td>${escapeHtml(itemTime)}</td>
-        <td>${escapeHtml(item.source_ip)}</td>
+        <td>${escapeHtml(item.source_ip || "—")}</td>
         <td>${escapeHtml(item.destination_ip || "192.168.1.10")}</td>
-        <td>${escapeHtml(familyLabel)}</td>
         <td>${escapeHtml(confVal)}</td>
-        <td><span class="badge-status ${badgeClass}">${escapeHtml(statusLabel)}</span></td>
+        <td><span class="badge-status ${badgeClass}">${escapeHtml(statusLabel)}</span>${queryBadge}</td>
       </tr>
     `;
   }).join("");
@@ -689,7 +666,7 @@ function renderRecentAttacks(attacks) {
   const tbody = document.getElementById("recent-attacks-tbody");
   if (!tbody) return;
   if (!attacks || attacks.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="5" class="text-center" style="color: var(--text-muted); padding: 14px;">No attack flows recorded in session</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="4" class="text-center" style="color: var(--text-muted); padding: 14px;">No attack flows recorded in session</td></tr>';
     currentAttacksList = [];
     return;
   }
@@ -707,8 +684,7 @@ function renderRecentAttacks(attacks) {
     const isAttack = (item.status && (item.status.toLowerCase() === "attack" || item.status.toLowerCase() === "malicious"));
     const badgeClass = isAttack ? "malicious" : "benign";
     const statusLabel = isAttack ? "Attack" : "Benign";
-    const familyLabel = item.traffic_family || item.type || "Unknown";
-    const locationLabel = (item.location && item.location !== "Unknown") ? item.location : inferLocation(item.source_ip);
+    const locationLabel = (item.location && item.location !== "Unknown") ? item.location : (item.source_ip ? inferLocation(item.source_ip) : "—");
     const itemTime = item.timestamp || item.time || "";
     const isSelected = selectedFlowItem && (
       selectedFlowItem.source_ip === item.source_ip &&
@@ -718,9 +694,8 @@ function renderRecentAttacks(attacks) {
     return `
       <tr class="${selectedClass}" data-idx="${idx}" onclick="onRowSelectAttack(${idx})" title="Click to view detailed attack forensics">
         <td>${escapeHtml(itemTime)}</td>
-        <td>${escapeHtml(item.source_ip)}</td>
+        <td>${escapeHtml(item.source_ip || "—")}</td>
         <td>${escapeHtml(locationLabel)}</td>
-        <td>${escapeHtml(familyLabel)}</td>
         <td><span class="badge-status ${badgeClass}">${escapeHtml(statusLabel)}</span></td>
       </tr>
     `;
@@ -733,17 +708,8 @@ function renderRecentAttacks(attacks) {
 function syncDashboard(payload) {
   if (!payload) return;
 
-  // 0. Active Attack Scenario Simulation Badge
-  if (payload.simulation) {
-    const scText = document.getElementById("scenario-status-text");
-    const scDot = document.getElementById("scenario-status-dot");
-    if (scText && scDot) {
-      const isAct = payload.simulation.is_active && payload.simulation.active_scenario !== "None";
-      scText.textContent = isAct ? payload.simulation.active_scenario : "None";
-      scText.className = `status-val ${isAct ? "orange" : "gray"}`;
-      scDot.className = `status-dot ${isAct ? "orange" : "gray"}`;
-    }
-  }
+  // 0. Update Operator Auth UI Status
+  updateOperatorAuthUI();
 
   // 0b. Data Profile & Pool Badge
   if (payload.data_profile) {
@@ -875,60 +841,155 @@ function initEventListeners() {
     });
   }
 
-  // Toggle AFP Defense Button in Sidebar
+  // Operator Auth Pill in Header
+  const operatorAuthBtn = document.getElementById("operator-auth-btn");
+  if (operatorAuthBtn) {
+    operatorAuthBtn.addEventListener("click", () => {
+      promptForOperatorToken("Configure Operator Authentication Token:");
+    });
+  }
+
+  // Toggle AFP Defense Button in Header
   const toggleBtn = document.getElementById("toggle-afp-btn");
   if (toggleBtn) {
     toggleBtn.addEventListener("click", async () => {
       const nextState = !currentAfpEnabled;
       try {
-        const res = await fetch("/api/dashboard/toggle-afp", {
+        const res = await authorizedFetch("/api/dashboard/toggle-afp", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ enabled: nextState })
         });
-        const data = await res.json();
-        console.log("AFP Defense toggled:", data);
+        if (res && res.ok) {
+          const data = await res.json();
+          console.log("AFP Defense toggled:", data);
+        }
       } catch (err) {
         console.error("Error toggling AFP:", err);
       }
     });
   }
-
-  // Defense Selector Buttons (AFP, RS, FS, None)
-  const defenseBtns = document.querySelectorAll("#defense-selector-group .pill-btn");
-  defenseBtns.forEach(btn => {
-    btn.addEventListener("click", async () => {
-      const selectedDef = btn.dataset.defense;
-      try {
-        const res = await fetch("/api/dashboard/set-defense", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ defense: selectedDef })
-        });
-        const data = await res.json();
-        console.log("Defense changed:", data);
-      } catch (err) {
-        console.error("Error switching defense:", err);
-      }
-    });
-  });
-
-  // Mode Selector Buttons (Recall-Aware, Base)
-  const modeBtns = document.querySelectorAll("#mode-selector-group .pill-btn");
-  modeBtns.forEach(btn => {
-    btn.addEventListener("click", async () => {
-      const selectedMode = btn.dataset.mode;
-      try {
-        const res = await fetch("/api/dashboard/set-mode", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ mode: selectedMode })
-        });
-        const data = await res.json();
-        console.log("Mode changed:", data);
-      } catch (err) {
-        console.error("Error switching mode:", err);
-      }
-    });
-  });
 }
+
+// -----------------------------------------------------------------------------
+// Operator Authentication & Management API Handlers
+// -----------------------------------------------------------------------------
+function getOperatorToken() {
+  return sessionStorage.getItem("ids_operator_token") || localStorage.getItem("ids_operator_token") || "";
+}
+
+function setOperatorToken(tok) {
+  if (tok && tok.trim()) {
+    const cleaned = tok.trim();
+    sessionStorage.setItem("ids_operator_token", cleaned);
+    localStorage.setItem("ids_operator_token", cleaned);
+  } else {
+    sessionStorage.removeItem("ids_operator_token");
+    localStorage.removeItem("ids_operator_token");
+  }
+  updateOperatorAuthUI();
+}
+
+function promptForOperatorToken(msg = "Enter Operator Token to authorize management actions:") {
+  const existing = getOperatorToken();
+  const input = prompt(msg, existing);
+  if (input !== null) {
+    setOperatorToken(input);
+    return input.trim();
+  }
+  return null;
+}
+
+function updateOperatorAuthUI() {
+  const dot = document.getElementById("operator-auth-dot");
+  const txt = document.getElementById("operator-auth-text");
+  const token = getOperatorToken();
+  if (dot && txt) {
+    if (token) {
+      dot.className = "status-dot green";
+      txt.textContent = "Authorized";
+      txt.className = "status-val green";
+    } else {
+      dot.className = "status-dot yellow";
+      txt.textContent = "Auth Required";
+      txt.className = "status-val yellow";
+    }
+  }
+}
+
+async function authorizedFetch(url, options = {}) {
+  let token = getOperatorToken();
+  if (!token) {
+    token = promptForOperatorToken("Operator authorization required. Please enter token:");
+    if (!token) {
+      alert("Action cancelled: Valid operator token required.");
+      return null;
+    }
+  }
+  options.headers = options.headers || {};
+  options.headers["X-Operator-Token"] = token;
+
+  let res = null;
+  try {
+    res = await fetch(url, options);
+  } catch (netErr) {
+    console.error("Network error on management request:", netErr);
+    return null;
+  }
+
+  if (res && res.status === 401) {
+    token = promptForOperatorToken("401 Unauthorized: Invalid operator token. Please enter valid token:");
+    if (token) {
+      options.headers["X-Operator-Token"] = token;
+      try {
+        res = await fetch(url, options);
+      } catch (retryErr) {
+        console.error("Network error on retry request:", retryErr);
+      }
+    }
+  }
+  return res;
+}
+
+async function handleSetDefense(defName) {
+  const btns = document.querySelectorAll("#defense-selector-group .segment-btn");
+  try {
+    const res = await authorizedFetch("/api/dashboard/set-defense", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ defense: defName })
+    });
+    if (res && res.ok) {
+      btns.forEach(b => b.classList.toggle("active", b.dataset.defense === defName));
+      currentDefenseName = defName.toUpperCase();
+    }
+  } catch (err) {
+    console.error("Error setting defense:", err);
+  }
+}
+
+async function handleSetMode(modeName) {
+  const btns = document.querySelectorAll("#mode-selector-group .segment-btn");
+  try {
+    const res = await authorizedFetch("/api/dashboard/set-mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: modeName })
+    });
+    if (res && res.ok) {
+      btns.forEach(b => b.classList.toggle("active", b.dataset.mode === modeName));
+      currentDefenseMode = (modeName === "recall-aware") ? "Recall-Aware" : "Base";
+    }
+  } catch (err) {
+    console.error("Error setting mode:", err);
+  }
+}
+
+// Global window exposure for inline onclick handlers and console inspection
+window.handleSetDefense = handleSetDefense;
+window.handleSetMode = handleSetMode;
+window.authorizedFetch = authorizedFetch;
+window.getOperatorToken = getOperatorToken;
+window.setOperatorToken = setOperatorToken;
+window.promptForOperatorToken = promptForOperatorToken;
+
