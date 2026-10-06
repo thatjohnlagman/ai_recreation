@@ -10,8 +10,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   
-  <!-- Leaflet CSS -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <!-- Leaflet CSS: Local vendor with CDN fallback -->
+  <link rel="stylesheet" href="/static/vendor/leaflet.css" onerror="this.onerror=null;this.href='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';" />
   
   <!-- Custom Styles -->
   <link rel="stylesheet" href="/static/style.css?v=4.0">
@@ -229,9 +229,9 @@
               </div>
               <div class="kpi-data">
                 <span class="kpi-label">Total Traffic</span>
-                <span class="kpi-value" id="kpi-total-traffic">12,482</span>
-                <span class="kpi-delta positive">
-                  <span class="arrow">↑</span> 8.4% <span class="delta-muted">vs. previous hour</span>
+                <span class="kpi-value" id="kpi-total-traffic">0</span>
+                <span class="kpi-delta">
+                  <span class="delta-muted">Session Baseline</span>
                 </span>
               </div>
             </div>
@@ -247,9 +247,9 @@
               </div>
               <div class="kpi-data">
                 <span class="kpi-label">Detected Attacks</span>
-                <span class="kpi-value" id="kpi-detected-attacks">87</span>
-                <span class="kpi-delta positive">
-                  <span class="arrow">↑</span> 36.0% <span class="delta-muted">vs. previous hour</span>
+                <span class="kpi-value" id="kpi-detected-attacks">0</span>
+                <span class="kpi-delta">
+                  <span class="delta-muted">Session Baseline</span>
                 </span>
               </div>
             </div>
@@ -267,9 +267,9 @@
               </div>
               <div class="kpi-data">
                 <span class="kpi-label">Detection Recall</span>
-                <span class="kpi-value" id="kpi-recall">0.962</span>
-                <span class="kpi-delta positive">
-                  <span class="arrow">↑</span> 3.2% <span class="delta-muted">vs. previous hour</span>
+                <span class="kpi-value" id="kpi-recall">—</span>
+                <span class="kpi-delta">
+                  <span class="delta-muted">Session Baseline</span>
                 </span>
               </div>
             </div>
@@ -284,9 +284,9 @@
               </div>
               <div class="kpi-data">
                 <span class="kpi-label">False Positive Rate</span>
-                <span class="kpi-value" id="kpi-fpr">0.018</span>
-                <span class="kpi-delta positive">
-                  <span class="arrow">↓</span> 42.1% <span class="delta-muted">vs. previous hour</span>
+                <span class="kpi-value" id="kpi-fpr">—</span>
+                <span class="kpi-delta">
+                  <span class="delta-muted">Session Baseline</span>
                 </span>
               </div>
             </div>
@@ -322,7 +322,7 @@
                     </tr>
                   </thead>
                   <tbody id="top-threats-tbody">
-                    <!-- Dynamic Rows -->
+                    <tr><td colspan="3" class="text-center" style="color: var(--text-muted); padding: 14px;">No threat locations in session</td></tr>
                   </tbody>
                 </table>
               </div>
@@ -352,7 +352,7 @@
                     </tr>
                   </thead>
                   <tbody id="recent-feed-tbody">
-                    <!-- Dynamic Feed Rows -->
+                    <tr><td colspan="6" class="text-center" style="color: var(--text-muted); padding: 14px;">No traffic flows recorded in session</td></tr>
                   </tbody>
                 </table>
               </div>
@@ -367,11 +367,11 @@
                       <line x1="12" y1="16" x2="12.01" y2="16"/>
                     </svg>
                     <span class="inspector-title">Selected Flow Forensics:</span>
-                    <span class="inspector-target-id" id="insp-flow-title">10.0.2.45 &rarr; 192.168.1.10 [DDoS attacks-LOIC-HTTP]</span>
+                    <span class="inspector-target-id" id="insp-flow-title">Awaiting flow telemetry</span>
                   </div>
                   <div class="inspector-header-right">
-                    <span class="inspector-time" id="insp-time">14:28:16</span>
-                    <span class="badge-status malicious" id="insp-verdict-badge">Blocked (403)</span>
+                    <span class="inspector-time" id="insp-time">—</span>
+                    <span class="badge-status" id="insp-verdict-badge">Idle</span>
                   </div>
                 </div>
 
@@ -379,47 +379,47 @@
                   <!-- Card 1: Source Origin -->
                   <div class="inspector-card">
                     <div class="insp-card-label">Source Origin</div>
-                    <div class="insp-card-value font-mono" id="insp-source-ip">10.0.2.45</div>
-                    <div class="insp-card-sub" id="insp-location">Private Network</div>
+                    <div class="insp-card-value font-mono" id="insp-source-ip">—</div>
+                    <div class="insp-card-sub" id="insp-location">—</div>
                   </div>
 
                   <!-- Card 2: Target Endpoint -->
                   <div class="inspector-card">
                     <div class="insp-card-label">Target Endpoint</div>
-                    <div class="insp-card-value font-mono" id="insp-dest-ip">192.168.1.10:8000</div>
+                    <div class="insp-card-value font-mono" id="insp-dest-ip">—</div>
                     <div class="insp-card-sub" id="insp-protocol">Protected Data Service</div>
                   </div>
 
                   <!-- Card 3: Attack Scenario -->
                   <div class="inspector-card">
                     <div class="insp-card-label">Attack Scenario</div>
-                    <div class="insp-card-value" id="insp-attack-scenario">Silent Probing</div>
-                    <div class="insp-card-sub" id="insp-scenario-sub">Simulation Session</div>
+                    <div class="insp-card-value" id="insp-attack-scenario">—</div>
+                    <div class="insp-card-sub" id="insp-scenario-sub">No session active</div>
                   </div>
 
                   <!-- Card 4: Traffic Family -->
                   <div class="inspector-card">
                     <div class="insp-card-label">Traffic Family</div>
-                    <div class="insp-card-value" id="insp-traffic-family">DDoS attacks-LOIC-HTTP</div>
-                    <div class="insp-card-sub" id="insp-traffic-source">Dataset-derived</div>
+                    <div class="insp-card-value" id="insp-traffic-family">—</div>
+                    <div class="insp-card-sub" id="insp-traffic-source">—</div>
                   </div>
 
                   <!-- Card 5: IDS Classification -->
                   <div class="inspector-card">
                     <div class="insp-card-label">IDS Classification</div>
-                    <div class="insp-card-value" id="insp-ids-classification">Attack</div>
-                    <div class="insp-card-sub" id="insp-confidence-val">93.0% Confidence</div>
+                    <div class="insp-card-value" id="insp-ids-classification">—</div>
+                    <div class="insp-card-sub" id="insp-confidence-val">—</div>
                     <div class="insp-confidence-bar">
-                      <div class="insp-confidence-fill" id="insp-confidence-fill" style="width: 93%;"></div>
+                      <div class="insp-confidence-fill" id="insp-confidence-fill" style="width: 0%;"></div>
                     </div>
                   </div>
 
                   <!-- Card 6: Defense & Mitigation -->
                   <div class="inspector-card">
                     <div class="insp-card-label">Defense & Mitigation</div>
-                    <div class="insp-card-value" id="insp-defense-name">AFP (Recall-Aware)</div>
-                    <div class="insp-card-sub font-mono" id="insp-defense-intensity">&epsilon; = 0.000300</div>
-                    <div class="insp-card-sub text-red" id="insp-action-name" style="margin-top: 2px; font-weight: 600;">Blocked (403)</div>
+                    <div class="insp-card-value" id="insp-defense-name">—</div>
+                    <div class="insp-card-sub font-mono" id="insp-defense-intensity">—</div>
+                    <div class="insp-card-sub" id="insp-action-name" style="margin-top: 2px; font-weight: 600;">—</div>
                   </div>
                 </div>
               </div>
@@ -480,11 +480,11 @@
                     <circle class="gauge-val" id="gauge-circle-bar" cx="50" cy="50" r="42"/>
                   </svg>
                   <div class="gauge-inner-text">
-                    <span class="gauge-number" id="gauge-recall-val">0.962</span>
+                    <span class="gauge-number" id="gauge-recall-val">—</span>
                     <span class="gauge-sub">Recall</span>
                   </div>
                 </div>
-                <div class="gauge-badge-pill green" id="gauge-health-pill">Healthy</div>
+                <div class="gauge-badge-pill" id="gauge-health-pill">Awaiting Data</div>
               </div>
 
               <!-- Intensity & Bounds Details -->
@@ -576,7 +576,7 @@
                   </tr>
                 </thead>
                 <tbody id="recent-attacks-tbody">
-                  <!-- Dynamic Attack Rows -->
+                  <tr><td colspan="5" class="text-center" style="color: var(--text-muted); padding: 14px;">No attack flows recorded in session</td></tr>
                 </tbody>
               </table>
             </div>
@@ -590,10 +590,11 @@
 
   </div>
 
-  <!-- Leaflet JS -->
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <!-- Chart.js -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <!-- Leaflet JS & Chart.js: Local vendor scripts with CDN fallbacks -->
+  <script src="/static/vendor/leaflet.js"></script>
+  <script>if (typeof L === 'undefined') document.write('<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"><\\/script>');</script>
+  <script src="/static/vendor/chart.umd.min.js"></script>
+  <script>if (typeof Chart === 'undefined') document.write('<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"><\\/script>');</script>
   <!-- App JS with cache busting -->
   <script src="/static/app.js?v=8.0"></script>
   <script>

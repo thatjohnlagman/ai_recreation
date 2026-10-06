@@ -87,9 +87,11 @@ def get_controller(c_type, defense_name):
     with open(Path(__file__).parent / "configs" / "controllers.yaml", "r") as f:
         c_cfg = yaml.safe_load(f)
         
-    config = c_cfg.get("C1", {})
+    config = c_cfg.get("controller_configurations", {}).get("C1", {})
     if not config:
-        config = {"id": "C1", "window_size": 5, "Rcritical": 0.5, "Rmin": 0.8, "fast_decay": 0.5, "slow_decay": 0.9, "growth_factor": 1.1}
+        config = c_cfg.get("C1", {})
+    if not config:
+        config = {"id": "C1", "window_size": 5, "Rcritical": 0.85, "Rmin": 0.95, "fast_decay": 0.40, "slow_decay": 0.90, "growth_factor": 1.05}
         
     with open(Path(__file__).parent / "configs" / "defenses.yaml", "r") as f:
         d_cfg = yaml.safe_load(f)
@@ -104,6 +106,7 @@ def get_controller(c_type, defense_name):
         def_name_long = "feature_squeezing"
         
     return RecallAwareController(config, d_cfg[def_key], def_name_long)
+
 
 def run_simulation(attack_name, defense_name, controller_mode, compare_mode=False):
     ids = IDS()
@@ -123,10 +126,11 @@ def run_simulation(attack_name, defense_name, controller_mode, compare_mode=Fals
         d_name_str = defense_name.upper() if defense_name else "NONE"
         scenarios = [(f"{controller_mode.capitalize()} {d_name_str}", get_defense(defense_name, ids.feature_names, ids.feature_mask, ids.bounds) if defense_name else None, get_controller(controller_mode, defense_name) if defense_name else None)]
         
-    print("\n" + "="*50)
-    print(f"RUNNING DEMONSTRATION")
-    print(f"Attack: {attack_name or 'None'}")
-    print("="*50)
+    print("\n" + "="*60)
+    print("  RECALL-AWARE IDS LOCAL DEMONSTRATION")
+    print(f"  Attack: {attack_name or 'None'} | Defense: {defense_name or 'None'} | Controller: {controller_mode}")
+    print("  Note: Standalone local control-path demo; does not replicate Phase 10/11 statistical evaluation.")
+    print("="*60)
 
     oracle = MockOracle(ids.model)
     
@@ -146,28 +150,25 @@ def run_simulation(attack_name, defense_name, controller_mode, compare_mode=Fals
         if c:
             c.reset()
             
-        # For RS, it evaluates chunks at a time. To simulate batch-by-batch for RS:
-        # We will wrap it or just handle standard processing
+        # Obtain intensity for batch_id = 0 once before processing rows
+        intensity = None
+        if c and d:
+            decision = c.get_intensity(batch_id)
+            intensity = decision.intensity
+        elif d:
+            if defense_name == "afp":
+                with open(Path(__file__).parent / "configs" / "defenses.yaml", "r") as f:
+                    intensity = yaml.safe_load(f)["afp"]["epsilon_base"]
+            elif defense_name == "rs":
+                with open(Path(__file__).parent / "configs" / "defenses.yaml", "r") as f:
+                    intensity = yaml.safe_load(f)["randomized_smoothing"]["sigma"]
+            elif defense_name == "fs":
+                with open(Path(__file__).parent / "configs" / "defenses.yaml", "r") as f:
+                    intensity = yaml.safe_load(f)["feature_squeezing"]["squeezing_intensity"]
         
         for i, (idx, row) in enumerate(X.iterrows()):
             is_attack = (y.iloc[i]["y_binary"] == 1)
             x_val = row.values
-            
-            # Controller decision
-            intensity = None
-            if c and d:
-                decision = c.get_intensity(batch_id)
-                intensity = decision.intensity
-            elif d:
-                if defense_name == "afp":
-                    with open(Path(__file__).parent / "configs" / "defenses.yaml", "r") as f:
-                        intensity = yaml.safe_load(f)["afp"]["epsilon_base"]
-                elif defense_name == "rs":
-                    with open(Path(__file__).parent / "configs" / "defenses.yaml", "r") as f:
-                        intensity = yaml.safe_load(f)["randomized_smoothing"]["sigma"]
-                elif defense_name == "fs":
-                    with open(Path(__file__).parent / "configs" / "defenses.yaml", "r") as f:
-                        intensity = yaml.safe_load(f)["feature_squeezing"]["squeezing_intensity"]
 
             # 1. Attack
             if is_attack and attack:
@@ -183,7 +184,8 @@ def run_simulation(attack_name, defense_name, controller_mode, compare_mode=Fals
                         res = attack.generate(x_val, oracle, idx, 1, reference_pool)
                         x_val = res.X_adv
                 except Exception as e:
-                    pass
+                    print(f"[Attack Generation Failed on sample {idx}]: {e}", file=sys.stderr)
+                    raise
             
             # 2. Defense and Predict
             pred = 0
@@ -220,12 +222,19 @@ def run_simulation(attack_name, defense_name, controller_mode, compare_mode=Fals
                 if pred == 1:
                     fp += 1
                     
-            if c and d:
-                c.submit_observations(batch_id, batch_tp, batch_fn)
-                batch_id += 1
-                batch_tp = 0
-                batch_fn = 0
+            if is_attack and c and d:
+                if (batch_tp + batch_fn) >= 5:
+                    c.submit_observations(batch_id, batch_tp, batch_fn)
+                    batch_id += 1
+                    batch_tp = 0
+                    batch_fn = 0
+                    # Request next batch's intensity only after submitting observations
+                    decision = c.get_intensity(batch_id)
+                    intensity = decision.intensity
                 
+        if c and d and (batch_tp + batch_fn) > 0:
+            c.submit_observations(batch_id, batch_tp, batch_fn)
+
         dr = (detected / total_attacks * 100) if total_attacks > 0 else 0
         print(f"Total Samples: {len(X)}")
         print(f"Attacks: {total_attacks} | Benign: {total_benign}")

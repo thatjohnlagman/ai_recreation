@@ -122,7 +122,9 @@ def send_packet(target_url: str, payload: dict) -> dict:
                 "status_code": response.status,
                 "latency_ms": latency_ms,
                 "body": res_body,
-                "blocked": False
+                "blocked": (response.status == 403),
+                "allowed": (response.status == 200),
+                "error": None
             }
     except urllib.error.HTTPError as e:
         latency_ms = (time.perf_counter() - t0) * 1000
@@ -134,14 +136,18 @@ def send_packet(target_url: str, payload: dict) -> dict:
             "status_code": e.code,
             "latency_ms": latency_ms,
             "body": body,
-            "blocked": (e.code == 403)
+            "blocked": (e.code == 403),
+            "allowed": (e.code == 200),
+            "error": None if e.code in (200, 403) else f"HTTP {e.code}"
         }
     except Exception as e:
         return {
             "status_code": 0,
             "latency_ms": 0,
             "body": {"error": str(e)},
-            "blocked": False
+            "blocked": False,
+            "allowed": False,
+            "error": str(e)
         }
 
 
@@ -207,7 +213,6 @@ class RemoteServerOracle:
         preds = []
         for i, row in enumerate(X):
             sid = sample_ids[i] if (sample_ids is not None and i < len(sample_ids)) else 0
-            self.queries[sid] = self.queries.get(sid, 0) + 1
 
             origin = random.choice(ORIGIN_POOL)
             family = "Unknown"
@@ -228,14 +233,29 @@ class RemoteServerOracle:
                 "feature_vector": row.tolist()
             }
             res = send_packet(self.target_url, payload)
-            # Blocked (403) -> Model classified as Attack (1)
-            # Allowed (200) -> Model classified as Benign (0)
-            preds.append(1 if res["blocked"] else 0)
+            # Accept only 403 as Attack (1) and 200 as Benign (0)
+            if res["status_code"] == 403:
+                self.queries[sid] = self.queries.get(sid, 0) + 1
+                preds.append(1)
+            elif res["status_code"] == 200:
+                self.queries[sid] = self.queries.get(sid, 0) + 1
+                preds.append(0)
+            else:
+                # 400/422/500 or transport error is an oracle error, not an evasion!
+                err_body = res.get("body", {})
+                err_msg = err_body.get("message") or err_body.get("error") or f"HTTP {res['status_code']}"
+                raise RuntimeError(
+                    f"Target oracle failure: HTTP {res['status_code']} from {self.target_url}: {err_msg}. "
+                    f"This error cannot be interpreted as Benign or evasion."
+                )
 
         return np.array(preds, dtype=int)
 
     def get_query_count(self, sample_id):
         return self.queries.get(sample_id, 0)
+
+
+TargetOracle = RemoteServerOracle
 
 
 class AttackerContext:
@@ -261,20 +281,21 @@ class AttackerContext:
 ctx = AttackerContext()
 
 
-def run_single_flow(flow_type: Optional[str] = None, is_attack: bool = False, vector: Optional[np.ndarray] = None, scenario: str = "Background Traffic"):
+def run_single_flow(flow_type: Optional[str] = None, is_attack: bool = False, vector: Optional[np.ndarray] = None, sample_id: Optional[int] = None, scenario: str = "Background Traffic"):
     """Sends a single legitimate or volumetric packet to the server with real dataset metadata."""
     origin = random.choice(ORIGIN_POOL if is_attack else BENIGN_POOL)
     t_str = time.strftime("%H:%M:%S")
 
     feat_list = None
-    chosen_idx = None
+    chosen_idx = sample_id
     if vector is not None:
         feat_list = vector.tolist()
         resolved_family = flow_type or "Unknown"
-        resolved_family_source = "Synthetic / Non-dataset"
+        resolved_family_source = "Dataset-derived" if chosen_idx is not None else "Synthetic / Non-dataset"
     else:
         indices = ctx.attack_indices if is_attack else ctx.benign_indices
-        chosen_idx = int(np.random.choice(indices))
+        if chosen_idx is None:
+            chosen_idx = int(np.random.choice(indices))
         feat_list = ctx.X_demo.iloc[chosen_idx].values.tolist()
         resolved_family = str(ctx.meta_demo.iloc[chosen_idx].get("attack_family", "Normal" if not is_attack else "Unknown"))
         resolved_family_source = "Dataset-derived"
@@ -297,15 +318,20 @@ def run_single_flow(flow_type: Optional[str] = None, is_attack: bool = False, ve
         print(f"{RED}[FAIL] Could not connect to target server at {DEFAULT_SERVER_URL}. Is server.py running?{RESET}")
         return
 
+    if res["status_code"] not in [200, 403]:
+        print(f"[{t_str}] {BG_RED}{WHITE}{BOLD} ERROR (HTTP {res['status_code']}) {RESET} Server returned error: {res['body']}")
+        return
+
     if res["blocked"]:
         badge = f"{BG_RED}{WHITE}{BOLD} BLOCKED (403) {RESET}"
         conf = res["body"].get("details", {}).get("confidence", "0.95")
         defense = res["body"].get("details", {}).get("defense", "active").upper()
         mode = res["body"].get("details", {}).get("mode", "").upper()
-        print(f"[{t_str}] {badge} {resolved_family:<22} from {origin['ip']:<15} ({origin['country']:<15}) | Conf: {conf} | Defense: {defense} [{mode}]")
+        used_int = res["body"].get("details", {}).get("used_intensity", "")
+        print(f"[{t_str}] {badge} {resolved_family:<22} from {origin['ip']:<15} | Conf: {conf} | Defense: {defense} [{mode}] (used: {used_int})")
     else:
         badge = f"{BG_GREEN}{WHITE}{BOLD} ALLOWED (200) {RESET}"
-        print(f"[{t_str}] {badge} {resolved_family:<22} from {origin['ip']:<15} ({origin['country']:<15}) | Server Status: Resource Granted")
+        print(f"[{t_str}] {badge} {resolved_family:<22} from {origin['ip']:<15} | Server Status: Resource Granted (Benign)")
 
 
 def run_volumetric_burst(attack_type: str = "DDoS", count: int = 6, delay: float = 0.25):
@@ -320,11 +346,11 @@ def run_volumetric_burst(attack_type: str = "DDoS", count: int = 6, delay: float
 def run_silent_probing_attack():
     """
     Executes Research Attack 1: Silent Probing
-    Iteratively perturbs features without querying the target oracle.
+    Sequential submission of unchanged baseline flows without querying target oracle (0 queries, no iterative perturbation).
     """
     print(f"\n{MAGENTA}{BOLD}======================================================================{RESET}")
     print(f"{MAGENTA}{BOLD}  RESEARCH ATTACK: SILENT PROBING ATTACK{RESET}")
-    print(f"{WHITE}  Model: Black-Box Zero-Query Feature Space Exploration{RESET}")
+    print(f"{WHITE}  Model: Sequential Submission of Unchanged Evaluation Flows (0 Queries){RESET}")
     print(f"{MAGENTA}{BOLD}======================================================================{RESET}\n")
 
     start_simulation_session("Silent Probing")
@@ -337,11 +363,11 @@ def run_silent_probing_attack():
         x_orig = ctx.X_demo.iloc[chosen_idx].values
         family = str(ctx.meta_demo.iloc[chosen_idx].get("attack_family", "Unknown"))
 
-        print(f"{WHITE}Selected Base Attack Vector: {CYAN}{family}{RESET}")
-        print(f"{DIM}Generating silent perturbation candidate (0 target queries)...{RESET}")
+        print(f"{WHITE}Selected Base Attack Vector: {CYAN}{family}{RESET} (Sample ID: {chosen_idx})")
+        print(f"{DIM}Submitting unchanged baseline flow (Silent Probing makes 0 target queries)...{RESET}")
 
         res = attack.generate(x_orig, oracle, sample_id=chosen_idx, true_label=1)
-        print(f"{GREEN}[OK] Candidate generated. Transmitting to protected server endpoint...{RESET}")
+        print(f"{GREEN}[OK] Flow prepared (no modification). Transmitting to protected server endpoint...{RESET}")
 
         origin = random.choice(ORIGIN_POOL)
         payload = {
@@ -359,11 +385,15 @@ def run_silent_probing_attack():
         resp = send_packet(DEFAULT_SERVER_URL, payload)
         t_str = time.strftime("%H:%M:%S")
 
+        if resp["status_code"] not in [200, 403]:
+            print(f"[{t_str}] {BG_RED}{WHITE}{BOLD} ERROR (HTTP {resp['status_code']}) {RESET} {resp['body']}\n")
+            return
+
         if resp["blocked"]:
             details = resp["body"].get("details", {})
             print(f"[{t_str}] {BG_RED}{WHITE}{BOLD} DETECTED & BLOCKED (403) {RESET}")
             print(f"IDS Classification: ATTACK | Family: {family} | Defense: {details.get('defense', '').upper()} [{details.get('mode', '').upper()}]")
-            print(f"{CYAN}Analysis: Defense perturbation successfully neutralized silent probing vector.{RESET}\n")
+            print(f"{CYAN}Analysis: Target IDS classified silent probing flow as Attack.{RESET}\n")
         else:
             print(f"[{t_str}] {BG_GREEN}{WHITE}{BOLD} EVADED & ALLOWED (200) {RESET}")
             print(f"IDS Classification: BENIGN | Family: {family}")
@@ -461,22 +491,38 @@ def run_decision_boundary_attack(max_queries: int = 50, steps: int = 10):
 
 def run_comparative_benchmark():
     """
-    Demonstrates the Core Research Hypothesis:
-    Base Defense (fixed intensity) vs. Recall-Aware Defense (adaptive feedback control).
+    Local Control-Path Demonstration:
+    Demonstrates defense control-path behavior by sending the exact same sequence of 5 flows
+    first under Base Defense (fixed intensity) and then under Recall-Aware Defense (adaptive controller).
+    Note: Local control-path illustration on identical sample sequence, distinct from the Phase 10/11
+    statistical benchmark (which evaluated 144 measurement batches of 500 records).
     """
     print(f"\n{YELLOW}{BOLD}======================================================================{RESET}")
-    print(f"{YELLOW}{BOLD}  COMPARATIVE RESEARCH BENCHMARK: BASE DEFENSE vs. RECALL-AWARE{RESET}")
+    print(f"{YELLOW}{BOLD}  LOCAL CONTROL-PATH DEMONSTRATION: BASE vs. RECALL-AWARE{RESET}")
+    print(f"{WHITE}  Evaluating identical 5-flow sequence under fixed vs adaptive controller{RESET}")
     print(f"{YELLOW}{BOLD}======================================================================{RESET}\n")
+
+    # Pick 5 fixed attack samples for exact repeatability
+    fixed_indices = ctx.attack_indices[:5].tolist()
+    base_api_url = DEFAULT_SERVER_URL.split("/api/")[0] if "/api/" in DEFAULT_SERVER_URL else "http://localhost:8000"
 
     # Step 1: Base Mode
     print(f"{WHITE}Step 1: Setting AFP Defense to {YELLOW}BASE MODE (Static Calibrated Intensity){RESET}...")
     set_server_defense("afp")
     set_server_mode("base")
+    # Reset dashboard metrics to clean baseline
+    try:
+        req = urllib.request.Request(f"{base_api_url}/api/dashboard/reset", data=b"{}", headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=3)
+    except Exception:
+        pass
     time.sleep(0.5)
 
-    print(f"{DIM}Sending 5 adversarial burst packets under Base AFP...{RESET}")
-    for i in range(5):
-        run_single_flow("Base AFP Flow", is_attack=True)
+    print(f"{DIM}Sending 5 fixed attack flows under Base AFP...{RESET}")
+    for idx in fixed_indices:
+        x_row = ctx.X_demo.iloc[idx].values
+        fam = str(ctx.meta_demo.iloc[idx].get("attack_family", "Unknown"))
+        run_single_flow(flow_type=fam, is_attack=True, vector=x_row, sample_id=idx, scenario="Base Demonstration")
         time.sleep(0.2)
 
     time.sleep(0.8)
@@ -484,14 +530,22 @@ def run_comparative_benchmark():
     # Step 2: Recall-Aware Mode
     print(f"\n{WHITE}Step 2: Activating {GREEN}RECALL-AWARE CONTROLLER (Dynamic Feedback Window){RESET}...")
     set_server_mode("recall-aware")
+    # Reset dashboard metrics to clean baseline
+    try:
+        req = urllib.request.Request(f"{base_api_url}/api/dashboard/reset", data=b"{}", headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=3)
+    except Exception:
+        pass
     time.sleep(0.5)
 
-    print(f"{DIM}Sending 5 adversarial burst packets under Recall-Aware AFP...{RESET}")
-    for i in range(5):
-        run_single_flow("Recall-Aware Flow", is_attack=True)
+    print(f"{DIM}Sending the SAME 5 attack flows under Recall-Aware AFP...{RESET}")
+    for idx in fixed_indices:
+        x_row = ctx.X_demo.iloc[idx].values
+        fam = str(ctx.meta_demo.iloc[idx].get("attack_family", "Unknown"))
+        run_single_flow(flow_type=fam, is_attack=True, vector=x_row, sample_id=idx, scenario="Recall-Aware Demonstration")
         time.sleep(0.2)
 
-    print(f"\n{CYAN}{BOLD}Benchmark completed. Check the SOC dashboard to observe dynamic intensity adjustments!{RESET}\n")
+    print(f"\n{CYAN}{BOLD}Demonstration completed. Check the SOC dashboard to observe dynamic intensity adjustments!{RESET}\n")
 
 
 def run_continuous_stream(delay: float = 1.0):
@@ -514,18 +568,23 @@ def run_continuous_stream(delay: float = 1.0):
 
 def interactive_menu():
     print_banner()
+    base_api_url = DEFAULT_SERVER_URL.split("/api/")[0] if "/api/" in DEFAULT_SERVER_URL else "http://localhost:8000"
     while True:
-        print(f"{WHITE}{BOLD}Select Action:{RESET}")
+        print(f"{WHITE}{BOLD}======================================================================{RESET}")
+        print(f"{CYAN}{BOLD}  ATTACKER ACTIONS (Black-Box Simulation POV):{RESET}")
         print(f"  {CYAN}[1]{RESET} Send Legitimate Benign Traffic Flow")
         print(f"  {RED}[2]{RESET} Launch DDoS Volumetric Flood Burst")
-        print(f"  {MAGENTA}[3]{RESET} Launch Silent Probing Attack (Zero Queries, Offline Evasion)")
+        print(f"  {MAGENTA}[3]{RESET} Launch Silent Probing (Sequential Unchanged Baseline Flows, 0 Queries)")
         print(f"  {MAGENTA}[4]{RESET} Launch Surrogate Transferability Attack (Decision Tree Surrogate)")
         print(f"  {MAGENTA}[5]{RESET} Launch Decision Boundary Attack (1D Bisection Search)")
-        print(f"  {YELLOW}[6]{RESET} Comparative Benchmark: Base Defense vs. Recall-Aware Defense")
-        print(f"  {BLUE}[7]{RESET} Continuous Real-time Traffic Stream (1 flow / sec)")
+        print(f"  {BLUE}[6]{RESET} Continuous Real-time Traffic Stream (1 flow / sec)")
+        print(f"")
+        print(f"{YELLOW}{BOLD}  OPERATOR SETUP CONTROLS (Local Experiment Configuration):{RESET}")
+        print(f"  {YELLOW}[7]{RESET} Local Control-Path Demonstration: Base vs. Recall-Aware (Identical Flows)")
         print(f"  {WHITE}[8]{RESET} Switch Active Defense: [AFP -> RS -> FS -> None]")
         print(f"  {WHITE}[9]{RESET} Toggle Controller Mode: [Recall-Aware <-> Base]")
-        print(f"  {DIM}[0]{RESET} Exit\n")
+        print(f"  {DIM}[0]{RESET} Exit")
+        print(f"{WHITE}{BOLD}======================================================================{RESET}\n")
 
         try:
             choice = input(f"{BOLD}Enter option (0-9): {RESET}").strip()
@@ -544,14 +603,13 @@ def interactive_menu():
         elif choice == "5":
             run_decision_boundary_attack()
         elif choice == "6":
-            run_comparative_benchmark()
-        elif choice == "7":
             run_continuous_stream(delay=1.0)
+        elif choice == "7":
+            run_comparative_benchmark()
         elif choice == "8":
             cycle = {"afp": "rs", "rs": "fs", "fs": "none", "none": "afp"}
-            # Fetch current
             try:
-                with urllib.request.urlopen("http://localhost:8000/api/dashboard/stats", timeout=3) as resp:
+                with urllib.request.urlopen(f"{base_api_url}/api/dashboard/stats", timeout=3) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
                     curr = data.get("afp", {}).get("defense_name", "afp")
                     nxt = cycle.get(curr, "afp")
@@ -561,7 +619,7 @@ def interactive_menu():
                 print(f"{RED}Could not cycle defense: {e}{RESET}\n")
         elif choice == "9":
             try:
-                with urllib.request.urlopen("http://localhost:8000/api/dashboard/stats", timeout=3) as resp:
+                with urllib.request.urlopen(f"{base_api_url}/api/dashboard/stats", timeout=3) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
                     curr_mode = data.get("afp", {}).get("mode", "recall-aware")
                     nxt_mode = "base" if curr_mode == "recall-aware" else "recall-aware"
@@ -577,15 +635,26 @@ def interactive_menu():
 
 
 def main():
+    global DEFAULT_SERVER_URL, DEFAULT_DEFENSE_URL, DEFAULT_MODE_URL, DEFAULT_TOGGLE_URL, DEFAULT_SIM_START_URL, DEFAULT_SIM_STOP_URL
     parser = argparse.ArgumentParser(description="Attacker Simulation Console for IDS + Recall-Aware Platform")
     parser.add_argument("--mode", choices=["menu", "silent", "surrogate", "boundary", "ddos", "benign", "stream", "compare"], default="menu")
     parser.add_argument("--defense", choices=["afp", "rs", "fs", "none"], default=None)
     parser.add_argument("--controller", choices=["recall-aware", "base"], default=None)
-    parser.add_argument("--target", default=DEFAULT_SERVER_URL)
+    parser.add_argument("--target", default=DEFAULT_SERVER_URL, help="Target URL for protected server endpoint")
     parser.add_argument("--count", type=int, default=5)
     parser.add_argument("--delay", type=float, default=0.3)
 
     args = parser.parse_args()
+
+    # Make --target effective for all server endpoints
+    if args.target:
+        DEFAULT_SERVER_URL = args.target
+        base_url = args.target.split("/api/")[0] if "/api/" in args.target else args.target
+        DEFAULT_DEFENSE_URL = f"{base_url}/api/dashboard/set-defense"
+        DEFAULT_MODE_URL = f"{base_url}/api/dashboard/set-mode"
+        DEFAULT_TOGGLE_URL = f"{base_url}/api/dashboard/toggle-afp"
+        DEFAULT_SIM_START_URL = f"{base_url}/api/simulation/start"
+        DEFAULT_SIM_STOP_URL = f"{base_url}/api/simulation/stop"
 
     if args.defense:
         set_server_defense(args.defense)

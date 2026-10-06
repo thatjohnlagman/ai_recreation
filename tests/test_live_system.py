@@ -33,7 +33,7 @@ def test_set_defense_and_mode():
 def test_protected_server_benign_traffic():
     payload = {
         "source_ip": "192.168.1.100",
-        "flow_type": "Normal",
+        "sample_id": 0,
         "is_attack": False
     }
     res = requests.post(f"{BASE_URL}/api/server/data", json=payload)
@@ -44,7 +44,7 @@ def test_protected_server_benign_traffic():
 def test_protected_server_attack_traffic():
     payload = {
         "source_ip": "185.199.110.23",
-        "flow_type": "DDoS",
+        "sample_id": 1,
         "is_attack": True,
         "country": "Ukraine"
     }

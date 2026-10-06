@@ -100,26 +100,40 @@ def test_ip_geolocation_strictness():
         assert pub_entry["location"] == "Unknown"
 
 def test_evasion_semantics():
-    """Verify that an attack scenario can be active while IDS classifies flow as Benign."""
+    """Verify genuine adversarial evasion: an actual attack sample perturbed by attack algorithm yields Benign classification."""
     requests.post(
         f"{BASE_URL}/api/simulation/start",
         json={"scenario": "Decision-Boundary Attack", "session_id": "bisection-01"}
     )
     try:
-        # Submit a benign-classified flow during the attack
+        import pandas as pd
+        from pathlib import Path
+        X_demo = pd.read_parquet(Path("runtime_package/demo_data/X_demo.parquet"))
+        metadata_demo = pd.read_parquet(Path("runtime_package/demo_data/metadata_demo.parquet"))
+        
+        orig_attack = X_demo.iloc[10].values
+        ref_benign = X_demo[metadata_demo["y_binary"] == 0].iloc[0].values
+        
+        # Bisection candidate crossing boundary into benign prediction region
+        alpha = 0.6
+        x_adv = ((1 - alpha) * orig_attack + alpha * ref_benign).tolist()
+        
         res = requests.post(
             f"{BASE_URL}/api/server/data",
             json={
-                "source_ip": "10.0.2.77",
-                "sample_id": 0,  # Benign dataset sample
-                "is_attack": True,  # Attacker intention / ground truth
-                "attack_scenario": "Decision-Boundary Attack"
+                "source_ip": "10.0.3.77",
+                "sample_id": 10,  # Actual attack sample in dataset
+                "is_attack": True,  # True attack label (ground truth)
+                "attack_scenario": "Decision-Boundary Attack",
+                "feature_vector": x_adv
             }
         )
         assert res.status_code == 200
         details = res.json().get("details", {})
-        # Attack scenario is Decision-Boundary Attack, but IDS classification is Benign
+        # Scenario is Decision-Boundary Attack, but IDS classification on feature_vector is Benign
         assert details["attack_scenario"] == "Decision-Boundary Attack"
         assert details["ids_classification"] == "Benign"
+        assert details["verdict"] == "FORWARDED"
     finally:
         requests.post(f"{BASE_URL}/api/simulation/stop")
+

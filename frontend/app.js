@@ -170,11 +170,6 @@ function updateThreatMapMarkers(locations) {
         offset: [0, -10]
       });
 
-      // Match screenshot: Singapore tooltip opened by default
-      if (loc.country === "Singapore") {
-        setTimeout(() => marker.openTooltip(), 500);
-      }
-
       markersMap[markerKey] = marker;
     }
   });
@@ -187,18 +182,14 @@ function initChart() {
   const ctx = document.getElementById("recallChart");
   if (!ctx || typeof Chart === "undefined") return;
 
-  const defaultLabels = ["10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00", "19:00", "20:00"];
-  const defaultRecall = [0.91, 0.92, 0.93, 0.94, 0.93, 0.95, 0.96, 0.962, 0.962, 0.965, 0.962];
-  const defaultAfp = [0.10, 0.12, 0.11, 0.13, 0.15, 0.17, 0.18, 0.22, 0.35, 0.40, 0.42];
-
   recallChart = new Chart(ctx, {
     type: "line",
     data: {
-      labels: defaultLabels,
+      labels: [],
       datasets: [
         {
           label: "Recall",
-          data: defaultRecall,
+          data: [],
           borderColor: "#10b981",
           backgroundColor: "rgba(16, 185, 129, 0.08)",
           borderWidth: 2,
@@ -209,7 +200,7 @@ function initChart() {
         },
         {
           label: "AFP intensity",
-          data: defaultAfp,
+          data: [],
           borderColor: "#3b82f6",
           backgroundColor: "rgba(59, 130, 246, 0.08)",
           borderWidth: 2,
@@ -331,24 +322,30 @@ function updateAfpPanel(afp, recallVal) {
     statePill.className = `ra-status-badge ${stateName.toLowerCase()}`;
   }
 
-  // Circular Gauge Stroke & Values
-  const gaugeVal = parseFloat(recallVal) || 0.962;
+  // Circular Gauge Stroke & Values (Truthful zero and unavailable handling)
   const gaugeCircle = document.getElementById("gauge-circle-bar");
   const gaugeText = document.getElementById("gauge-recall-val");
   const gaugePill = document.getElementById("gauge-health-pill");
 
-  if (gaugeCircle) {
+  const isRecallAvailable = (recallVal !== null && recallVal !== undefined && recallVal !== "—" && recallVal !== "");
+  if (!isRecallAvailable) {
+    if (gaugeCircle) gaugeCircle.style.strokeDashoffset = 264;
+    if (gaugeText) gaugeText.textContent = "—";
+    if (gaugePill) {
+      gaugePill.textContent = "Awaiting Data";
+      gaugePill.className = "gauge-badge-pill";
+    }
+  } else {
+    const gaugeVal = Number(recallVal);
     const totalCircumference = 264;
     const offset = totalCircumference * (1.0 - Math.min(1.0, Math.max(0, gaugeVal)));
-    gaugeCircle.style.strokeDashoffset = offset;
-  }
-  if (gaugeText) {
-    gaugeText.textContent = gaugeVal.toFixed(3);
-  }
-  if (gaugePill) {
-    const isHealthy = gaugeVal >= (afp.threshold_warning || 0.85);
-    gaugePill.textContent = isHealthy ? "Healthy" : "Alert";
-    gaugePill.className = `gauge-badge-pill ${isHealthy ? "green" : "alert"}`;
+    if (gaugeCircle) gaugeCircle.style.strokeDashoffset = offset;
+    if (gaugeText) gaugeText.textContent = gaugeVal.toFixed(3);
+    if (gaugePill) {
+      const isHealthy = gaugeVal >= (afp.threshold_warning || 0.85);
+      gaugePill.textContent = isHealthy ? "Healthy" : "Alert";
+      gaugePill.className = `gauge-badge-pill ${isHealthy ? "green" : "alert"}`;
+    }
   }
 
   // Intensity Bar, Bounds & Labels
@@ -403,7 +400,11 @@ function updateAfpPanel(afp, recallVal) {
 // -----------------------------------------------------------------------------
 function renderTopThreats(threats) {
   const tbody = document.getElementById("top-threats-tbody");
-  if (!tbody || !threats) return;
+  if (!tbody) return;
+  if (!threats || threats.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="3" class="text-center" style="color: var(--text-muted); padding: 14px;">No threat locations in session</td></tr>';
+    return;
+  }
 
   tbody.innerHTML = threats.map(item => `
     <tr>
@@ -579,9 +580,63 @@ window.onRowSelectAttack = function(idx) {
 window.handleSelectFeed = window.onRowSelectFeed;
 window.handleSelectAttack = window.onRowSelectAttack;
 
+function resetInspectorUI() {
+  selectedFlowItem = null;
+  const titleEl = document.getElementById("insp-flow-title");
+  if (titleEl) titleEl.textContent = "Awaiting flow telemetry";
+  const timeEl = document.getElementById("insp-time");
+  if (timeEl) timeEl.textContent = "—";
+  const badgeEl = document.getElementById("insp-verdict-badge");
+  if (badgeEl) {
+    badgeEl.textContent = "Idle";
+    badgeEl.className = "badge-status";
+  }
+  const srcIpEl = document.getElementById("insp-source-ip");
+  if (srcIpEl) srcIpEl.textContent = "—";
+  const locEl = document.getElementById("insp-location");
+  if (locEl) locEl.textContent = "—";
+  const dstIpEl = document.getElementById("insp-dest-ip");
+  if (dstIpEl) dstIpEl.textContent = "—";
+  const scenarioEl = document.getElementById("insp-attack-scenario");
+  if (scenarioEl) scenarioEl.textContent = "—";
+  const scenarioSubEl = document.getElementById("insp-scenario-sub");
+  if (scenarioSubEl) scenarioSubEl.textContent = "No session active";
+  const familyEl = document.getElementById("insp-traffic-family");
+  if (familyEl) familyEl.textContent = "—";
+  const sourceEl = document.getElementById("insp-traffic-source");
+  if (sourceEl) sourceEl.textContent = "—";
+  const idsClassEl = document.getElementById("insp-ids-classification");
+  if (idsClassEl) {
+    idsClassEl.textContent = "—";
+    idsClassEl.style.color = "";
+  }
+  const confValEl = document.getElementById("insp-confidence-val");
+  if (confValEl) confValEl.textContent = "—";
+  const confFillEl = document.getElementById("insp-confidence-fill");
+  if (confFillEl) {
+    confFillEl.style.width = "0%";
+    confFillEl.style.background = "";
+  }
+  const defNameEl = document.getElementById("insp-defense-name");
+  if (defNameEl) defNameEl.textContent = "—";
+  const defIntEl = document.getElementById("insp-defense-intensity");
+  if (defIntEl) defIntEl.textContent = "—";
+  const actionNameEl = document.getElementById("insp-action-name");
+  if (actionNameEl) {
+    actionNameEl.textContent = "—";
+    actionNameEl.className = "insp-card-sub";
+  }
+}
+
 function renderRecentFeed(feed) {
   const tbody = document.getElementById("recent-feed-tbody");
-  if (!tbody || !feed) return;
+  if (!tbody) return;
+  if (!feed || feed.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" class="text-center" style="color: var(--text-muted); padding: 14px;">No traffic flows recorded in session</td></tr>';
+    currentFeedList = [];
+    resetInspectorUI();
+    return;
+  }
   currentFeedList = feed;
 
   // Auto-select first attack (or top item) if none selected yet
@@ -621,7 +676,12 @@ function renderRecentFeed(feed) {
 
 function renderRecentAttacks(attacks) {
   const tbody = document.getElementById("recent-attacks-tbody");
-  if (!tbody || !attacks) return;
+  if (!tbody) return;
+  if (!attacks || attacks.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" class="text-center" style="color: var(--text-muted); padding: 14px;">No attack flows recorded in session</td></tr>';
+    currentAttacksList = [];
+    return;
+  }
   currentAttacksList = attacks;
 
   // Auto-select if still null
@@ -684,7 +744,7 @@ function syncDashboard(payload) {
 
   // 2. AFP Control Panel
   if (payload.afp) {
-    updateAfpPanel(payload.afp, payload.stats ? payload.stats.detection_recall : 0.962);
+    updateAfpPanel(payload.afp, payload.stats ? payload.stats.detection_recall : null);
   }
 
   // 3. Threat Map
