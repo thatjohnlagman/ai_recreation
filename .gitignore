@@ -7,4 +7,6 @@ __pycache__/
 .venv/
 datasets/demo/*_20k.csv
 operator_token.txt
-ids_standalone_tool_defense_ready.zip
+.operator_token
+*.zip
+create_package.py

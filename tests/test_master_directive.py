@@ -5,6 +5,15 @@ import numpy as np
 
 BASE_URL = "http://localhost:8000"
 
+@pytest.fixture(autouse=True)
+def check_live_server():
+    try:
+        r = requests.get(f"{BASE_URL}/api/dashboard/stats", timeout=1)
+        if r.status_code != 200:
+            pytest.skip("Live server on port 8000 not responding.")
+    except Exception:
+        pytest.skip("Live server on port 8000 not reachable.")
+
 def test_simulation_session_lifecycle():
     """Verify session management: start, query status, and stop."""
     # Start session

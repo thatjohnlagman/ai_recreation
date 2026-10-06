@@ -167,13 +167,6 @@
           <span class="status-val cyan" id="afp-status-text">Active</span>
         </div>
 
-        <!-- Operator Authentication Status Badge -->
-        <div class="header-status-pill clickable" id="operator-auth-btn" title="Click to configure Operator Authentication">
-          <span class="status-dot green" id="operator-auth-dot"></span>
-          <span class="header-status-label">Operator</span>
-          <span class="status-val green" id="operator-auth-text">Configured</span>
-        </div>
-
         <!-- Data Profile & Pool Badge -->
         <div class="header-status-pill" id="dataset-status-pill" title="Active Data Profile & Target Pool">
           <span class="status-dot blue" id="dataset-status-dot"></span>
@@ -309,6 +302,10 @@
               <div class="map-wrapper">
                 <div id="threat-map"></div>
               </div>
+              <div class="map-meta-footer" style="padding: 6px 12px; font-size: 11px; color: var(--text-muted); display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--border-color); background: rgba(15, 23, 42, 0.4);">
+                <span id="map-status-text">No geolocated detections yet</span>
+                <span class="map-attr">Approximate GeoIP of submitted demo source IPs · <a href="https://db-ip.com" target="_blank" rel="noopener" style="color: #3b82f6; text-decoration: underline;">IP Geolocation by DB-IP</a></span>
+              </div>
             </div>
 
             <!-- Top Threat IPs Card -->
@@ -381,7 +378,7 @@
                 <div class="inspector-grid">
                   <!-- Card 1: Source Origin -->
                   <div class="inspector-card">
-                    <div class="insp-card-label">Source Origin</div>
+                    <div class="insp-card-label">Source Origin (Demo IP)</div>
                     <div class="insp-card-value font-mono" id="insp-source-ip">—</div>
                     <div class="insp-card-sub" id="insp-location">—</div>
                   </div>
@@ -390,7 +387,7 @@
                   <div class="inspector-card">
                     <div class="insp-card-label">Target Endpoint</div>
                     <div class="insp-card-value font-mono" id="insp-dest-ip">—</div>
-                    <div class="insp-card-sub" id="insp-protocol">Protected Data Service</div>
+                    <div class="insp-card-sub" id="insp-protocol">Demonstration Destination</div>
                   </div>
 
                   <!-- Card 3: IDS Classification & Confidence -->
@@ -433,6 +430,11 @@
               <span class="badge-status-pill green" id="afp-header-badge">Active</span>
             </div>
             
+            <!-- Operator Authorization Notification (Shown only on real 401 error) -->
+            <div id="operator-auth-alert-banner" style="display:none; margin: 8px 0; padding: 8px 12px; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 8px; color: #f87171; font-size: 11px; line-height: 1.4;">
+              <strong>Operator Session Required:</strong> Please reopen dashboard via <code>python launch_dashboard.py</code> to control defense settings.
+            </div>
+
             <!-- Defense & Mode Controls Container -->
             <div class="defense-controls-container">
               <!-- Defense Selector Row -->
@@ -455,6 +457,7 @@
                     <button type="button" class="segment-btn" data-mode="base" onclick="handleSetMode('base')">Base</button>
                   </div>
                   <span class="ra-status-badge green" id="controller-state-pill" title="Recall-Aware Controller State">Green</span>
+                  <button type="button" class="segment-btn" id="reset-metrics-btn" onclick="handleReset()" style="margin-left: 8px; font-size: 11px; padding: 4px 10px;" title="Reset baseline counters and controller state">Reset</button>
                 </div>
               </div>
             </div>

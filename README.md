@@ -22,44 +22,56 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-### Step 2: Start Protected Server & SOC Dashboard (Terminal 1)
+### Step 2: Start Protected Server (Terminal 1)
 ```powershell
 python server.py
 ```
-Open your browser to: **`http://localhost:8000`**
+By default, the presentation server binds loopback-only to `127.0.0.1:8000`.
 
-### Step 3: Run Attacker & Simulation Console (Terminal 2)
+### Step 3: Launch Authorized Dashboard (Terminal 2 or Auto-Launch)
+```powershell
+python launch_dashboard.py
+```
+This local launcher requests a one-time launch ticket, opens your default browser, and establishes a server-validated `HttpOnly` operator session cookie (`ids_operator_session`). Dashboard users can operate defense selection, Recall-Aware switching, and baseline resets without copying, typing, or managing tokens in the UI.
+
+### Step 4: Run Attacker & Simulation Console (Terminal 3)
 ```powershell
 python attacker_sim.py
 ```
 
-The console menu presents:
-- **[1]** Send Legitimate Benign Traffic Flow (`200 OK`)
-- **[2]** Launch DDoS Volumetric Flood Burst (`403 Forbidden`)
-- **[3]** Launch Silent Probing (Sequential Unchanged Baseline Flows, 0 Queries)
-- **[4]** Launch Surrogate Transferability Attack (Decision Tree Surrogate)
-- **[5]** Launch Decision Boundary Attack (1D Bisection Search)
-- **[6]** Continuous Real-time Traffic Stream
-- **[7]** Local Control-Path Demonstration: Base vs. Recall-Aware (Identical Flows)
-- **[8]** Switch Active Defense (`[AFP -> RS -> FS -> None]`)
-- **[9]** Toggle Controller Mode (`[Recall-Aware <-> Base]`)
+The console menu exposes the canonical study procedures:
+- **[1]** Send Legitimate Benign Traffic Flow (`Request allowed (HTTP 200)`)
+- **[2]** Launch Silent Probing (Sequential Unchanged Baseline Flows, 0 Queries)
+- **[3]** Launch Surrogate Transferability Attack (Decision Tree Surrogate)
+- **[4]** Launch Decision Boundary Attack (1D Bisection Search)
+- **[5]** Continuous Real-time Traffic Stream
 - **[0]** Exit
 
-Direct CLI modes are also available:
+Direct CLI modes are available for headless execution:
 ```powershell
-# Attack workflows against 72,000 measurement pool
+# Canonical attack workflows against 72,000 measurement pool
 python attacker_sim.py --mode silent
 python attacker_sim.py --mode surrogate
 python attacker_sim.py --mode boundary
 
-# Control-path and cross-defense comparisons
-python attacker_sim.py --mode compare --defense afp
-python attacker_sim.py --mode compare-all
-
 # Traffic generation with optional seed
 python attacker_sim.py --dataset expanded --seed 42 --mode benign
-python attacker_sim.py --mode ddos --count 10
+python attacker_sim.py --mode stream
 ```
+
+### Step 5: Operator Benchmark & Control CLI (Separate Operator Workflow)
+Operator configurations and comparative evaluations are isolated in `operator_benchmarks.py`:
+```powershell
+# Set defense or controller mode (authorized via local .operator_token)
+python operator_benchmarks.py --defense afp
+python operator_benchmarks.py --mode recall-aware
+python operator_benchmarks.py --reset
+
+# 5-Flow Control-Path Demonstrations (Base vs. Recall-Aware on identical target sequence)
+python operator_benchmarks.py --compare --defense afp
+python operator_benchmarks.py --compare-all
+```
+*Note*: The 5-flow comparative benchmark serves as a control-path demonstration. Because Recall-Aware feedback after decision 5 dynamically affects subsequent decisions, a 5-flow sequence illustrates controller mechanics rather than population statistical superiority.
 
 ---
 
@@ -118,7 +130,9 @@ pytest -v
 
 1. **Demonstration Tool vs. Research Protocol**:
    This demonstration tool illustrates live HTTP feature-flow classification, inline perturbation, and real-time controller adaptation. It does **not** substitute for the Phase 10/11 research evaluation (which evaluated 144 measurement batches of 500 records each against frozen test caches). Official thesis benchmark tables derive from the frozen research package.
-2. **Autonomous Label Discovery**:
-   A production IDS operating in real time does not have access to ground truth labels. In this demonstration, ground truth is post-decision simulation feedback provided strictly during server-validated simulation sessions to close the controller feedback loop. Unlabeled flows do not update confusion matrix metrics or controller state.
-3. **Map Tiles**:
-   Vendored frontend dependencies (`leaflet.js`, `leaflet.css`, `chart.umd.min.js`) ensure that all dashboards, metrics, graphs, tables, and forensic inspection work completely offline. Map basemap tiles (ArcGIS/OpenStreetMap) load dynamically when internet connectivity is present; in fully offline presentation environments, the map renders with a clean dark/light canvas background without breaking or raising exceptions.
+2. **Recorded Features and Autonomous Label Discovery**:
+   The demonstration operates on recorded/preprocessed 78-feature flow vectors (CSE-CIC-IDS2018). It does **not** perform live packet capture (pcap) or live network feature extraction. Reference labels are required for recall/FPR evaluation and Recall-Aware controller feedback. In this demonstration, ground truth is post-decision simulation feedback provided strictly during server-validated simulation sessions to close the controller feedback loop. Unlabeled flows do not update confusion matrix metrics or controller state.
+3. **Map Telemetry & Local GeoIP Provenance**:
+   - The threat map uses bundled Natural Earth 110m low-resolution GeoJSON outline vectors (`frontend/vendor/ne_110m_admin_0_countries.geojson`), rendering an offline world basemap without external tile dependencies. OpenStreetMap tiles load dynamically as an optional enhancement when internet access is available.
+   - Geolocation enrichment uses the bundled local DB-IP City Lite MMDB database (`runtime_package/geoip/dbip-city-lite.mmdb`) with an LRU lookup cache, requiring zero external runtime API calls.
+   - **Provenance Notice**: IP addresses submitted during traffic simulation are client-submitted demonstration values, not captured peer addresses or verified attacker identities. Geolocation pins visualize the approximate location of these demo IPs and must not be interpreted as physical attribution of actual threat actors. RFC 1918 private ranges and RFC 5737 documentation test networks receive truthful non-geographic status and produce no map markers.

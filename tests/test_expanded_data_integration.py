@@ -51,6 +51,18 @@ from operator_benchmarks import (
 
 BASE_URL = "http://localhost:8000"
 
+SKIPPED_CHECKS = []
+PASSED_CHECKS = []
+
+def handle_skip(check_name: str, reason: str):
+    msg = f"[{check_name}] {reason}"
+    SKIPPED_CHECKS.append(msg)
+    print(f"   [SKIP] {msg}")
+    if "pytest" in sys.modules:
+        import pytest
+        pytest.skip(msg)
+
+
 
 def test_1_data_contract_and_roles():
     print(">> [Check 1] Verifying 90,000-row Data Contract, Roles, and Schemas...")
@@ -257,11 +269,11 @@ def test_4_profile_mismatch_and_input_validation():
     try:
         stats = requests.get(f"{BASE_URL}/api/dashboard/stats", timeout=2).json()
     except Exception:
-        print("   [SKIP] Target server not running on port 8000.")
+        handle_skip("Check 4", "Target server not running on port 8000")
         return
 
     if stats.get("data_profile") != "expanded":
-        print(f"   [SKIP] Server is running profile '{stats.get('data_profile')}'; requires expanded server.")
+        handle_skip("Check 4", f"Server is running profile '{stats.get('data_profile')}'; requires expanded server")
         return
 
     # Reset metrics first
@@ -320,11 +332,11 @@ def test_5_session_bound_query_accounting():
     try:
         stats = requests.get(f"{BASE_URL}/api/dashboard/stats", timeout=2).json()
     except Exception:
-        print("   [SKIP] Target server not running on port 8000.")
+        handle_skip("Check 5", "Target server not running on port 8000")
         return
 
     if stats.get("data_profile") != "expanded":
-        print(f"   [SKIP] Server is running profile '{stats.get('data_profile')}'; test_5 requires expanded server.")
+        handle_skip("Check 5", f"Server is running profile '{stats.get('data_profile')}'; test_5 requires expanded server")
         return
 
     reset_server_state()
@@ -464,11 +476,11 @@ def test_6_cross_defense_comparison():
     try:
         stats = requests.get(f"{BASE_URL}/api/dashboard/stats", timeout=2).json()
     except Exception:
-        print("   [SKIP] Target server not running on port 8000.")
+        handle_skip("Check 6", "Target server not running on port 8000")
         return
 
     if stats.get("data_profile") != "expanded":
-        print(f"   [SKIP] Server is running profile '{stats.get('data_profile')}'; test_6 requires expanded server.")
+        handle_skip("Check 6", f"Server is running profile '{stats.get('data_profile')}'; test_6 requires expanded server")
         return
 
     success = run_cross_defense_comparison(count=5)
@@ -482,11 +494,11 @@ def test_7_menu_option_7_preserves_defense():
     try:
         stats = requests.get(f"{BASE_URL}/api/dashboard/stats", timeout=2).json()
     except Exception:
-        print("   [SKIP] Target server not running on port 8000.")
+        handle_skip("Check 7", "Target server not running on port 8000")
         return
 
     if stats.get("data_profile") != "expanded":
-        print(f"   [SKIP] Server is running profile '{stats.get('data_profile')}'; test_7 requires expanded server.")
+        handle_skip("Check 7", f"Server is running profile '{stats.get('data_profile')}'; test_7 requires expanded server")
         return
 
     # 1. Select RS defense and verify run_comparative_benchmark(defense=None) stays in RS
@@ -518,11 +530,11 @@ def test_8_attack_wrappers_fault_injection_and_status_separation():
     try:
         stats = requests.get(f"{BASE_URL}/api/dashboard/stats", timeout=2).json()
     except Exception:
-        print("   [SKIP] Target server not running on port 8000.")
+        handle_skip("Check 8", "Target server not running on port 8000")
         return
 
     if stats.get("data_profile") != "expanded":
-        print(f"   [SKIP] Server is running profile '{stats.get('data_profile')}'; test_8 requires expanded server.")
+        handle_skip("Check 8", f"Server is running profile '{stats.get('data_profile')}'; test_8 requires expanded server")
         return
 
     real_run_single_flow = run_single_flow
@@ -695,7 +707,7 @@ def test_11_role_separation_and_operator_authorization():
         print("   [PASS] Authorized operator calls succeed with valid X-Operator-Token.")
         print("   [PASS] Unsupported procedure names ('Volumetric Burst', etc.) rejected with HTTP 400.")
     else:
-        print("   [INFO] Live server not running on port 8000; skipped live HTTP auth assertions.")
+        handle_skip("Check 11", "Live server not running on port 8000; skipped live HTTP auth assertions")
 
     print("   [PASS] Attacker console contains only attacker/traffic actions; operator workflows isolated in operator_benchmarks.py.\n")
 
@@ -704,21 +716,41 @@ def run_all_expanded_tests():
     print("=================================================================")
     print("  EXPANDED SIMULATION DATA INTEGRATION VERIFICATION")
     print("=================================================================")
-    test_1_data_contract_and_roles()
-    test_2_seeded_sampling_without_replacement()
-    test_3_combined_fingerprint_contract()
-    test_4_profile_mismatch_and_input_validation()
-    test_5_session_bound_query_accounting()
-    test_6_cross_defense_comparison()
-    test_7_menu_option_7_preserves_defense()
-    test_8_attack_wrappers_fault_injection_and_status_separation()
-    test_9_seeded_crafting_reference_selection()
-    test_10_explicit_fallback_and_profile_isolation()
-    test_11_role_separation_and_operator_authorization()
+    checks = [
+        ("Check 1: Data contract & roles", test_1_data_contract_and_roles),
+        ("Check 2: Seeded sampling", test_2_seeded_sampling_without_replacement),
+        ("Check 3: Combined fingerprint", test_3_combined_fingerprint_contract),
+        ("Check 4: Profile mismatch & validation", test_4_profile_mismatch_and_input_validation),
+        ("Check 5: Query accounting & target confusion", test_5_session_bound_query_accounting),
+        ("Check 6: Cross-defense comparison", test_6_cross_defense_comparison),
+        ("Check 7: Benchmark preserves defense", test_7_menu_option_7_preserves_defense),
+        ("Check 8: Fault injection & status separation", test_8_attack_wrappers_fault_injection_and_status_separation),
+        ("Check 9: Seeded crafting selection", test_9_seeded_crafting_reference_selection),
+        ("Check 10: Fallback & profile isolation", test_10_explicit_fallback_and_profile_isolation),
+        ("Check 11: Role separation & operator auth", test_11_role_separation_and_operator_authorization),
+    ]
+    passed_count = 0
+    for name, fn in checks:
+        prev_skips = len(SKIPPED_CHECKS)
+        fn()
+        if len(SKIPPED_CHECKS) == prev_skips:
+            passed_count += 1
+            PASSED_CHECKS.append(name)
+
     print("=================================================================")
-    print("  ALL EXPANDED DATA INTEGRATION CHECKS PASSED SUCCESSFULLY!")
-    print("=================================================================")
+    if SKIPPED_CHECKS:
+        print(f"  CHECKS SUMMARY: {passed_count} Passed, {len(SKIPPED_CHECKS)} Skipped")
+        for sc in SKIPPED_CHECKS:
+            print(f"    - {sc}")
+        print("  NOTICE: Live server was not running on port 8000. Unqualified all-passed assertion withheld.")
+        print("=================================================================")
+        if "--require-live" in sys.argv:
+            sys.exit(1)
+    else:
+        print(f"  ALL {passed_count} EXPANDED DATA INTEGRATION CHECKS (INCLUDING LIVE SERVER) PASSED SUCCESSFULLY!")
+        print("=================================================================")
 
 
 if __name__ == "__main__":
     run_all_expanded_tests()
+

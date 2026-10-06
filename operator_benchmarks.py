@@ -49,7 +49,7 @@ from attacker_sim import (
     RESET, BOLD, DIM, RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN, WHITE
 )
 
-DEFAULT_OPERATOR_TOKEN = "ids-operator-secret-2026"
+PRIVATE_TOKEN_FILE = BASE_DIR / ".operator_token"
 TOKEN_FILE = BASE_DIR / "operator_token.txt"
 
 
@@ -58,14 +58,21 @@ def get_operator_token(cli_token: Optional[str] = None) -> str:
     Resolves the operator token with the following priority:
     1. CLI argument (--token)
     2. Environment variable (IDS_OPERATOR_TOKEN)
-    3. Local token file (operator_token.txt, excluded from VCS and ZIP distribution)
-    4. Default local demonstration token (ids-operator-secret-2026)
+    3. Server-generated private token (.operator_token)
+    4. Local configuration token (operator_token.txt)
     """
     if cli_token and cli_token.strip():
         return cli_token.strip()
     env_token = os.environ.get("IDS_OPERATOR_TOKEN")
     if env_token and env_token.strip():
         return env_token.strip()
+    if PRIVATE_TOKEN_FILE.exists():
+        try:
+            content = PRIVATE_TOKEN_FILE.read_text(encoding="utf-8").strip()
+            if content:
+                return content
+        except Exception:
+            pass
     if TOKEN_FILE.exists():
         try:
             content = TOKEN_FILE.read_text(encoding="utf-8").strip()
@@ -73,7 +80,10 @@ def get_operator_token(cli_token: Optional[str] = None) -> str:
                 return content
         except Exception:
             pass
-    return DEFAULT_OPERATOR_TOKEN
+    raise RuntimeError(
+        "Operator authorization token not found. Please start the server (which creates "
+        ".operator_token) or configure $env:IDS_OPERATOR_TOKEN or pass --token."
+    )
 
 
 def get_management_url(path: str) -> str:
@@ -425,9 +435,9 @@ def main():
     parser = argparse.ArgumentParser(description="Operator Benchmark & Automated Comparison Suite (IDS Tool)")
     parser.add_argument(
         "--mode",
-        choices=["benchmark", "compare-all", "set-defense", "set-mode", "reset"],
-        default="benchmark",
-        help="Operator action: 'benchmark' (Base vs RA), 'compare-all' (cross-defense replay), or management actions"
+        choices=["benchmark", "compare", "compare-all", "set-defense", "set-mode", "reset"],
+        default="compare",
+        help="Operator action: 'compare'/'benchmark' (Base vs RA), 'compare-all' (cross-defense replay), or management actions"
     )
     parser.add_argument("--defense", choices=["afp", "rs", "fs", "none"], default=None, help="Target defense for benchmark or set-defense")
     parser.add_argument("--controller", choices=["recall-aware", "base"], default=None, help="Target mode for set-mode")
@@ -456,7 +466,7 @@ def main():
     success = True
     token = args.token
 
-    if args.mode == "benchmark":
+    if args.mode in ["benchmark", "compare"]:
         success = run_comparative_benchmark(defense=args.defense, token=token)
     elif args.mode == "compare-all":
         success = run_cross_defense_comparison(count=args.count, token=token)

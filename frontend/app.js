@@ -33,6 +33,9 @@ function escapeHtml(str) {
 // Initialization
 // -----------------------------------------------------------------------------
 document.addEventListener("DOMContentLoaded", () => {
+  // Purge any legacy operator tokens from storage
+  sessionStorage.removeItem("ids_operator_token");
+  localStorage.removeItem("ids_operator_token");
   initTheme();
   initClock();
   initMap();
@@ -98,26 +101,53 @@ function initClock() {
 // -----------------------------------------------------------------------------
 // Leaflet Threat Location Map
 // -----------------------------------------------------------------------------
+let threatGeoJsonLayer = null;
+
 function initMap() {
   const mapContainer = document.getElementById("threat-map");
   if (!mapContainer || typeof L === "undefined") return;
 
   // Initialize Map centered on world view
   threatMap = L.map("threat-map", {
-    center: [22, 18],
+    center: [20, 0],
     zoom: 2,
     minZoom: 1.5,
-    maxZoom: 7,
+    maxZoom: 10,
     zoomControl: true,
-    attributionControl: false,
-    scrollWheelZoom: true
+    attributionControl: true,
+    scrollWheelZoom: false
   });
 
-  // Reposition zoom control to bottom left matching reference screenshot
   threatMap.zoomControl.setPosition('bottomleft');
 
-  // Load appropriate tiles for active theme
+  // 1. Bundled Offline World Outline Basemap (Natural Earth 110m GeoJSON)
+  fetch("/static/vendor/ne_110m_admin_0_countries.geojson")
+    .then(r => r.json())
+    .then(geo => {
+      threatGeoJsonLayer = L.geoJSON(geo, {
+        style: function() {
+          const isDark = (currentTheme === "dark");
+          return {
+            fillColor: isDark ? '#1e293b' : '#e2e8f0',
+            weight: 1,
+            opacity: 0.9,
+            color: isDark ? '#334155' : '#94a3b8',
+            fillOpacity: isDark ? 0.75 : 0.5
+          };
+        }
+      }).addTo(threatMap);
+    })
+    .catch(err => {
+      console.warn("[Map] Offline vector basemap note:", err);
+    });
+
+  // 2. OpenStreetMap online tile layer with attribution
   updateMapTheme(currentTheme);
+
+  // Handle window resize to avoid tile seams
+  window.addEventListener("resize", () => {
+    if (threatMap) threatMap.invalidateSize();
+  });
 }
 
 function updateMapTheme(theme) {
@@ -128,26 +158,57 @@ function updateMapTheme(theme) {
     currentTileLayer = null;
   }
 
-  if (theme === "dark") {
-    // Dark Gray Canvas tiles for Dark Mode
-    currentTileLayer = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}", {
-      maxZoom: 16,
-      attribution: ""
-    }).addTo(threatMap);
-  } else {
-    // Unwatermarked crisp OpenStreetMap tiles for Light Mode
-    currentTileLayer = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      maxZoom: 19,
-      attribution: ""
-    }).addTo(threatMap);
+  // Use crisp OpenStreetMap tiles with attribution
+  currentTileLayer = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 18,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>'
+  }).addTo(threatMap);
+
+  if (threatGeoJsonLayer) {
+    const isDark = (theme === "dark");
+    threatGeoJsonLayer.setStyle({
+      fillColor: isDark ? '#1e293b' : '#e2e8f0',
+      color: isDark ? '#334155' : '#94a3b8'
+    });
   }
 }
 
 function updateThreatMapMarkers(locations) {
-  if (!threatMap || !locations) return;
+  if (!threatMap) return;
+  const statusEl = document.getElementById("map-status-text");
+
+  // Handle reset or empty locations
+  if (!locations || locations.length === 0) {
+    Object.values(markersMap).forEach(m => threatMap.removeLayer(m));
+    markersMap = {};
+    if (statusEl) statusEl.textContent = "No geolocated detections yet";
+    return;
+  }
+
+  if (statusEl) {
+    statusEl.textContent = `${locations.length} geolocated source IP(s) detected`;
+  }
+
+  // Clean up removed markers
+  const activeIps = new Set(locations.map(l => l.ip));
+  for (const ip of Object.keys(markersMap)) {
+    if (!activeIps.has(ip)) {
+      threatMap.removeLayer(markersMap[ip]);
+      delete markersMap[ip];
+    }
+  }
 
   locations.forEach(loc => {
+    const lat = parseFloat(loc.lat);
+    const lng = parseFloat(loc.lng);
+    if (isNaN(lat) || isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+      return;
+    }
+
     const markerKey = loc.ip;
+    const count = loc.attacks || loc.count || 1;
+    const locText = loc.city ? `${loc.city}, ${loc.country}` : (loc.country || "Unknown");
+
     const beaconHtml = `
       <div class="radar-beacon-marker">
         <div class="beacon-ring"></div>
@@ -162,24 +223,21 @@ function updateThreatMapMarkers(locations) {
     });
 
     const tooltipContent = `
-      <div class="tooltip-ip">${escapeHtml(loc.ip)}</div>
-      <div class="tooltip-detail">Location: ${escapeHtml(loc.country)}</div>
-      <div class="tooltip-detail">Attacks: <span class="tooltip-attacks">${escapeHtml(loc.attacks)}</span></div>
+      <div class="tooltip-ip font-mono" style="font-weight:700; color:#ef4444;">${escapeHtml(loc.ip)}</div>
+      <div class="tooltip-detail">Location: ${escapeHtml(locText)}</div>
+      <div class="tooltip-detail">Detected requests: <strong>${escapeHtml(count)}</strong></div>
     `;
 
     if (markersMap[markerKey]) {
-      // Update existing marker tooltip
       markersMap[markerKey].setTooltipContent(tooltipContent);
     } else {
-      // Create new marker
-      const marker = L.marker([loc.lat, loc.lng], { icon: beaconIcon }).addTo(threatMap);
+      const marker = L.marker([lat, lng], { icon: beaconIcon }).addTo(threatMap);
       marker.bindTooltip(tooltipContent, {
         permanent: false,
         direction: 'top',
         className: 'custom-threat-tooltip',
         offset: [0, -10]
       });
-
       markersMap[markerKey] = marker;
     }
   });
@@ -483,7 +541,7 @@ function updateInspectorUI(item) {
   const intensity = (item.intensity !== undefined) ? item.intensity : currentDefenseIntensity;
 
   // Mitigation Action
-  const action = item.action || (isAttack ? "BLOCKED (403)" : "ALLOWED (200)");
+  const action = item.action || (isAttack ? "Request rejected (HTTP 403)" : "Request allowed (HTTP 200)");
 
   // Top header in inspector
   const titleEl = document.getElementById("insp-flow-title");
@@ -611,6 +669,25 @@ function resetInspectorUI() {
   }
 }
 
+function renderTopThreats(threats) {
+  const tbody = document.getElementById("top-threats-tbody");
+  if (!tbody) return;
+  if (!threats || threats.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="3" class="text-center" style="color: var(--text-muted); padding: 14px;">No threat locations in session</td></tr>';
+    return;
+  }
+  tbody.innerHTML = threats.map(item => {
+    const attacks = item.attacks || item.count || 1;
+    return `
+      <tr>
+        <td class="font-mono">${escapeHtml(item.ip || "—")}</td>
+        <td>${escapeHtml(item.location || "Unknown")}</td>
+        <td class="text-right font-bold" style="color:#ef4444;">${escapeHtml(attacks)}</td>
+      </tr>
+    `;
+  }).join("");
+}
+
 function renderRecentFeed(feed) {
   const tbody = document.getElementById("recent-feed-tbody");
   if (!tbody) return;
@@ -654,7 +731,7 @@ function renderRecentFeed(feed) {
       <tr class="${selectedClass}" data-idx="${idx}" onclick="onRowSelectFeed(${idx})" title="Click to view detailed flow forensics">
         <td>${escapeHtml(itemTime)}</td>
         <td>${escapeHtml(item.source_ip || "—")}</td>
-        <td>${escapeHtml(item.destination_ip || "192.168.1.10")}</td>
+        <td>${escapeHtml(item.destination_ip || "—")}</td>
         <td>${escapeHtml(confVal)}</td>
         <td><span class="badge-status ${badgeClass}">${escapeHtml(statusLabel)}</span>${queryBadge}</td>
       </tr>
@@ -708,10 +785,7 @@ function renderRecentAttacks(attacks) {
 function syncDashboard(payload) {
   if (!payload) return;
 
-  // 0. Update Operator Auth UI Status
-  updateOperatorAuthUI();
-
-  // 0b. Data Profile & Pool Badge
+  // 0. Data Profile & Pool Badge
   if (payload.data_profile) {
     const dsText = document.getElementById("dataset-status-text");
     const dsDot = document.getElementById("dataset-status-dot");
@@ -841,14 +915,6 @@ function initEventListeners() {
     });
   }
 
-  // Operator Auth Pill in Header
-  const operatorAuthBtn = document.getElementById("operator-auth-btn");
-  if (operatorAuthBtn) {
-    operatorAuthBtn.addEventListener("click", () => {
-      promptForOperatorToken("Configure Operator Authentication Token:");
-    });
-  }
-
   // Toggle AFP Defense Button in Header
   const toggleBtn = document.getElementById("toggle-afp-btn");
   if (toggleBtn) {
@@ -872,62 +938,12 @@ function initEventListeners() {
 }
 
 // -----------------------------------------------------------------------------
-// Operator Authentication & Management API Handlers
+// Operator Management API Handlers (Automated Session Cookie Authorization)
 // -----------------------------------------------------------------------------
-function getOperatorToken() {
-  return sessionStorage.getItem("ids_operator_token") || localStorage.getItem("ids_operator_token") || "";
-}
-
-function setOperatorToken(tok) {
-  if (tok && tok.trim()) {
-    const cleaned = tok.trim();
-    sessionStorage.setItem("ids_operator_token", cleaned);
-    localStorage.setItem("ids_operator_token", cleaned);
-  } else {
-    sessionStorage.removeItem("ids_operator_token");
-    localStorage.removeItem("ids_operator_token");
-  }
-  updateOperatorAuthUI();
-}
-
-function promptForOperatorToken(msg = "Enter Operator Token to authorize management actions:") {
-  const existing = getOperatorToken();
-  const input = prompt(msg, existing);
-  if (input !== null) {
-    setOperatorToken(input);
-    return input.trim();
-  }
-  return null;
-}
-
-function updateOperatorAuthUI() {
-  const dot = document.getElementById("operator-auth-dot");
-  const txt = document.getElementById("operator-auth-text");
-  const token = getOperatorToken();
-  if (dot && txt) {
-    if (token) {
-      dot.className = "status-dot green";
-      txt.textContent = "Authorized";
-      txt.className = "status-val green";
-    } else {
-      dot.className = "status-dot yellow";
-      txt.textContent = "Auth Required";
-      txt.className = "status-val yellow";
-    }
-  }
-}
-
 async function authorizedFetch(url, options = {}) {
-  let token = getOperatorToken();
-  if (!token) {
-    token = promptForOperatorToken("Operator authorization required. Please enter token:");
-    if (!token) {
-      alert("Action cancelled: Valid operator token required.");
-      return null;
-    }
-  }
+  // Rely on HttpOnly browser session cookie established via loopback launch workflow
+  options.credentials = "same-origin";
   options.headers = options.headers || {};
-  options.headers["X-Operator-Token"] = token;
 
   let res = null;
   try {
@@ -937,16 +953,12 @@ async function authorizedFetch(url, options = {}) {
     return null;
   }
 
+  const alertBanner = document.getElementById("operator-auth-alert-banner");
   if (res && res.status === 401) {
-    token = promptForOperatorToken("401 Unauthorized: Invalid operator token. Please enter valid token:");
-    if (token) {
-      options.headers["X-Operator-Token"] = token;
-      try {
-        res = await fetch(url, options);
-      } catch (retryErr) {
-        console.error("Network error on retry request:", retryErr);
-      }
-    }
+    if (alertBanner) alertBanner.style.display = "block";
+    return res;
+  } else if (res && res.ok) {
+    if (alertBanner) alertBanner.style.display = "none";
   }
   return res;
 }
@@ -985,11 +997,26 @@ async function handleSetMode(modeName) {
   }
 }
 
+async function handleReset() {
+  try {
+    const res = await authorizedFetch("/api/dashboard/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({})
+    });
+    if (res && res.ok) {
+      const data = await res.json();
+      syncDashboard(data);
+    }
+  } catch (err) {
+    console.error("Error resetting session state:", err);
+  }
+}
+
 // Global window exposure for inline onclick handlers and console inspection
 window.handleSetDefense = handleSetDefense;
 window.handleSetMode = handleSetMode;
+window.handleReset = handleReset;
 window.authorizedFetch = authorizedFetch;
-window.getOperatorToken = getOperatorToken;
-window.setOperatorToken = setOperatorToken;
-window.promptForOperatorToken = promptForOperatorToken;
+
 

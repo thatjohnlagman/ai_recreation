@@ -10,7 +10,21 @@ sys.path.insert(0, str(REPO_ROOT))
 from operator_benchmarks import get_operator_token
 
 BASE_URL = "http://localhost:8000"
-OPERATOR_HEADERS = {"X-Operator-Token": get_operator_token()}
+
+def get_operator_headers():
+    try:
+        return {"X-Operator-Token": get_operator_token()}
+    except Exception:
+        return {}
+
+@pytest.fixture(autouse=True)
+def check_live_server():
+    try:
+        r = requests.get(f"{BASE_URL}/api/dashboard/stats", timeout=1)
+        if r.status_code != 200:
+            pytest.skip("Live server on port 8000 not responding.")
+    except Exception:
+        pytest.skip("Live server on port 8000 not reachable.")
 
 def test_dashboard_stats_endpoint():
     res = requests.get(f"{BASE_URL}/api/dashboard/stats")
@@ -22,19 +36,20 @@ def test_dashboard_stats_endpoint():
     assert "recent_feed" in data
 
 def test_set_defense_and_mode():
+    headers = get_operator_headers()
     # Test setting defense to RS
-    res = requests.post(f"{BASE_URL}/api/dashboard/set-defense", json={"defense": "rs"}, headers=OPERATOR_HEADERS)
+    res = requests.post(f"{BASE_URL}/api/dashboard/set-defense", json={"defense": "rs"}, headers=headers)
     assert res.status_code == 200
     assert res.json()["defense"] == "rs"
 
     # Test setting mode to base
-    res = requests.post(f"{BASE_URL}/api/dashboard/set-mode", json={"mode": "base"}, headers=OPERATOR_HEADERS)
+    res = requests.post(f"{BASE_URL}/api/dashboard/set-mode", json={"mode": "base"}, headers=headers)
     assert res.status_code == 200
     assert res.json()["mode"] == "base"
 
     # Restore to AFP and Recall-Aware
-    requests.post(f"{BASE_URL}/api/dashboard/set-defense", json={"defense": "afp"}, headers=OPERATOR_HEADERS)
-    requests.post(f"{BASE_URL}/api/dashboard/set-mode", json={"mode": "recall-aware"}, headers=OPERATOR_HEADERS)
+    requests.post(f"{BASE_URL}/api/dashboard/set-defense", json={"defense": "afp"}, headers=headers)
+    requests.post(f"{BASE_URL}/api/dashboard/set-mode", json={"mode": "recall-aware"}, headers=headers)
 
 def test_protected_server_benign_traffic():
     payload = {

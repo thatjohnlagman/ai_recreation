@@ -15,15 +15,13 @@ cd c:\Users\reddr\ai_recreation
 pip install -r requirements.txt
 ```
 
-### Operator Authorization Setup
+### Operator Authorization & Automatic Startup
 Server management routes (`/api/dashboard/set-defense`, `/api/dashboard/set-mode`, `/api/dashboard/toggle-afp`, `/api/dashboard/reset`) require operator authorization.
 
-To set up the operator token for local development and benchmarking:
-```powershell
-# Copy template to active local operator token file
-Copy-Item operator_token.txt.template operator_token.txt
-```
-The default demo token is `ids-operator-secret-2026`. Alternatively, set the environment variable `$env:IDS_OPERATOR_TOKEN = "ids-operator-secret-2026"`.
+There is **no shared fallback password** (`ids-operator-secret-2026` has been completely eliminated). Instead:
+- Normal server startup auto-generates a private per-installation/per-run token in `.operator_token` (excluded from git and ZIP packaging).
+- Local dashboard sessions are authorized automatically via `launch_dashboard.py` using a single-use launch ticket establishing a server-validated `HttpOnly` cookie.
+- No token entry, prompt dialog, or login screen is required in the browser.
 
 ---
 
@@ -43,33 +41,38 @@ The default demo token is `ids-operator-secret-2026`. Alternatively, set the env
 
 ### Role Separation: Attacker vs. Defender vs. Operator
 1. **Attacker Console (`attacker_sim.py`)**: Submits recorded traffic-flow features and executes the three black-box study procedures. It has **zero management authority**: it cannot switch defense, change controller mode, or reset defender counters.
-2. **Defender Server & Dashboard (`server.py` + `frontend/`)**: Displays real ML predictions, confidence, defense settings, HTTP actions, and reference-label metrics. All procedure names, claimed scenario badges, and dataset family labels are completely removed from defender telemetry and UI.
-3. **Operator Utilities (`operator_benchmarks.py`)**: Dedicated script for operators to perform Base vs. Recall-Aware comparisons and cross-defense benchmarks, authenticated via `X-Operator-Token`.
+2. **Defender Server & Dashboard (`server.py` + `frontend/`)**: Displays real ML predictions, confidence, defense settings, HTTP actions, and reference-label metrics. All procedure names, claimed scenario badges, and dataset family labels are completely removed from defender displays.
+3. **Operator Utilities (`operator_benchmarks.py`)**: Dedicated script for operators to perform Base vs. Recall-Aware comparisons and cross-defense benchmarks, authenticated via local `.operator_token`, `--token`, or environment variable.
 
 ---
 
 ## 3. Starting the Protected Server & SOC Dashboard
 
-### Terminal 1: Launch Protected Server (Default: Expanded Mode)
+### Terminal 1: Launch Protected Server (Default: Expanded Mode, Loopback)
 ```powershell
 # Windows PowerShell (Expanded Mode)
 $env:IDS_DATA_PROFILE = "expanded"
 .\.venv\Scripts\python.exe server.py
 ```
-
 *(For fixture20 fallback/regression mode, set `$env:IDS_DATA_PROFILE = "fixture20"` before launching).*
+The presentation server binds loopback-only to `127.0.0.1:8000`.
 
-- **SOC Web Dashboard**: Open [http://localhost:8000](http://localhost:8000) in your browser.
-- **Top Navigation Bar**:
-  - `IDS Active` status badge.
-  - Active defense pill (e.g. `AFP Defense AFP (RA)`).
-  - Operator Auth Status button (`Operator Auth Configured` / `Operator Auth Required`). Clicking opens a modal to configure or view the operator token in browser session storage.
-  - Data profile status: `Data Expanded (72k) | 0q`.
-- **Selected Flow Forensics (4 Clean Inspector Cards)**:
-  - Source Origin: IP address and network classification (Private vs. Public).
-  - Target Endpoint: Protected destination IP and service name.
-  - IDS Classification & Confidence: Pure ML-derived binary verdict (`Attack` or `Benign`) with exact inference probability.
-  - Defense & Action: Active defense mechanism, perturbation epsilon, and HTTP action (`200 FORWARDED` or `403 BLOCKED`).
+### Terminal 2: One-Command Authorized Dashboard Launch
+```powershell
+.\.venv\Scripts\python.exe launch_dashboard.py
+```
+- Opens your browser to `http://127.0.0.1:8000/launch?ticket=...`.
+- The single-use ticket is consumed, establishing an `HttpOnly` browser session cookie (`ids_operator_session`), and redirects cleanly to `http://127.0.0.1:8000/`.
+- No token prompt, auth pill, or password entry is shown. All management buttons (defense selection, mode switching, reset) work automatically.
+
+- **SOC Web Dashboard Layout**:
+  - **Header**: Clean status indicators for IDS engine status, active defense, and dataset profile (`Expanded (72k)`).
+  - **Threat Map**: Renders an offline world outline via bundled Natural Earth 110m GeoJSON vectors, enriched with approximate GeoIP telemetry via the bundled DB-IP City Lite MMDB. OpenStreetMap tiles load as an optional online enhancement.
+  - **Selected Flow Forensics (4 Clean Inspector Cards)**:
+    - Card 1: Source Origin (Demo IP address and network classification: Private Network vs. Geolocated).
+    - Card 2: Demonstration Destination (`None` or explicit demonstration destination).
+    - Card 3: IDS Classification & Confidence: Pure ML-derived binary verdict (`Attack` or `Benign`) with exact inference probability.
+    - Card 4: Defense & Action: Active defense mechanism, perturbation epsilon, and HTTP action (`Request allowed (HTTP 200)` or `Request rejected (HTTP 403)`).
 
 ---
 
@@ -166,7 +169,7 @@ Verifies no background leakages, silent probing, genuine evasion, reference fami
 .\.venv\Scripts\python.exe tests/run_audit_tests.py
 ```
 
-### Suite 4: Full Pytest Suite (26 tests)
+### Suite 4: Full Pytest Suite (27 tests)
 ```powershell
 pytest -v
 ```
@@ -176,13 +179,16 @@ pytest -v
 ## 7. Useful REST Endpoints
 
 ### Public Endpoints (No Operator Token Required)
+- `GET  /launch?ticket=<TICKET>`: Consumes one-time launch ticket, sets `ids_operator_session` HttpOnly cookie, and redirects to dashboard.
 - `GET  /api/dashboard/stats`: Returns telemetry counters, `data_profile`, `data_fingerprint`, `data_stats`, and `afp` controller state.
 - `POST /api/server/data`: Main inspection endpoint; accepts standardized 78-feature vector or `sample_id`.
 - `POST /api/simulation/start`: Starts simulation session and returns server-confirmed `session_id`.
 - `POST /api/simulation/stop`: Concludes simulation session.
 - `WS   /ws`: Real-time WebSocket telemetry stream.
 
-### Operator-Protected Management Endpoints (`X-Operator-Token` Required)
+### Operator Management Endpoints (`ids_operator_session` Cookie OR `X-Operator-Token` Header Required)
+- `POST /api/operator/issue-ticket`: Issues a single-use launch ticket for loopback dashboard startup.
+- `GET  /api/operator/status`: Reports operator authorization status.
 - `POST /api/dashboard/set-defense`: Switches defense (`{"defense": "afp" | "rs" | "fs" | "none"}`). Returns 401 if unauthenticated.
 - `POST /api/dashboard/set-mode`: Switches controller mode (`{"mode": "recall-aware" | "base"}`). Returns 401 if unauthenticated.
 - `POST /api/dashboard/toggle-afp`: Toggles AFP active/bypass. Returns 401 if unauthenticated.

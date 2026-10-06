@@ -1,4 +1,3 @@
 # IDS Operator Token Configuration Template
-# Copy this file to operator_token.txt or configure the IDS_OPERATOR_TOKEN environment variable.
-# Local demonstration default token:
-ids-operator-secret-2026
+# To specify a custom private operator token, place your secret token string on a single line below.
+# If omitted, the server automatically generates a private, local token on startup.

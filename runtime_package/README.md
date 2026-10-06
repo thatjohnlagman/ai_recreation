@@ -42,8 +42,12 @@ python runtime_package/run.py --attack decision_boundary --defense afp --control
 ```
 
 ## 9. How to Run the Interactive SOC Dashboard
-Start the local FastAPI server:
+Start the local presentation server:
 ```bash
 python server.py
 ```
-Open `http://localhost:8000` in your web browser. All frontend assets (Leaflet, Chart.js) are bundled locally in `frontend/vendor/` for full offline rehearsal.
+Then launch the authorized dashboard in your browser:
+```bash
+python launch_dashboard.py
+```
+This automatically establishes an authorized operator session without requiring token entry in the UI. All frontend assets (Leaflet, Natural Earth outline GeoJSON, Chart.js) and the DB-IP City Lite MMDB are bundled locally for full offline rehearsal.

@@ -8,6 +8,9 @@ Connects:
 - High-Performance Cyber SOC Web Dashboard (REST + WebSockets)
 """
 
+import copy
+import re
+import logging
 import os
 import sys
 import json
@@ -15,6 +18,8 @@ import time
 import math
 import hashlib
 import asyncio
+import secrets
+import webbrowser
 import warnings
 from pathlib import Path
 from datetime import datetime
@@ -26,7 +31,7 @@ import pandas as pd
 import joblib
 import yaml
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Response, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -50,18 +55,26 @@ from defenses.afp import AdaptiveFeaturePoisoning
 from defenses.randomized_smoothing import RandomizedSmoothing
 from defenses.feature_squeezing import FeatureSqueezing
 from runtime_package.data_loader import get_dataset, LoadedDataset
+from runtime_package.geoip.resolver import resolve_ip_geo, DB_ATTRIBUTION_TEXT, DB_ATTRIBUTION_HTML
 
 # -----------------------------------------------------------------------------
 # Operator Authorization Configuration & Verification
 # -----------------------------------------------------------------------------
-DEFAULT_OPERATOR_TOKEN = "ids-operator-secret-2026"
+PRIVATE_TOKEN_FILE = BASE_DIR / ".operator_token"
 TOKEN_FILE = BASE_DIR / "operator_token.txt"
 
 def get_configured_operator_token() -> str:
-    """Resolves authorized operator token from env var, local token file, or default demo secret."""
+    """Resolves authorized operator token from env var, private token file, or generates a private run token."""
     env_token = os.environ.get("IDS_OPERATOR_TOKEN")
     if env_token and env_token.strip():
         return env_token.strip()
+    if PRIVATE_TOKEN_FILE.exists():
+        try:
+            content = PRIVATE_TOKEN_FILE.read_text(encoding="utf-8").strip()
+            if content:
+                return content
+        except Exception:
+            pass
     if TOKEN_FILE.exists():
         try:
             content = TOKEN_FILE.read_text(encoding="utf-8").strip()
@@ -69,20 +82,52 @@ def get_configured_operator_token() -> str:
                 return content
         except Exception:
             pass
-    return DEFAULT_OPERATOR_TOKEN
+    token = secrets.token_urlsafe(32)
+    try:
+        PRIVATE_TOKEN_FILE.write_text(token, encoding="utf-8")
+        print(f"[Auth] Generated private operator token in .operator_token.")
+    except Exception as e:
+        print(f"[Auth] Warning: Could not write .operator_token: {e}")
+    return token
+
+# In-memory operator session and launch ticket tracking
+active_operator_sessions: Dict[str, float] = {}   # session_id -> expire_timestamp
+one_time_launch_tickets: Dict[str, float] = {}    # ticket -> expire_timestamp
+
+def create_launch_ticket() -> str:
+    """Creates a short-lived, single-use launch ticket for loopback operator initialization."""
+    now = time.time()
+    for t in list(one_time_launch_tickets.keys()):
+        if one_time_launch_tickets[t] < now:
+            del one_time_launch_tickets[t]
+    ticket = secrets.token_urlsafe(16)
+    one_time_launch_tickets[ticket] = now + 120.0
+    return ticket
 
 def verify_operator_authorization(request: Request) -> bool:
     """
-    Verifies that incoming management request includes a valid operator token.
-    Accepts token via 'X-Operator-Token' header or 'Authorization: Bearer <token>'.
+    Verifies that incoming management request includes a valid operator token
+    or an active, authenticated loopback operator session cookie.
     """
     expected = get_configured_operator_token()
+    # 1. Header token check (for CLI benchmarks and automated tests)
     token = request.headers.get("X-Operator-Token")
     if not token:
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             token = auth_header[7:].strip()
-    return bool(token and token == expected)
+    if token and token == expected:
+        return True
+
+    # 2. HttpOnly session cookie check (for authorized local browser dashboard)
+    cookie_session = request.cookies.get("ids_operator_session")
+    if cookie_session and cookie_session in active_operator_sessions:
+        if time.time() < active_operator_sessions[cookie_session]:
+            return True
+        else:
+            del active_operator_sessions[cookie_session]
+
+    return False
 
 # -----------------------------------------------------------------------------
 # Canonical Attack Procedure Validation
@@ -345,14 +390,36 @@ class SecurityEngine:
         self.history_intensity.append(used_intensity)
 
     def record_attack_ip(self, ip: str, location: Optional[str] = None):
-        """Updates top threat IP counts."""
-        loc_str = location if location else resolve_ip_location(ip)
+        """Updates threat locations on map and top threat IPs table using real MMDB geolocation."""
+        geo = resolve_ip_geo(ip)
+        loc_str = location if location else geo.get("location_str", "Unknown")
+        t_now = datetime.now().strftime("%H:%M:%S")
+
+        # Update threat_locations (if valid latitude/longitude coordinates exist)
+        if geo.get("lat") is not None and geo.get("lng") is not None:
+            found_loc = False
+            for entry in self.threat_locations:
+                if entry.get("ip") == ip:
+                    entry["attacks"] = entry.get("attacks", 1) + 1
+                    entry["last_seen"] = t_now
+                    found_loc = True
+                    break
+            if not found_loc:
+                self.threat_locations.append({
+                    "ip": ip,
+                    "country": geo.get("country", "—"),
+                    "city": geo.get("city", "—"),
+                    "lat": geo.get("lat"),
+                    "lng": geo.get("lng"),
+                    "attacks": 1,
+                    "last_seen": t_now
+                })
 
         # Update Top Threat IPs
         found = False
         for entry in self.top_threat_ips:
-            if entry["ip"] == ip:
-                entry["attacks"] += 1
+            if entry.get("ip") == ip:
+                entry["attacks"] = entry.get("attacks", 1) + 1
                 found = True
                 break
         if not found:
@@ -472,6 +539,58 @@ class ConnectionManager:
 
 ws_manager = ConnectionManager()
 
+from uvicorn.config import LOGGING_CONFIG
+from uvicorn.logging import AccessFormatter
+
+class RedactedAccessFormatter(AccessFormatter):
+    """Access log formatter that redacts ticket query parameters."""
+    def formatMessage(self, record: logging.LogRecord) -> str:
+        if record.args and len(record.args) >= 3:
+            full_path = str(record.args[2])
+            if "ticket=" in full_path:
+                redacted_path = re.sub(r"ticket=[^&\s]+", "ticket=[REDACTED]", full_path)
+                args_list = list(record.args)
+                args_list[2] = redacted_path
+                record.args = tuple(args_list)
+        return super().formatMessage(record)
+
+class RedactTicketFilter(logging.Filter):
+    """Logging filter that redacts ticket query strings from records."""
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.args and len(record.args) >= 3:
+            full_path = str(record.args[2])
+            if "ticket=" in full_path:
+                redacted_path = re.sub(r"ticket=[^&\s]+", "ticket=[REDACTED]", full_path)
+                args_list = list(record.args)
+                args_list[2] = redacted_path
+                record.args = tuple(args_list)
+        if isinstance(record.msg, str) and "ticket=" in record.msg:
+            record.msg = re.sub(r"ticket=[^&\s]+", "ticket=[REDACTED]", record.msg)
+        return True
+
+def get_redacted_log_config() -> dict:
+    cfg = copy.deepcopy(LOGGING_CONFIG)
+    cfg["formatters"]["access"]["()"] = "server.RedactedAccessFormatter"
+    return cfg
+
+class RedactTicketASGIMiddleware:
+    """ASGI middleware that redacts launch ticket values from scope before access logging."""
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope.get("path") == "/launch":
+            raw_qs = scope.get("query_string", b"").decode("latin1", errors="ignore")
+            async def wrapped_send(message):
+                if message["type"] == "http.response.start":
+                    if "ticket=" in raw_qs:
+                        redacted = re.sub(r"ticket=[^&\s]+", "ticket=[REDACTED]", raw_qs)
+                        scope["query_string"] = redacted.encode("latin1")
+                await send(message)
+            await self.app(scope, receive, wrapped_send)
+        else:
+            await self.app(scope, receive, send)
+
 # -----------------------------------------------------------------------------
 # FastAPI Application
 # -----------------------------------------------------------------------------
@@ -481,6 +600,7 @@ app = FastAPI(
     version="3.0.0"
 )
 
+app.add_middleware(RedactTicketASGIMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -499,31 +619,16 @@ async def add_no_cache_headers(request: Request, call_next):
     return response
 
 def resolve_ip_location(ip: str, explicit_location: Optional[str] = None) -> str:
-    """Accurately identifies IP location, strictly distinguishing private subnets from unknown public IPs."""
-    if not ip:
-        return "Unknown"
-    # RFC 1918 & Loopback Private Address Check
-    parts = ip.split(".")
-    if len(parts) == 4 and all(p.isdigit() for p in parts):
-        first, second = int(parts[0]), int(parts[1])
-        if first == 10:
-            return "Private Network"
-        if first == 172 and 16 <= second <= 31:
-            return "Private Network"
-        if first == 192 and second == 168:
-            return "Private Network"
-        if first == 127:
-            return "Private Network"
-
-    # Public IP: reject untrusted caller-claimed country strings; no trusted GeoIP DB is bundled
-    return "Unknown"
+    """Accurately identifies IP location using local MMDB database and RFC address classification."""
+    geo = resolve_ip_geo(ip)
+    return geo.get("location_str", "Unknown")
 
 # -----------------------------------------------------------------------------
 # Request Schemas
 # -----------------------------------------------------------------------------
 class ServerRequestModel(BaseModel):
     source_ip: str
-    destination_ip: Optional[str] = "192.168.1.10"
+    destination_ip: Optional[str] = None
     traffic_family: Optional[str] = None
     traffic_family_source: Optional[str] = None
     flow_type: Optional[str] = None
@@ -804,7 +909,7 @@ async def protected_server_handler(req: ServerRequestModel):
     feed_entry = {
         "timestamp": t_now,
         "source_ip": req.source_ip,
-        "destination_ip": req.destination_ip or "192.168.1.10",
+        "destination_ip": req.destination_ip if req.destination_ip else None,
         "attack_scenario": f"[Query: {req.query_stage or 'search'}] {scenario_display}" if is_query_flow else scenario_display,
         "traffic_family": f"[Query] {resolved_family}" if is_query_flow else resolved_family,
         "traffic_family_source": f"Query Telemetry ({resolved_family_source})" if is_query_flow else resolved_family_source,
@@ -819,7 +924,7 @@ async def protected_server_handler(req: ServerRequestModel):
         "sample_id": req.sample_id,
         "data_profile": engine.data_profile,
         "is_query": is_query_flow,
-        "action": "BLOCKED (403)" if is_malicious else "ALLOWED (200)"
+        "action": "Request rejected (HTTP 403)" if is_malicious else "Request allowed (HTTP 200)"
     }
     engine.recent_feed.appendleft(feed_entry)
 
@@ -827,7 +932,7 @@ async def protected_server_handler(req: ServerRequestModel):
         attack_entry = {
             "time": t_now,
             "source_ip": req.source_ip,
-            "destination_ip": req.destination_ip or "192.168.1.10",
+            "destination_ip": req.destination_ip if req.destination_ip else None,
             "location": loc_display,
             "attack_scenario": scenario_display,
             "traffic_family": resolved_family,
@@ -841,7 +946,7 @@ async def protected_server_handler(req: ServerRequestModel):
             "ground_truth_status": ground_truth_status,
             "sample_id": req.sample_id,
             "data_profile": engine.data_profile,
-            "action": "BLOCKED (403)"
+            "action": "Request rejected (HTTP 403)"
         }
         engine.recent_attacks.appendleft(attack_entry)
 
@@ -876,6 +981,7 @@ async def protected_server_handler(req: ServerRequestModel):
                     "sample_id": req.sample_id,
                     "data_profile": engine.data_profile,
                     "is_query": is_query_flow,
+                    "action": "Request rejected (HTTP 403)",
                     "verdict": "DROPPED"
                 }
             }
@@ -902,6 +1008,7 @@ async def protected_server_handler(req: ServerRequestModel):
                     "sample_id": req.sample_id,
                     "data_profile": engine.data_profile,
                     "is_query": is_query_flow,
+                    "action": "Request allowed (HTTP 200)",
                     "verdict": "FORWARDED"
                 }
             }
@@ -1038,6 +1145,76 @@ async def websocket_endpoint(websocket: WebSocket):
         ws_manager.disconnect(websocket)
 
 # -----------------------------------------------------------------------------
+# Operator Dashboard Launch & Local Session Provisioning
+# -----------------------------------------------------------------------------
+@app.get("/launch")
+async def operator_launch_handler(request: Request, ticket: Optional[str] = None):
+    """
+    One-time launch ticket endpoint.
+    Restricted to loopback visitors. Consumes ticket once, provisions an HttpOnly
+    session cookie, and redirects to the clean root dashboard URL.
+    """
+    client_host = request.client.host if request.client else ""
+    if client_host not in ["127.0.0.1", "::1", "localhost", "testclient"]:
+        return HTMLResponse(
+            "<h3>Loopback Only</h3><p>Operator launcher is restricted to local loopback access.</p>",
+            status_code=403
+        )
+
+    now = time.time()
+    if not ticket or ticket not in one_time_launch_tickets or one_time_launch_tickets[ticket] < now:
+        return HTMLResponse(
+            "<h3>Unauthorized / Expired Launch Ticket</h3><p>The launch ticket was invalid or expired. "
+            "Please run <code>python launch_dashboard.py</code> to open an authorized session.</p>",
+            status_code=401
+        )
+
+    # Consume ticket immediately (one-time use)
+    del one_time_launch_tickets[ticket]
+
+    # Create server-validated session
+    session_id = secrets.token_hex(24)
+    active_operator_sessions[session_id] = now + 86400.0  # 24 hours
+
+    response = RedirectResponse(url="/", status_code=303)
+    response.set_cookie(
+        key="ids_operator_session",
+        value=session_id,
+        httponly=True,
+        samesite="lax",
+        max_age=86400,
+        path="/"
+    )
+    return response
+
+@app.post("/api/operator/issue-ticket")
+async def issue_launch_ticket_handler(request: Request):
+    """Issues a fresh one-time launch ticket for authorized local operators."""
+    if not verify_operator_authorization(request):
+        # Allow loopback client with valid token on disk if no auth header passed
+        client_host = request.client.host if request.client else ""
+        if client_host in ["127.0.0.1", "::1", "localhost", "testclient"]:
+            expected = get_configured_operator_token()
+            token = request.headers.get("X-Operator-Token")
+            if not token or token != expected:
+                return JSONResponse(status_code=401, content={"status": "error", "message": "Unauthorized operator token."})
+        else:
+            return JSONResponse(status_code=401, content={"status": "error", "message": "Operator authorization required."})
+
+    ticket = create_launch_ticket()
+    return JSONResponse(status_code=200, content={
+        "status": "success",
+        "ticket": ticket,
+        "launch_url": f"http://127.0.0.1:8000/launch?ticket={ticket}"
+    })
+
+@app.get("/api/operator/status")
+async def operator_status_handler(request: Request):
+    """Returns authorization status of the current client."""
+    is_auth = verify_operator_authorization(request)
+    return JSONResponse(status_code=200, content={"authorized": is_auth})
+
+# -----------------------------------------------------------------------------
 # Static Files & Frontend Routing
 # -----------------------------------------------------------------------------
 if os.path.exists(FRONTEND_DIR):
@@ -1055,10 +1232,43 @@ async def serve_index():
 # -----------------------------------------------------------------------------
 if __name__ == "__main__":
     import uvicorn
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Standalone IDS + Recall-Aware Defense Server")
+    parser.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1 loopback)")
+    parser.add_argument("--port", type=int, default=8000, help="Bind port (default: 8000)")
+    parser.add_argument("--launch", "--open", action="store_true", help="Automatically launch authorized dashboard in browser")
+    args = parser.parse_args()
+
+    token = get_configured_operator_token()
+    initial_ticket = create_launch_ticket()
+    launch_url = f"http://{args.host}:{args.port}/launch?ticket={initial_ticket}"
     print("\n========================================================")
     print("  IDS + Recall-Aware Research Runtime Platform")
-    print("  SOC Web Dashboard: http://localhost:8000")
-    print("  Protected Server:  http://localhost:8000/api/server/data")
-    print("  WebSocket Feed:    ws://localhost:8000/ws")
+    print(f"  SOC Web Dashboard: http://{args.host}:{args.port}")
+    print(f"  Protected Server:  http://{args.host}:{args.port}/api/server/data")
+    print(f"  WebSocket Feed:    ws://{args.host}:{args.port}/ws")
+    print(f"  Local Launch Auth: http://{args.host}:{args.port}/launch?ticket=[REDACTED]")
     print("========================================================\n")
-    uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=False)
+
+    if args.launch:
+        import threading
+        import urllib.request
+        def open_browser():
+            ready_url = f"http://{args.host}:{args.port}/api/dashboard/stats"
+            deadline = time.time() + 15.0
+            server_ready = False
+            while time.time() < deadline:
+                try:
+                    req = urllib.request.Request(ready_url)
+                    with urllib.request.urlopen(req, timeout=0.5) as resp:
+                        if resp.status == 200:
+                            server_ready = True
+                            break
+                except Exception:
+                    time.sleep(0.1)
+            webbrowser.open(launch_url)
+        threading.Thread(target=open_browser, daemon=True).start()
+
+    log_config = get_redacted_log_config()
+    uvicorn.run(app, host=args.host, port=args.port, reload=False, log_config=log_config)
