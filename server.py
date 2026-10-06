@@ -81,6 +81,10 @@ class SecurityEngine:
         self.batch_fn: int = 0
         self.batch_size: int = 5
 
+        # Simulation Session State
+        self.active_attack_scenario: str = "None"
+        self.active_simulation_session: Optional[str] = None
+
         # Cumulative Metrics (Pre-seeded with established research baseline)
         self.total_traffic: int = 12482
         self.detected_attacks: int = 87
@@ -96,7 +100,7 @@ class SecurityEngine:
         self.history_recall = deque([0.91, 0.92, 0.93, 0.94, 0.93, 0.95, 0.96, 0.962, 0.962, 0.965, 0.962], maxlen=20)
         self.history_intensity = deque([0.0001, 0.00015, 0.00018, 0.0002, 0.00022, 0.00025, 0.00028, 0.0003, 0.0003, 0.0003, 0.0003], maxlen=20)
 
-        # Threat locations on map
+        # Threat locations on map (Public IP geographic origins)
         self.threat_locations = [
             {"id": "loc-1", "ip": "203.0.113.45", "country": "Singapore", "lat": 1.3521, "lng": 103.8198, "attacks": 12},
             {"id": "loc-2", "ip": "185.199.110.23", "country": "Ukraine", "lat": 50.4501, "lng": 30.5234, "attacks": 9},
@@ -109,27 +113,26 @@ class SecurityEngine:
         ]
 
         self.top_threat_ips = [
-            {"ip": "203.0.113.45", "location": "Singapore", "attacks": 12},
-            {"ip": "185.199.110.23", "location": "Ukraine", "attacks": 9},
-            {"ip": "103.21.54.12", "location": "United States", "attacks": 7},
-            {"ip": "45.76.32.18", "location": "Germany", "attacks": 6},
-            {"ip": "89.248.163.77", "location": "Russia", "attacks": 5},
+            {"ip": "10.0.2.45", "location": "Private Network", "attacks": 12},
+            {"ip": "172.16.0.12", "location": "Private Network", "attacks": 9},
+            {"ip": "192.168.1.25", "location": "Private Network", "attacks": 7},
+            {"ip": "10.0.3.77", "location": "Private Network", "attacks": 6},
+            {"ip": "203.0.113.45", "location": "Unknown", "attacks": 5},
         ]
 
         self.recent_feed = deque([
-            {"timestamp": "14:28:16", "source_ip": "10.0.2.45", "destination_ip": "192.168.1.10", "type": "DDoS", "confidence": 0.93, "status": "Malicious", "location": "Singapore", "defense": "AFP", "mode": "Recall-Aware", "intensity": 0.0003, "action": "BLOCKED (403)"},
-            {"timestamp": "14:26:03", "source_ip": "172.16.0.12", "destination_ip": "192.168.1.20", "type": "Port Scan", "confidence": 0.76, "status": "Malicious", "location": "Ukraine", "defense": "AFP", "mode": "Recall-Aware", "intensity": 0.0003, "action": "BLOCKED (403)"},
-            {"timestamp": "14:22:11", "source_ip": "10.0.3.77", "destination_ip": "192.168.1.15", "type": "Brute Force", "confidence": 0.81, "status": "Malicious", "location": "Internal Network", "defense": "AFP", "mode": "Recall-Aware", "intensity": 0.0003, "action": "BLOCKED (403)"},
-            {"timestamp": "14:18:45", "source_ip": "192.168.1.25", "destination_ip": "10.0.2.91", "type": "Malware", "confidence": 0.88, "status": "Malicious", "location": "Germany", "defense": "AFP", "mode": "Recall-Aware", "intensity": 0.0003, "action": "BLOCKED (403)"},
-            {"timestamp": "14:12:37", "source_ip": "172.16.0.5", "destination_ip": "192.168.1.30", "type": "Normal", "confidence": 0.12, "status": "Benign", "location": "Authorized Corp", "defense": "AFP", "mode": "Recall-Aware", "intensity": 0.0003, "action": "ALLOWED (200)"},
+            {"timestamp": "14:28:16", "source_ip": "10.0.2.45", "destination_ip": "192.168.1.10", "attack_scenario": "Silent Probing", "traffic_family": "DDoS attacks-LOIC-HTTP", "traffic_family_source": "Dataset-derived", "type": "DDoS attacks-LOIC-HTTP", "confidence": 0.93, "status": "Attack", "location": "Private Network", "defense": "AFP", "mode": "Recall-Aware", "intensity": 0.0003, "action": "BLOCKED (403)"},
+            {"timestamp": "14:26:03", "source_ip": "185.199.110.23", "destination_ip": "192.168.1.20", "attack_scenario": "Surrogate Transferability", "traffic_family": "Bot", "traffic_family_source": "Dataset-derived", "type": "Bot", "confidence": 0.76, "status": "Attack", "location": "Unknown", "defense": "AFP", "mode": "Recall-Aware", "intensity": 0.0003, "action": "BLOCKED (403)"},
+            {"timestamp": "14:22:11", "source_ip": "45.76.32.18", "destination_ip": "192.168.1.15", "attack_scenario": "Decision-Boundary Attack", "traffic_family": "FTP-BruteForce", "traffic_family_source": "Dataset-derived", "type": "FTP-BruteForce", "confidence": 0.81, "status": "Attack", "location": "Unknown", "defense": "AFP", "mode": "Recall-Aware", "intensity": 0.0003, "action": "BLOCKED (403)"},
+            {"timestamp": "14:18:45", "source_ip": "192.168.1.25", "destination_ip": "10.0.2.91", "attack_scenario": "None", "traffic_family": "Unknown", "traffic_family_source": "Synthetic / Non-dataset", "type": "Unknown", "confidence": 0.88, "status": "Attack", "location": "Private Network", "defense": "AFP", "mode": "Recall-Aware", "intensity": 0.0003, "action": "BLOCKED (403)"},
+            {"timestamp": "14:12:37", "source_ip": "172.16.0.5", "destination_ip": "192.168.1.30", "attack_scenario": "None", "traffic_family": "Benign", "traffic_family_source": "Dataset-derived", "type": "Benign", "confidence": 0.98, "status": "Benign", "location": "Private Network", "defense": "AFP", "mode": "Recall-Aware", "intensity": 0.0003, "action": "ALLOWED (200)"},
         ], maxlen=50)
 
         self.recent_attacks = deque([
-            {"time": "14:28:16", "source_ip": "10.0.2.45", "destination_ip": "192.168.1.10", "location": "Singapore", "type": "DDoS", "confidence": 0.93, "status": "Malicious", "defense": "AFP", "mode": "Recall-Aware", "intensity": 0.0003, "action": "BLOCKED (403)"},
-            {"time": "14:26:03", "source_ip": "172.16.0.12", "destination_ip": "192.168.1.20", "location": "Ukraine", "type": "Port Scan", "confidence": 0.76, "status": "Malicious", "defense": "AFP", "mode": "Recall-Aware", "intensity": 0.0003, "action": "BLOCKED (403)"},
-            {"time": "14:22:11", "source_ip": "10.0.3.77", "destination_ip": "192.168.1.15", "location": "Internal Network", "type": "Brute Force", "confidence": 0.81, "status": "Malicious", "defense": "AFP", "mode": "Recall-Aware", "intensity": 0.0003, "action": "BLOCKED (403)"},
-            {"time": "14:18:45", "source_ip": "192.168.1.25", "destination_ip": "10.0.2.91", "location": "Germany", "type": "Malware", "confidence": 0.88, "status": "Malicious", "defense": "AFP", "mode": "Recall-Aware", "intensity": 0.0003, "action": "BLOCKED (403)"},
-            {"time": "14:12:37", "source_ip": "172.16.0.5", "destination_ip": "192.168.1.30", "location": "Authorized Corp", "type": "Normal", "confidence": 0.12, "status": "Benign", "defense": "AFP", "mode": "Recall-Aware", "intensity": 0.0003, "action": "ALLOWED (200)"},
+            {"time": "14:28:16", "source_ip": "10.0.2.45", "destination_ip": "192.168.1.10", "location": "Private Network", "attack_scenario": "Silent Probing", "traffic_family": "DDoS attacks-LOIC-HTTP", "traffic_family_source": "Dataset-derived", "type": "DDoS attacks-LOIC-HTTP", "confidence": 0.93, "status": "Attack", "defense": "AFP", "mode": "Recall-Aware", "intensity": 0.0003, "action": "BLOCKED (403)"},
+            {"time": "14:26:03", "source_ip": "185.199.110.23", "destination_ip": "192.168.1.20", "location": "Unknown", "attack_scenario": "Surrogate Transferability", "traffic_family": "Bot", "traffic_family_source": "Dataset-derived", "type": "Bot", "confidence": 0.76, "status": "Attack", "defense": "AFP", "mode": "Recall-Aware", "intensity": 0.0003, "action": "BLOCKED (403)"},
+            {"time": "14:22:11", "source_ip": "45.76.32.18", "destination_ip": "192.168.1.15", "location": "Unknown", "attack_scenario": "Decision-Boundary Attack", "traffic_family": "FTP-BruteForce", "traffic_family_source": "Dataset-derived", "type": "FTP-BruteForce", "confidence": 0.81, "status": "Attack", "defense": "AFP", "mode": "Recall-Aware", "intensity": 0.0003, "action": "BLOCKED (403)"},
+            {"time": "14:18:45", "source_ip": "192.168.1.25", "destination_ip": "10.0.2.91", "location": "Private Network", "attack_scenario": "None", "traffic_family": "Unknown", "traffic_family_source": "Synthetic / Non-dataset", "type": "Unknown", "confidence": 0.88, "status": "Attack", "defense": "AFP", "mode": "Recall-Aware", "intensity": 0.0003, "action": "BLOCKED (403)"},
         ], maxlen=50)
 
     def load_resources(self):
@@ -286,10 +289,9 @@ class SecurityEngine:
         self.history_recall.append(self.recall)
         self.history_intensity.append(self.current_intensity)
 
-    def record_attack_ip(self, ip: str, country: Optional[str] = None):
-        """Updates top threat IP counts and map locations."""
-        if not country or country == "Unknown":
-            country = "External Network"
+    def record_attack_ip(self, ip: str, location: Optional[str] = None):
+        """Updates top threat IP counts."""
+        loc_str = location if location else resolve_ip_location(ip)
 
         # Update Top Threat IPs
         found = False
@@ -299,30 +301,37 @@ class SecurityEngine:
                 found = True
                 break
         if not found:
-            self.top_threat_ips.append({"ip": ip, "location": country, "attacks": 1})
+            self.top_threat_ips.append({"ip": ip, "location": loc_str, "attacks": 1})
         self.top_threat_ips.sort(key=lambda x: x["attacks"], reverse=True)
         self.top_threat_ips = self.top_threat_ips[:5]
 
-        # Update Threat Locations Map
-        loc_found = False
-        for loc in self.threat_locations:
-            if loc["ip"] == ip:
-                loc["attacks"] += 1
-                loc_found = True
-                break
-        if not loc_found:
-            self.threat_locations.append({
-                "id": f"loc-{len(self.threat_locations)+1}",
-                "ip": ip,
-                "country": country,
-                "lat": round(float(np.random.uniform(-35, 55)), 4),
-                "lng": round(float(np.random.uniform(-100, 115)), 4),
-                "attacks": 1
-            })
+    def start_simulation(self, scenario: str, session_id: Optional[str] = None):
+        """Starts an active black-box attack simulation session."""
+        canonical = {
+            "silent_probing": "Silent Probing",
+            "silent": "Silent Probing",
+            "surrogate_transfer": "Surrogate Transferability",
+            "surrogate": "Surrogate Transferability",
+            "boundary_attack": "Decision-Boundary Attack",
+            "boundary": "Decision-Boundary Attack",
+            "decision_boundary": "Decision-Boundary Attack"
+        }
+        self.active_attack_scenario = canonical.get(scenario.lower(), scenario)
+        self.active_simulation_session = session_id or f"sim-{int(time.time()*1000)%1000000:06d}"
+
+    def stop_simulation(self):
+        """Ends the active attack simulation session."""
+        self.active_attack_scenario = "None"
+        self.active_simulation_session = None
 
     def get_dashboard_payload(self) -> Dict[str, Any]:
         """Assembles complete telemetry payload for WebSocket / REST clients."""
         return {
+            "simulation": {
+                "active_scenario": self.active_attack_scenario,
+                "session_id": self.active_simulation_session,
+                "is_active": (self.active_attack_scenario != "None")
+            },
             "stats": {
                 "total_traffic": f"{self.total_traffic:,}",
                 "detected_attacks": str(self.detected_attacks),
@@ -413,18 +422,48 @@ async def add_no_cache_headers(request: Request, call_next):
         response.headers["Expires"] = "0"
     return response
 
+def resolve_ip_location(ip: str, explicit_location: Optional[str] = None) -> str:
+    """Accurately identifies IP location, properly distinguishing private subnets from unknown public IPs."""
+    if not ip:
+        return "Unknown"
+    # RFC 1918 & Loopback Private Address Check
+    parts = ip.split(".")
+    if len(parts) == 4 and all(p.isdigit() for p in parts):
+        first, second = int(parts[0]), int(parts[1])
+        if first == 10:
+            return "Private Network"
+        if first == 172 and 16 <= second <= 31:
+            return "Private Network"
+        if first == 192 and second == 168:
+            return "Private Network"
+        if first == 127:
+            return "Private Network"
+
+    if explicit_location and explicit_location not in ["Unknown", "External Network", "None"]:
+        return explicit_location
+
+    # For public IPs: no external offline GeoIP DB is present, display Unknown per research guidelines
+    return "Unknown"
+
 # -----------------------------------------------------------------------------
 # Request Schemas
 # -----------------------------------------------------------------------------
 class ServerRequestModel(BaseModel):
     source_ip: str
     destination_ip: Optional[str] = "192.168.1.10"
-    flow_type: Optional[str] = "Benign"
-    country: Optional[str] = "Unknown"
+    traffic_family: Optional[str] = None
+    traffic_family_source: Optional[str] = None
+    flow_type: Optional[str] = None
+    country: Optional[str] = None
     is_attack: Optional[bool] = False
-    attack_scenario: Optional[str] = "none"
+    attack_scenario: Optional[str] = None
+    session_id: Optional[str] = None
     feature_vector: Optional[List[float]] = None
     sample_id: Optional[int] = None
+
+class SimulationSessionModel(BaseModel):
+    scenario: str  # "silent_probing", "surrogate_transfer", "decision_boundary", "none"
+    session_id: Optional[str] = None
 
 class SetDefenseModel(BaseModel):
     defense: str  # "afp", "rs", "fs", "none"
@@ -453,22 +492,38 @@ async def protected_server_handler(req: ServerRequestModel):
     """
     t_now = datetime.now().strftime("%H:%M:%S")
 
-    # 1. Feature Vector Resolution (Must be exactly 78 features)
+    # 1. Feature Vector & Dataset Metadata Resolution (Must be exactly 78 features)
     features: Optional[np.ndarray] = None
     ground_truth: int = 1 if req.is_attack else 0
+    resolved_family = "Unknown"
+    resolved_family_source = "Synthetic / Non-dataset"
 
-    if req.feature_vector is not None and len(req.feature_vector) == 78:
-        features = np.array(req.feature_vector, dtype=np.float32)
-    elif engine.X_demo is not None and engine.meta_demo is not None:
-        target_label = ground_truth
-        matches = np.where(engine.meta_demo["y_binary"].values == target_label)[0]
-        if len(matches) > 0:
-            chosen_idx = np.random.choice(matches)
-            features = np.array(engine.X_demo.iloc[chosen_idx].values, dtype=np.float32)
+    # Resolve from explicit sample_id or dataset metadata
+    if req.sample_id is not None and engine.meta_demo is not None and 0 <= req.sample_id < len(engine.meta_demo):
+        resolved_family = str(engine.meta_demo.iloc[req.sample_id].get("attack_family", "Unknown"))
+        resolved_family_source = "Dataset-derived"
+        if req.feature_vector is None:
+            features = np.array(engine.X_demo.iloc[req.sample_id].values, dtype=np.float32)
+    elif req.traffic_family:
+        resolved_family = req.traffic_family
+        resolved_family_source = req.traffic_family_source or "Dataset-derived"
+
+    if features is None:
+        if req.feature_vector is not None and len(req.feature_vector) == 78:
+            features = np.array(req.feature_vector, dtype=np.float32)
+        elif engine.X_demo is not None and engine.meta_demo is not None:
+            target_label = ground_truth
+            matches = np.where(engine.meta_demo["y_binary"].values == target_label)[0]
+            if len(matches) > 0:
+                chosen_idx = int(np.random.choice(matches))
+                features = np.array(engine.X_demo.iloc[chosen_idx].values, dtype=np.float32)
+                if resolved_family == "Unknown":
+                    resolved_family = str(engine.meta_demo.iloc[chosen_idx].get("attack_family", "Unknown"))
+                    resolved_family_source = "Dataset-derived"
+            else:
+                features = np.zeros(78, dtype=np.float32)
         else:
             features = np.zeros(78, dtype=np.float32)
-    else:
-        features = np.zeros(78, dtype=np.float32)
 
     # 2. Inline Defense & Inference
     active_def = engine.active_defense_name
@@ -477,7 +532,6 @@ async def protected_server_handler(req: ServerRequestModel):
     attack_prob: float = 0.05
 
     if active_def == "afp" and "afp" in engine.defenses:
-        # AFP: defend(X, epsilon_base, alpha, seed, attack_scenario, batch_id)
         X_proj, _, _ = engine.defenses["afp"].defend(
             features.reshape(1, -1),
             epsilon_base=curr_intensity,
@@ -491,7 +545,6 @@ async def protected_server_handler(req: ServerRequestModel):
         attack_prob = float(proba[1])
 
     elif active_def == "rs" and "rs" in engine.defenses:
-        # RS: predict_ensemble(X, sigma, seed, attack_scenario, batch_id, predict_func)
         preds, _ = engine.defenses["rs"].predict_ensemble(
             features.reshape(1, -1),
             sigma=curr_intensity,
@@ -504,7 +557,6 @@ async def protected_server_handler(req: ServerRequestModel):
         attack_prob = 0.95 if pred_label == 1 else 0.05
 
     elif active_def == "fs" and "fs" in engine.defenses:
-        # FS: defend(X, intensity, seed, attack_scenario, batch_id)
         X_proj, _, _ = engine.defenses["fs"].defend(
             features.reshape(1, -1),
             intensity=curr_intensity,
@@ -517,19 +569,36 @@ async def protected_server_handler(req: ServerRequestModel):
         attack_prob = float(proba[1])
 
     else:
-        # No Defense / Bypassed
         proba = engine.model.predict_proba(features.reshape(1, -1))[0]
         pred_label = int(np.argmax(proba))
         attack_prob = float(proba[1])
 
-    # 3. Outcome Assessment
+    # 3. Outcome Assessment (Authoritative binary classification: Benign vs Attack)
     is_malicious = (pred_label == 1)
-    status_str = "Malicious" if is_malicious else "Benign"
-    flow_type_display = req.flow_type if req.flow_type else ("DDoS" if is_malicious else "Normal")
+    status_str = "Attack" if is_malicious else "Benign"
+
+    # Resolve active attack scenario name
+    scenario_display = req.attack_scenario
+    if not scenario_display or scenario_display.lower() in ["none", "live", "traffic_flow", "none"]:
+        scenario_display = engine.active_attack_scenario
+    else:
+        canonical_map = {
+            "silent_probing": "Silent Probing",
+            "silent": "Silent Probing",
+            "surrogate_transfer": "Surrogate Transferability",
+            "surrogate": "Surrogate Transferability",
+            "boundary_attack": "Decision-Boundary Attack",
+            "boundary": "Decision-Boundary Attack",
+            "decision_boundary": "Decision-Boundary Attack"
+        }
+        scenario_display = canonical_map.get(scenario_display.lower(), scenario_display)
+
+    loc_display = resolve_ip_location(req.source_ip, req.country)
 
     if is_malicious:
         engine.detected_attacks += 1
-        engine.record_attack_ip(req.source_ip, req.country)
+        if loc_display != "Private Network":
+            engine.record_attack_ip(req.source_ip, loc_display)
 
     # 4. Update Engine Metrics & Controller Feedback
     engine.update_metrics_and_controller(ground_truth=ground_truth, predicted=pred_label)
@@ -539,10 +608,13 @@ async def protected_server_handler(req: ServerRequestModel):
         "timestamp": t_now,
         "source_ip": req.source_ip,
         "destination_ip": req.destination_ip or "192.168.1.10",
-        "type": flow_type_display,
+        "attack_scenario": scenario_display,
+        "traffic_family": resolved_family,
+        "traffic_family_source": resolved_family_source,
+        "type": resolved_family,
         "confidence": round(attack_prob if is_malicious else (1.0 - attack_prob), 2),
         "status": status_str,
-        "location": req.country if (req.country and req.country != "Unknown") else "External Network",
+        "location": loc_display,
         "defense": engine.active_defense_name.upper(),
         "mode": "Recall-Aware" if engine.controller_mode == "recall-aware" else "Base",
         "intensity": float(engine.current_intensity),
@@ -555,10 +627,13 @@ async def protected_server_handler(req: ServerRequestModel):
             "time": t_now,
             "source_ip": req.source_ip,
             "destination_ip": req.destination_ip or "192.168.1.10",
-            "location": req.country if (req.country and req.country != "Unknown") else "External Network",
-            "type": flow_type_display,
+            "location": loc_display,
+            "attack_scenario": scenario_display,
+            "traffic_family": resolved_family,
+            "traffic_family_source": resolved_family_source,
+            "type": resolved_family,
             "confidence": round(attack_prob, 2),
-            "status": status_str,
+            "status": "Attack",
             "defense": engine.active_defense_name.upper(),
             "mode": "Recall-Aware" if engine.controller_mode == "recall-aware" else "Base",
             "intensity": float(engine.current_intensity),
@@ -580,10 +655,12 @@ async def protected_server_handler(req: ServerRequestModel):
             content={
                 "status": "blocked",
                 "code": "IDS_INTRUSION_BLOCKED",
-                "message": f"Connection dropped by IDS ({engine.active_defense_name.upper()} + {engine.controller_mode.upper()}): {flow_type_display} detected.",
+                "message": f"Connection dropped by IDS: Attack detected ({resolved_family}).",
                 "details": {
                     "source_ip": req.source_ip,
-                    "type": flow_type_display,
+                    "ids_classification": "Attack",
+                    "traffic_family": resolved_family,
+                    "attack_scenario": scenario_display,
                     "confidence": round(attack_prob, 4),
                     "defense": engine.active_defense_name,
                     "mode": engine.controller_mode,
@@ -599,16 +676,41 @@ async def protected_server_handler(req: ServerRequestModel):
             content={
                 "status": "success",
                 "message": "Request evaluated and passed by protected server inline IDS.",
-                "data": {
-                    "resource": "/api/server/data",
-                    "defense": engine.active_defense_name,
-                    "mode": engine.controller_mode,
+                "details": {
+                    "source_ip": req.source_ip,
+                    "ids_classification": "Benign",
+                    "traffic_family": resolved_family,
+                    "attack_scenario": scenario_display,
                     "confidence": round(1.0 - attack_prob, 4),
-                    "execution_time_ms": 1.25,
-                    "payload_verified": True
+                    "verdict": "FORWARDED"
                 }
             }
         )
+
+# -----------------------------------------------------------------------------
+# Simulation Session Management API Endpoints
+# -----------------------------------------------------------------------------
+@app.post("/api/simulation/start")
+async def start_simulation_session(req: SimulationSessionModel):
+    engine.start_simulation(req.scenario, req.session_id)
+    await ws_manager.broadcast({
+        "event_type": "simulation_session_change",
+        "payload": engine.get_dashboard_payload()
+    })
+    return {
+        "status": "started",
+        "scenario": engine.active_attack_scenario,
+        "session_id": engine.active_simulation_session
+    }
+
+@app.post("/api/simulation/stop")
+async def stop_simulation_session():
+    engine.stop_simulation()
+    await ws_manager.broadcast({
+        "event_type": "simulation_session_change",
+        "payload": engine.get_dashboard_payload()
+    })
+    return {"status": "stopped", "scenario": "None"}
 
 # -----------------------------------------------------------------------------
 # Defense & Controller Management API Endpoints

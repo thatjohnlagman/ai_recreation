@@ -170,6 +170,13 @@
           <span class="status-val cyan" id="afp-status-text">Active</span>
         </div>
 
+        <!-- Active Black-Box Attack Scenario Badge -->
+        <div class="header-status-pill" id="scenario-status-pill" title="Active Black-Box Simulation Scenario">
+          <span class="status-dot gray" id="scenario-status-dot"></span>
+          <span class="header-status-label">Scenario</span>
+          <span class="status-val gray" id="scenario-status-text">None</span>
+        </div>
+
         <div class="system-status-indicator">
           <span class="status-pulse-dot"></span>
           <span class="status-text">System Online</span>
@@ -339,9 +346,9 @@
                       <th>Timestamp</th>
                       <th>Source IP</th>
                       <th>Destination IP</th>
-                      <th>Type</th>
+                      <th>Traffic Family</th>
                       <th>Confidence</th>
-                      <th>Status</th>
+                      <th>IDS Classification</th>
                     </tr>
                   </thead>
                   <tbody id="recent-feed-tbody">
@@ -360,7 +367,7 @@
                       <line x1="12" y1="16" x2="12.01" y2="16"/>
                     </svg>
                     <span class="inspector-title">Selected Flow Forensics:</span>
-                    <span class="inspector-target-id" id="insp-flow-title">10.0.2.45 &rarr; 192.168.1.10 [DDoS]</span>
+                    <span class="inspector-target-id" id="insp-flow-title">10.0.2.45 &rarr; 192.168.1.10 [DDoS attacks-LOIC-HTTP]</span>
                   </div>
                   <div class="inspector-header-right">
                     <span class="inspector-time" id="insp-time">14:28:16</span>
@@ -373,7 +380,7 @@
                   <div class="inspector-card">
                     <div class="insp-card-label">Source Origin</div>
                     <div class="insp-card-value font-mono" id="insp-source-ip">10.0.2.45</div>
-                    <div class="insp-card-sub" id="insp-location">Singapore (External Host)</div>
+                    <div class="insp-card-sub" id="insp-location">Private Network</div>
                   </div>
 
                   <!-- Card 2: Target Endpoint -->
@@ -383,34 +390,36 @@
                     <div class="insp-card-sub" id="insp-protocol">Protected Data Service</div>
                   </div>
 
-                  <!-- Card 3: Attack Classification -->
+                  <!-- Card 3: Attack Scenario -->
                   <div class="inspector-card">
-                    <div class="insp-card-label">Classification</div>
-                    <div class="insp-card-value" id="insp-flow-type">DDoS Flood</div>
-                    <div class="insp-card-sub" id="insp-threat-level">Critical Threat Level</div>
+                    <div class="insp-card-label">Attack Scenario</div>
+                    <div class="insp-card-value" id="insp-attack-scenario">Silent Probing</div>
+                    <div class="insp-card-sub" id="insp-scenario-sub">Simulation Session</div>
                   </div>
 
-                  <!-- Card 4: Model Confidence -->
+                  <!-- Card 4: Traffic Family -->
                   <div class="inspector-card">
-                    <div class="insp-card-label">Model Confidence</div>
-                    <div class="insp-card-value" id="insp-confidence-val">93.0%</div>
+                    <div class="insp-card-label">Traffic Family</div>
+                    <div class="insp-card-value" id="insp-traffic-family">DDoS attacks-LOIC-HTTP</div>
+                    <div class="insp-card-sub" id="insp-traffic-source">Dataset-derived</div>
+                  </div>
+
+                  <!-- Card 5: IDS Classification -->
+                  <div class="inspector-card">
+                    <div class="insp-card-label">IDS Classification</div>
+                    <div class="insp-card-value" id="insp-ids-classification">Attack</div>
+                    <div class="insp-card-sub" id="insp-confidence-val">93.0% Confidence</div>
                     <div class="insp-confidence-bar">
                       <div class="insp-confidence-fill" id="insp-confidence-fill" style="width: 93%;"></div>
                     </div>
                   </div>
 
-                  <!-- Card 5: Inline Defense -->
+                  <!-- Card 6: Defense & Mitigation -->
                   <div class="inspector-card">
-                    <div class="insp-card-label">Inline Defense</div>
+                    <div class="insp-card-label">Defense & Mitigation</div>
                     <div class="insp-card-value" id="insp-defense-name">AFP (Recall-Aware)</div>
-                    <div class="insp-card-sub font-mono" id="insp-defense-intensity">&epsilon; = 0.0003</div>
-                  </div>
-
-                  <!-- Card 6: Mitigation Action -->
-                  <div class="inspector-card">
-                    <div class="insp-card-label">Mitigation Action</div>
-                    <div class="insp-card-value text-red" id="insp-action-name">TCP RST / Drop</div>
-                    <div class="insp-card-sub" id="insp-action-sub">Inline Firewall Dropped</div>
+                    <div class="insp-card-sub font-mono" id="insp-defense-intensity">&epsilon; = 0.000300</div>
+                    <div class="insp-card-sub text-red" id="insp-action-name" style="margin-top: 2px; font-weight: 600;">Blocked (403)</div>
                   </div>
                 </div>
               </div>
@@ -562,8 +571,8 @@
                     <th>Time</th>
                     <th>Source IP</th>
                     <th>Location</th>
-                    <th>Type</th>
-                    <th>Status</th>
+                    <th>Traffic Family</th>
+                    <th>IDS Classification</th>
                   </tr>
                 </thead>
                 <tbody id="recent-attacks-tbody">
@@ -586,7 +595,7 @@
   <!-- Chart.js -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <!-- App JS with cache busting -->
-  <script src="/static/app.js?v=7.1"></script>
+  <script src="/static/app.js?v=8.0"></script>
   <script>
     // Resilient inline handlers that work regardless of cache
     async function handleSetDefense(defName) {

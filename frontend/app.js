@@ -423,23 +423,18 @@ function renderTopThreats(threats) {
 // Flow / Attack Forensics Inspector Logic & Heuristics
 // -----------------------------------------------------------------------------
 function inferLocation(ip) {
-  if (!ip) return "External Network";
-  if (ip.startsWith("192.168.1.")) return "Corp LAN (192.168.1.0/24)";
-  if (ip.startsWith("192.168.")) return "Internal Subnet (192.168.0.0/16)";
-  if (ip.startsWith("10.0.1.")) return "Internal Mgmt (10.0.1.0/24)";
-  if (ip.startsWith("10.0.2.")) return "DMZ Host (10.0.2.0/24)";
-  if (ip.startsWith("10.0.3.")) return "Staging Network";
-  if (ip.startsWith("10.")) return "Private Network (10.0.0.0/8)";
-  if (ip.startsWith("172.16.")) return "DMZ Zone (172.16.0.0/16)";
-  if (ip.startsWith("203.0.113.")) return "Singapore (External)";
-  if (ip.startsWith("185.199.")) return "Ukraine (External)";
-  if (ip.startsWith("103.21.")) return "United States (External)";
-  if (ip.startsWith("45.76.")) return "Germany (External)";
-  if (ip.startsWith("89.248.")) return "Russia (External)";
-  if (ip.startsWith("114.119.")) return "China (External)";
-  if (ip.startsWith("177.54.")) return "Brazil (External)";
-  if (ip.startsWith("197.232.")) return "Kenya (External)";
-  return "External Host";
+  if (!ip) return "Unknown";
+  // RFC 1918 Private Subnets & Loopback
+  if (
+    ip.startsWith("10.") ||
+    ip.startsWith("192.168.") ||
+    ip.startsWith("127.") ||
+    (ip.startsWith("172.") && parseInt(ip.split(".")[1], 10) >= 16 && parseInt(ip.split(".")[1], 10) <= 31)
+  ) {
+    return "Private Network";
+  }
+  // Public IP with no offline GeoIP DB
+  return "Unknown";
 }
 
 function formatIntensityDecimal(val) {
@@ -452,11 +447,26 @@ function formatIntensityDecimal(val) {
 function updateInspectorUI(item) {
   if (!item) return;
 
-  const isMalicious = (item.status && item.status.toLowerCase() === "malicious");
+  const isAttack = (item.status && (item.status.toLowerCase() === "attack" || item.status.toLowerCase() === "malicious"));
   const timeStr = item.timestamp || item.time || "Recent";
   const srcIp = item.source_ip || "192.168.1.45";
   const dstIp = item.destination_ip || "192.168.1.10:8000";
-  const flowType = item.type || (isMalicious ? "Threat Attack" : "Normal Traffic");
+
+  // 1. Attack Scenario (What the attacker is doing)
+  const attackScenario = item.attack_scenario || "None";
+  const scenarioSub = (attackScenario && attackScenario !== "None" && attackScenario !== "Background Traffic")
+    ? "Simulation Session"
+    : "Background Traffic";
+
+  // 2. Traffic Family (What the data represents)
+  const trafficFamily = item.traffic_family || item.type || "Unknown";
+  const trafficSource = item.traffic_family_source || (trafficFamily !== "Unknown" ? "Dataset-derived" : "Synthetic / Non-dataset");
+
+  // 3. IDS Classification (Binary authoritative model prediction)
+  const idsClassification = isAttack ? "Attack" : "Benign";
+
+  // 4. Geolocation (Legitimate IP location or Private Network / Unknown)
+  const location = (item.location && item.location !== "Unknown") ? item.location : inferLocation(srcIp);
 
   // Confidence calculation
   let conf = 0.93;
@@ -465,63 +475,75 @@ function updateInspectorUI(item) {
   } else if (item.confidence) {
     conf = parseFloat(item.confidence) || 0.93;
   } else {
-    conf = isMalicious ? 0.93 : 0.12;
+    conf = isAttack ? 0.93 : 0.95;
   }
-
-  // Location resolution
-  const location = (item.location && item.location !== "Unknown") ? item.location : inferLocation(srcIp);
 
   // Active Defense & Intensity
   const defense = item.defense || currentDefenseName || "AFP";
   const mode = item.mode || currentDefenseMode || "Recall-Aware";
   const intensity = (item.intensity !== undefined) ? item.intensity : currentDefenseIntensity;
 
-  // Action
-  const action = item.action || (isMalicious ? "TCP RST / Drop" : "Forwarded (200 OK)");
+  // Mitigation Action
+  const action = item.action || (isAttack ? "BLOCKED (403)" : "ALLOWED (200)");
 
-  // Update DOM elements
+  // Top header in inspector
   const titleEl = document.getElementById("insp-flow-title");
-  if (titleEl) titleEl.textContent = `${srcIp} → ${dstIp} [${flowType}]`;
+  if (titleEl) titleEl.textContent = `${srcIp} → ${dstIp} [${trafficFamily}]`;
 
   const timeEl = document.getElementById("insp-time");
   if (timeEl) timeEl.textContent = timeStr;
 
   const badgeEl = document.getElementById("insp-verdict-badge");
   if (badgeEl) {
-    badgeEl.textContent = isMalicious ? "Blocked (403)" : "Allowed (200)";
-    badgeEl.className = `badge-status ${isMalicious ? "malicious" : "benign"}`;
+    badgeEl.textContent = isAttack ? "Blocked (403)" : "Allowed (200)";
+    badgeEl.className = `badge-status ${isAttack ? "malicious" : "benign"}`;
   }
 
+  // Card 1: Source Origin
   const srcIpEl = document.getElementById("insp-source-ip");
   if (srcIpEl) srcIpEl.textContent = srcIp;
 
   const locEl = document.getElementById("insp-location");
   if (locEl) locEl.textContent = location;
 
+  // Card 2: Target Endpoint
   const dstIpEl = document.getElementById("insp-dest-ip");
   if (dstIpEl) dstIpEl.textContent = dstIp;
 
   const protoEl = document.getElementById("insp-protocol");
   if (protoEl) protoEl.textContent = "Protected Data Service (HTTP)";
 
-  const typeEl = document.getElementById("insp-flow-type");
-  if (typeEl) typeEl.textContent = flowType;
+  // Card 3: Attack Scenario
+  const scenarioEl = document.getElementById("insp-attack-scenario");
+  if (scenarioEl) scenarioEl.textContent = attackScenario;
 
-  const levelEl = document.getElementById("insp-threat-level");
-  if (levelEl) {
-    levelEl.textContent = isMalicious ? (conf >= 0.85 ? "Critical Severity" : "Elevated Severity") : "Verified Safe";
-    levelEl.style.color = isMalicious ? "#f87171" : "#34d399";
+  const scenarioSubEl = document.getElementById("insp-scenario-sub");
+  if (scenarioSubEl) scenarioSubEl.textContent = scenarioSub;
+
+  // Card 4: Traffic Family
+  const familyEl = document.getElementById("insp-traffic-family");
+  if (familyEl) familyEl.textContent = trafficFamily;
+
+  const sourceEl = document.getElementById("insp-traffic-source");
+  if (sourceEl) sourceEl.textContent = trafficSource;
+
+  // Card 5: IDS Classification
+  const idsClassEl = document.getElementById("insp-ids-classification");
+  if (idsClassEl) {
+    idsClassEl.textContent = idsClassification;
+    idsClassEl.style.color = isAttack ? "#f87171" : "#34d399";
   }
 
   const confValEl = document.getElementById("insp-confidence-val");
-  if (confValEl) confValEl.textContent = `${(conf * 100).toFixed(1)}%`;
+  if (confValEl) confValEl.textContent = `${(conf * 100).toFixed(1)}% Confidence`;
 
   const confFillEl = document.getElementById("insp-confidence-fill");
   if (confFillEl) {
     confFillEl.style.width = `${Math.min(100, Math.max(5, conf * 100))}%`;
-    confFillEl.style.background = isMalicious ? "#ef4444" : "#10b981";
+    confFillEl.style.background = isAttack ? "#ef4444" : "#10b981";
   }
 
+  // Card 6: Defense & Mitigation
   const defNameEl = document.getElementById("insp-defense-name");
   if (defNameEl) defNameEl.textContent = `${defense} (${mode})`;
 
@@ -531,12 +553,7 @@ function updateInspectorUI(item) {
   const actionNameEl = document.getElementById("insp-action-name");
   if (actionNameEl) {
     actionNameEl.textContent = action;
-    actionNameEl.className = `insp-card-value ${isMalicious ? "text-red" : "text-green"}`;
-  }
-
-  const actionSubEl = document.getElementById("insp-action-sub");
-  if (actionSubEl) {
-    actionSubEl.textContent = isMalicious ? "Inline Firewall Dropped" : "Forwarded to Protected Server";
+    actionNameEl.className = `insp-card-sub ${isAttack ? "text-red" : "text-green"}`;
   }
 }
 
@@ -567,10 +584,10 @@ function renderRecentFeed(feed) {
   if (!tbody || !feed) return;
   currentFeedList = feed;
 
-  // Auto-select first malicious attack (or top item) if none selected yet
+  // Auto-select first attack (or top item) if none selected yet
   if (!selectedFlowItem && feed.length > 0) {
-    const firstMalicious = feed.find(item => item.status && item.status.toLowerCase() === "malicious");
-    selectedFlowItem = firstMalicious || feed[0];
+    const firstAttack = feed.find(item => item.status && (item.status.toLowerCase() === "attack" || item.status.toLowerCase() === "malicious"));
+    selectedFlowItem = firstAttack || feed[0];
     if (selectedFlowItem) {
       updateInspectorUI(selectedFlowItem);
     }
@@ -579,8 +596,10 @@ function renderRecentFeed(feed) {
   const selectedTime = selectedFlowItem ? (selectedFlowItem.timestamp || selectedFlowItem.time) : null;
 
   tbody.innerHTML = feed.map((item, idx) => {
-    const isMalicious = (item.status && item.status.toLowerCase() === "malicious");
-    const badgeClass = isMalicious ? "malicious" : "benign";
+    const isAttack = (item.status && (item.status.toLowerCase() === "attack" || item.status.toLowerCase() === "malicious"));
+    const badgeClass = isAttack ? "malicious" : "benign";
+    const statusLabel = isAttack ? "Attack" : "Benign";
+    const familyLabel = item.traffic_family || item.type || "Unknown";
     const itemTime = item.timestamp || item.time;
     const isSelected = selectedFlowItem && (
       selectedFlowItem.source_ip === item.source_ip &&
@@ -592,9 +611,9 @@ function renderRecentFeed(feed) {
         <td>${item.timestamp}</td>
         <td>${item.source_ip}</td>
         <td>${item.destination_ip || "192.168.1.10"}</td>
-        <td>${item.type}</td>
+        <td>${familyLabel}</td>
         <td>${typeof item.confidence === 'number' ? item.confidence.toFixed(2) : item.confidence}</td>
-        <td><span class="badge-status ${badgeClass}">${item.status}</span></td>
+        <td><span class="badge-status ${badgeClass}">${statusLabel}</span></td>
       </tr>
     `;
   }).join("");
@@ -614,8 +633,11 @@ function renderRecentAttacks(attacks) {
   const selectedTime = selectedFlowItem ? (selectedFlowItem.timestamp || selectedFlowItem.time) : null;
 
   tbody.innerHTML = attacks.map((item, idx) => {
-    const isMalicious = (item.status && item.status.toLowerCase() === "malicious");
-    const badgeClass = isMalicious ? "malicious" : "benign";
+    const isAttack = (item.status && (item.status.toLowerCase() === "attack" || item.status.toLowerCase() === "malicious"));
+    const badgeClass = isAttack ? "malicious" : "benign";
+    const statusLabel = isAttack ? "Attack" : "Benign";
+    const familyLabel = item.traffic_family || item.type || "Unknown";
+    const locationLabel = (item.location && item.location !== "Unknown") ? item.location : inferLocation(item.source_ip);
     const itemTime = item.timestamp || item.time;
     const isSelected = selectedFlowItem && (
       selectedFlowItem.source_ip === item.source_ip &&
@@ -626,9 +648,9 @@ function renderRecentAttacks(attacks) {
       <tr class="${selectedClass}" data-idx="${idx}" onclick="onRowSelectAttack(${idx})" title="Click to view detailed attack forensics">
         <td>${item.time}</td>
         <td>${item.source_ip}</td>
-        <td>${item.location || "External Network"}</td>
-        <td>${item.type}</td>
-        <td><span class="badge-status ${badgeClass}">${item.status}</span></td>
+        <td>${locationLabel}</td>
+        <td>${familyLabel}</td>
+        <td><span class="badge-status ${badgeClass}">${statusLabel}</span></td>
       </tr>
     `;
   }).join("");
@@ -639,6 +661,18 @@ function renderRecentAttacks(attacks) {
 // -----------------------------------------------------------------------------
 function syncDashboard(payload) {
   if (!payload) return;
+
+  // 0. Active Attack Scenario Simulation Badge
+  if (payload.simulation) {
+    const scText = document.getElementById("scenario-status-text");
+    const scDot = document.getElementById("scenario-status-dot");
+    if (scText && scDot) {
+      const isAct = payload.simulation.is_active && payload.simulation.active_scenario !== "None";
+      scText.textContent = isAct ? payload.simulation.active_scenario : "None";
+      scText.className = `status-val ${isAct ? "orange" : "gray"}`;
+      scDot.className = `status-dot ${isAct ? "orange" : "gray"}`;
+    }
+  }
 
   // 1. KPI Cards
   if (payload.stats) {

@@ -341,6 +341,14 @@ body {
   background: var(--color-red);
   box-shadow: 0 0 6px var(--color-red);
 }
+.status-dot.gray {
+  background: #64748b;
+  box-shadow: none;
+}
+.status-dot.orange {
+  background: #f59e0b;
+  box-shadow: 0 0 6px rgba(245, 158, 11, 0.6);
+}
 
 .status-val {
   font-size: 11px;
@@ -349,6 +357,8 @@ body {
 .status-val.green { color: var(--color-green); }
 .status-val.cyan { color: var(--color-cyan); }
 .status-val.red { color: var(--color-red); }
+.status-val.gray { color: #64748b; }
+.status-val.orange { color: #f59e0b; }
 
 /* Header Datetime (High Contrast in both Light & Dark Mode) */
 .header-datetime {
