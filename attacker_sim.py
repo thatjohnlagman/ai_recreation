@@ -61,6 +61,8 @@ WHITE = "\033[97m"
 BG_RED = "\033[41m"
 BG_GREEN = "\033[42m"
 BG_BLUE = "\033[44m"
+BG_YELLOW = "\033[43m"
+BLACK = "\033[30m"
 
 DEFAULT_SERVER_URL = "http://localhost:8000/api/server/data"
 DEFAULT_DEFENSE_URL = "http://localhost:8000/api/dashboard/set-defense"
@@ -682,12 +684,12 @@ def run_single_flow(
 def run_silent_probing_attack() -> bool:
     """
     Executes Research Attack 1: Silent Probing
-    Sequential submission of unchanged baseline flows from measurement pool without querying oracle (0 queries).
+    Sequential submission of unchanged baseline flows from measurement pool without preliminary crafting queries (0 preliminary crafting queries).
     """
     c = get_ctx()
     print(f"\n{MAGENTA}{BOLD}======================================================================{RESET}")
     print(f"{MAGENTA}{BOLD}  RESEARCH ATTACK: SILENT PROBING ATTACK{RESET}")
-    print(f"{WHITE}  Model: Sequential Submission of Unchanged Measurement Flows (0 Queries){RESET}")
+    print(f"{WHITE}  Model: Sequential Submission of Unchanged Measurement Flows (0 Preliminary Crafting Queries){RESET}")
     print(f"{MAGENTA}{BOLD}======================================================================{RESET}\n")
 
     sess_id = start_simulation_session("Silent Probing")
@@ -700,10 +702,10 @@ def run_silent_probing_attack() -> bool:
         family = str(c.dataset.metadata.iloc[chosen_idx].get("attack_family", "Unknown"))
 
         print(f"{WHITE}Selected Measurement Target: {CYAN}{family}{RESET} (Evaluation ID: {chosen_idx}, Role: Measurement)")
-        print(f"{DIM}Preparing unchanged baseline flow (Silent Probing makes 0 oracle queries)...{RESET}")
+        print(f"{DIM}Preparing unchanged baseline flow (Silent Probing makes 0 preliminary crafting queries)...{RESET}")
 
         res = attack.generate(x_orig, oracle=None, sample_id=chosen_idx, true_label=1)
-        print(f"{GREEN}[OK] Flow prepared (0 queries). Transmitting final measured candidate to server...{RESET}")
+        print(f"{GREEN}[OK] Flow prepared (0 preliminary crafting queries). Transmitting final measured flow to server...{RESET}")
 
         resp = run_single_flow(
             flow_type=family,
@@ -727,11 +729,11 @@ def run_silent_probing_attack() -> bool:
             details = resp["body"].get("details", {})
             print(f"[{t_str}] {BG_RED}{WHITE}{BOLD} DETECTED & BLOCKED (403) {RESET}")
             print(f"IDS Classification: ATTACK | Family: {family} | Defense: {details.get('defense', '').upper()} [{details.get('mode', '').upper()}]")
-            print(f"{CYAN}Analysis: Target IDS classified silent probing flow as Attack.{RESET}\n")
+            print(f"{CYAN}Analysis: Target IDS classified unmodified malicious flow as Attack.{RESET}\n")
         else:
-            print(f"[{t_str}] {BG_GREEN}{WHITE}{BOLD} EVADED & ALLOWED (200) {RESET}")
-            print(f"IDS Classification: BENIGN | Family: {family}")
-            print(f"{YELLOW}Warning: Attack penetrated protected server under current defense configuration.{RESET}\n")
+            print(f"[{t_str}] {BG_YELLOW}{BLACK}{BOLD} MALICIOUS BASELINE FLOW ALLOWED / FALSE NEGATIVE (200) {RESET}")
+            print(f"IDS Classification: BENIGN (FALSE NEGATIVE) | Family: {family}")
+            print(f"{YELLOW}Analysis: Unmodified malicious flow was classified as benign by the IDS under current configuration.{RESET}\n")
         return True
     finally:
         stop_simulation_session()
@@ -752,32 +754,138 @@ def run_surrogate_transfer_attack() -> bool:
 
     sess_id = start_simulation_session("Surrogate Transferability")
     try:
-        attack = SurrogateTransferAttack(c.feature_names, c.modifiable_mask, c.bounds_df)
+        attack = SurrogateTransferAttack(c.feature_names, c.modifiable_mask, c.bounds_df, effective_seed=c.seed)
         oracle = RemoteServerOracle(target_url=get_server_url(), scenario_name="Surrogate Transferability", session_id=sess_id)
-
-        # Select reference query pool strictly from CRAFTING pool using seeded selection
-        ref_ids = c.select_crafting_references_surrogate(n_benign=10, n_attack=10)
-        x_pool = c.dataset.X.iloc[ref_ids].values
-        print(f"{DIM}Selecting {len(ref_ids)} bounded reference flows from crafting pool (10 benign, 10 attack) with seed={c.seed}...{RESET}")
-        print(f"{WHITE}Crafting Query Sample IDs (Role: Crafting): {CYAN}{ref_ids}{RESET}")
-
-        print(f"{DIM}Fitting surrogate model via query telemetry (is_query=True)...{RESET}")
-        y_oracle = oracle.predict(x_pool, sample_ids=ref_ids, stage="surrogate_fitting")
-        attack.fit_surrogate(x_pool, y_oracle)
-        print(f"{GREEN}[OK] Surrogate decision tree fitted successfully with classes {attack.surrogate.classes_}.{RESET}")
 
         # Draw target flow strictly from MEASUREMENT pool
         target_idx = c.draw_measurement_target(is_attack=True)
         x_orig = c.dataset.X.iloc[target_idx].values
         family = str(c.dataset.metadata.iloc[target_idx].get("attack_family", "Unknown"))
+        print(f"{WHITE}Selected Measurement Target: {CYAN}{family}{RESET} (Evaluation ID: {target_idx}, Role: Measurement)")
 
-        print(f"{WHITE}Targeting Measurement Attack Sample: {CYAN}{family}{RESET} (Evaluation ID: {target_idx}, Role: Measurement)")
-        x_cand, mags = attack.generate_candidate(x_orig)
-        if x_cand is None:
-            print(f"{YELLOW}[!] Surrogate yielded no feasible candidate for target {target_idx}.{RESET}\n")
+        # Step 1: Check original target eligibility via preliminary oracle query
+        print(f"{DIM}Verifying original malicious target eligibility via preliminary query (stage='eligibility', is_query=True)...{RESET}")
+        try:
+            orig_preds = oracle.predict(x_orig, sample_ids=[target_idx], stage="eligibility")
+            orig_label = int(orig_preds[0])
+        except Exception as e:
+            t_str = time.strftime("%H:%M:%S")
+            print(f"[{t_str}] {RED}{BOLD}[EXECUTION ERROR] Preliminary eligibility check failed: {e}{RESET}")
+            print(f"{YELLOW}No IDS classification or defense verdict could be obtained due to server/transport error.{RESET}\n")
             return False
 
-        print(f"{DIM}Submitting finalized candidate once as measured target flow...{RESET}")
+        # Step 2: Handle baseline false negative if original flow is already allowed (HTTP 200)
+        if orig_label == 0:
+            t_str = time.strftime("%H:%M:%S")
+            print(f"[{t_str}] {BG_YELLOW}{BLACK}{BOLD} BASELINE FALSE NEGATIVE / ORIGINAL MALICIOUS FLOW ALLOWED {RESET}")
+            print(f"Preliminary IDS Classification: BENIGN (HTTP 200) | Family: {family}")
+            print(f"{DIM}The unmodified malicious target is already allowed by the target classifier. This is a baseline false negative, not demonstrated evasion caused by modification.{RESET}")
+            print(f"{DIM}Submitting unchanged original once as final measured baseline flow...{RESET}")
+            resp = run_single_flow(
+                flow_type=family,
+                is_attack=True,
+                vector=x_orig,
+                sample_id=target_idx,
+                scenario="Surrogate Transferability",
+                session_id=sess_id,
+                is_query=False
+            )
+            t_str = time.strftime("%H:%M:%S")
+            if resp is None or resp.get("status_code") not in (200, 403):
+                status = resp.get("status_code") if resp else "No response"
+                err = resp.get("error", "Unknown error") if resp else "Failed"
+                print(f"[{t_str}] {RED}{BOLD}[EXECUTION ERROR] Final baseline submission failed (HTTP {status}: {err}){RESET}")
+                print(f"{YELLOW}No IDS classification or defense verdict could be obtained due to server/transport error.{RESET}\n")
+                return False
+
+            final_status = resp.get("status_code")
+            if final_status == 200:
+                print(f"[{t_str}] {BG_YELLOW}{BLACK}{BOLD} BASELINE FALSE NEGATIVE (200 OK) {RESET}")
+                print(f"Final IDS Classification: BENIGN (BASELINE FALSE NEGATIVE) | Family: {family}")
+                print(f"{YELLOW}Observed Verdict: Unmodified malicious flow was allowed by the classifier (baseline false negative).{RESET}\n")
+            else:
+                print(f"[{t_str}] {BG_RED}{WHITE}{BOLD} BASELINE FLOW BLOCKED (403 FORBIDDEN) {RESET}")
+                print(f"Final IDS Classification: ATTACK (BLOCKED) | Family: {family}")
+                print(f"{CYAN}Observed Verdict: Final measurement differed from preliminary query; baseline flow was blocked.{RESET}\n")
+            return True
+
+        # Step 3: Target detected (HTTP 403). Fit surrogate tree from crafting pool and generate candidate
+        t_str = time.strftime("%H:%M:%S")
+        print(f"[{t_str}] {DIM}Original malicious target confirmed detected (HTTP 403). Proceeding to surrogate fitting and candidate generation...{RESET}")
+
+        ref_ids = c.select_crafting_references_surrogate(n_benign=10, n_attack=10)
+        x_pool = c.dataset.X.iloc[ref_ids].values
+        print(f"{DIM}Selecting {len(ref_ids)} bounded reference flows from crafting pool (10 benign, 10 attack) with seed={c.seed}...{RESET}")
+        print(f"{WHITE}Crafting Query Sample IDs (Role: Crafting): {CYAN}{ref_ids}{RESET}")
+
+        print(f"{DIM}Fitting surrogate model via query telemetry (stage='surrogate_fitting', is_query=True)...{RESET}")
+        try:
+            y_oracle = oracle.predict(x_pool, sample_ids=ref_ids, stage="surrogate_fitting")
+            attack.fit_surrogate(x_pool, y_oracle)
+        except Exception as e:
+            t_str = time.strftime("%H:%M:%S")
+            print(f"[{t_str}] {RED}{BOLD}[EXECUTION ERROR] Surrogate fitting failed: {e}{RESET}")
+            print(f"{YELLOW}No IDS classification or defense verdict could be obtained due to server/transport error.{RESET}\n")
+            return False
+
+        print(f"{GREEN}[OK] Surrogate decision tree fitted successfully with classes {attack.surrogate.classes_} (seed={c.seed}).{RESET}")
+
+        print(f"{DIM}Generating candidate using local surrogate tree...{RESET}")
+        try:
+            x_cand, mags = attack.generate_candidate(x_orig)
+        except Exception as e:
+            t_str = time.strftime("%H:%M:%S")
+            print(f"[{t_str}] {RED}{BOLD}[EXECUTION ERROR] Candidate generation raised an unexpected error: {e}{RESET}")
+            return False
+
+        # Validate candidate: must be finite and have at least one changed feature in float32 representation
+        is_valid_changed_candidate = (
+            x_cand is not None
+            and isinstance(x_cand, np.ndarray)
+            and np.all(np.isfinite(x_cand))
+            and not np.array_equal(x_cand.astype(np.float32), x_orig.astype(np.float32))
+        )
+
+        if not is_valid_changed_candidate:
+            if x_cand is None:
+                reason = "Surrogate yielded no feasible candidate"
+            elif not np.all(np.isfinite(x_cand)):
+                reason = "Surrogate candidate contains non-finite values"
+            else:
+                reason = "Surrogate candidate produced zero feature changes"
+            print(f"{YELLOW}[!] {reason} for target {target_idx}. Never reporting as successful adversarial evasion.{RESET}")
+            print(f"{DIM}Falling back to transparent baseline submission of unchanged original flow...{RESET}")
+            resp = run_single_flow(
+                flow_type=family,
+                is_attack=True,
+                vector=x_orig,
+                sample_id=target_idx,
+                scenario="Surrogate Transferability",
+                session_id=sess_id,
+                is_query=False
+            )
+            t_str = time.strftime("%H:%M:%S")
+            if resp is None or resp.get("status_code") not in (200, 403):
+                status = resp.get("status_code") if resp else "No response"
+                err = resp.get("error", "Unknown error") if resp else "Failed"
+                print(f"[{t_str}] {RED}{BOLD}[EXECUTION ERROR] Baseline fallback submission failed (HTTP {status}: {err}){RESET}")
+                print(f"{YELLOW}No IDS classification or defense verdict could be obtained due to server/transport error.{RESET}\n")
+                return False
+
+            final_status = resp.get("status_code")
+            if final_status == 403:
+                print(f"[{t_str}] {BG_RED}{WHITE}{BOLD} UNCHANGED TARGET DETECTED (403 FORBIDDEN) {RESET}")
+                print(f"IDS Classification: ATTACK (BLOCKED) | Family: {family} (Baseline Fallback)")
+                print(f"{CYAN}Observed Verdict: No candidate crafted; unchanged baseline flow was detected.{RESET}\n")
+            else:
+                print(f"[{t_str}] {BG_YELLOW}{BLACK}{BOLD} BASELINE FLOW ALLOWED (200 OK) {RESET}")
+                print(f"IDS Classification: BENIGN | Family: {family} (Baseline Fallback)")
+                print(f"{YELLOW}Observed Verdict: No candidate crafted; unchanged baseline flow was allowed (not a crafted evasion).{RESET}\n")
+            return True
+
+        # Step 4: For valid changed candidate, submit once as final measured target
+        changed_count = int(np.sum(x_cand.astype(np.float32) != x_orig.astype(np.float32)))
+        print(f"{DIM}Submitting valid changed candidate ({changed_count} features modified) once as measured target flow...{RESET}")
         resp = run_single_flow(
             flow_type=family,
             is_attack=True,
@@ -795,15 +903,17 @@ def run_surrogate_transfer_attack() -> bool:
             print(f"[{t_str}] {RED}{BOLD}[EXECUTION ERROR] Submission failed (HTTP {status}: {err}){RESET}")
             print(f"{YELLOW}No IDS classification or defense verdict could be obtained due to server/transport error.{RESET}\n")
             return False
-        elif resp.get("status_code") == 200:
-            print(f"[{t_str}] {BG_GREEN}{WHITE}{BOLD} TRANSFER SUCCESS (200 OK) {RESET}")
-            print(f"IDS Classification: BENIGN (EVASION SUCCESS) | Family: {family}")
-            print(f"{YELLOW}Result: Adversarial candidate transferred and evaded target classifier!{RESET}\n")
+
+        final_status = resp.get("status_code")
+        if final_status == 200:
+            print(f"[{t_str}] {BG_GREEN}{WHITE}{BOLD} SURROGATE EVASION SUCCESS (200 OK) {RESET}")
+            print(f"IDS Classification: BENIGN (SURROGATE EVASION SUCCESS) | Family: {family}")
+            print(f"{YELLOW}Observed Verdict: Adversarial candidate transferred across surrogate boundary and was allowed.{RESET}\n")
             return True
-        elif resp.get("status_code") == 403:
-            print(f"[{t_str}] {BG_RED}{WHITE}{BOLD} TRANSFER BLOCKED (403 FORBIDDEN) {RESET}")
-            print(f"IDS Classification: ATTACK (DEFENSE HELD) | Family: {family}")
-            print(f"{CYAN}Result: Target IDS defense prevented surrogate boundary transfer.{RESET}\n")
+        elif final_status == 403:
+            print(f"[{t_str}] {BG_RED}{WHITE}{BOLD} CANDIDATE DETECTED / TRANSFER BLOCKED (403 FORBIDDEN) {RESET}")
+            print(f"IDS Classification: ATTACK (CANDIDATE DETECTED) | Family: {family}")
+            print(f"{CYAN}Observed Verdict: Transferred adversarial candidate was classified as Attack (transfer blocked).{RESET}\n")
             return True
     finally:
         stop_simulation_session()
@@ -917,7 +1027,7 @@ def interactive_menu():
         print(f"{WHITE}{BOLD}======================================================================{RESET}")
         print(f"{CYAN}{BOLD}  ATTACKER ACTIONS (Black-Box Simulation POV):{RESET}")
         print(f"  {CYAN}[1]{RESET} Send recorded benign flow")
-        print(f"  {MAGENTA}[2]{RESET} Silent Probing: submit unchanged malicious flow, zero preliminary queries")
+        print(f"  {MAGENTA}[2]{RESET} Silent Probing: submit unchanged malicious flow, zero preliminary crafting queries")
         print(f"  {MAGENTA}[3]{RESET} Surrogate Transferability: craft using a local surrogate and crafting references")
         print(f"  {MAGENTA}[4]{RESET} Decision-Boundary Attack: search using server responses and crafting references")
         print(f"  {BLUE}[5]{RESET} Continuous recorded-flow stream")

@@ -290,13 +290,14 @@ def run_comparative_benchmark(defense: Optional[str] = None, token: Optional[str
     elif target_def == "afp":
         if detected_count == total_count:
             print(f"{WHITE}With all {total_count} attack flows detected (Recall = 1.000 >= Rmin), the controller maintained calibrated baseline intensity={obs_intensity_str} in {obs_state} state.{RESET}")
-            print(f"{DIM}Note: When evasion causes lower recall below threshold, the controller adapts downward.{RESET}\n")
+            print(f"{DIM}Note: When evasion causes lower recall below threshold, the controller adapts downward (Adaptive Feature Poisoning: study-defined bounded noise, not centroid projection).{RESET}\n")
         else:
-            print(f"{WHITE}Observed evasion resulted in controller adaptation: intensity={obs_intensity_str}, state={obs_state}.{RESET}\n")
+            print(f"{WHITE}Observed evasion resulted in controller adaptation: intensity={obs_intensity_str}, state={obs_state} (Adaptive Feature Poisoning: study-defined bounded noise, not centroid projection).{RESET}\n")
     elif target_def == "rs":
-        print(f"{WHITE}Randomized Smoothing evaluated in {obs_state} mode (sigma parameter: {obs_intensity_str}). Confidence scores reflect 11-member ensemble vote fractions.{RESET}\n")
+        print(f"{WHITE}Randomized Smoothing evaluated in {obs_state} mode (sigma parameter: {obs_intensity_str}). Confidence scores reflect 11-member ensemble vote fractions from Gaussian noisy copies with majority voting.{RESET}\n")
     elif target_def == "fs":
-        print(f"{WHITE}Feature Squeezing evaluated in {obs_state} mode (bit depth: {obs_intensity_str}).{RESET}\n")
+        d = max(0, 6 - int(raw_intensity)) if isinstance(raw_intensity, (int, float)) else "N/A"
+        print(f"{WHITE}Feature Squeezing evaluated in {obs_state} mode (continuous squeezing intensity: {obs_intensity_str}, retained decimal places d={d} via d = max(0, 6 - int(squeezing_intensity))).{RESET}\n")
     else:
         print(f"{WHITE}Baseline classifier (No defense) evaluated with zero perturbation (intensity={obs_intensity_str}).{RESET}\n")
 
@@ -413,20 +414,24 @@ def run_cross_defense_comparison(count: int = 5, token: Optional[str] = None) ->
     print(f"\n{CYAN}{BOLD}========================================================================================{RESET}")
     print(f"{CYAN}{BOLD}  CROSS-DEFENSE EVALUATION SUMMARY (IDENTICAL 5-FLOW MEASUREMENT SEQUENCE){RESET}")
     print(f"{CYAN}{BOLD}========================================================================================{RESET}")
-    print(f"{BOLD}{'Defense':<10} {'Mode':<8} {'TP':<5} {'FN':<5} {'FP':<5} {'TN':<5} {'Recall':<10} {'FPR':<10} {'Intensity':<12} {'Confidence Semantics':<24}{RESET}")
-    print(f"{'-'*96}")
+    print(f"{BOLD}{'Defense':<10} {'Mode':<8} {'TP':<5} {'FN':<5} {'FP':<5} {'TN':<5} {'Recall':<10} {'FPR':<10} {'Intensity / Decimals':<22} {'Confidence Semantics':<24}{RESET}")
+    print(f"{'-'*102}")
     for def_name in defenses:
         if def_name in arm_results:
             r = arm_results[def_name]
             if r.get("status") == "COMPLETED":
-                int_str = f"{r['intensity']:.5f}" if isinstance(r['intensity'], (int, float)) else str(r['intensity'])
-                print(f"{r['defense']:<10} {'Base':<8} {r['tp']:<5} {r['fn']:<5} {r['fp']:<5} {r['tn']:<5} {r['recall']:<10} {r['fpr']:<10} {int_str:<12} {r['conf_semantics']:<24}")
+                if def_name == "fs" and isinstance(r['intensity'], (int, float)):
+                    d = max(0, 6 - int(r['intensity']))
+                    int_str = f"{r['intensity']:.5f} (d={d})"
+                else:
+                    int_str = f"{r['intensity']:.5f}" if isinstance(r['intensity'], (int, float)) else str(r['intensity'])
+                print(f"{r['defense']:<10} {'Base':<8} {r['tp']:<5} {r['fn']:<5} {r['fp']:<5} {r['tn']:<5} {r['recall']:<10} {r['fpr']:<10} {int_str:<22} {r['conf_semantics']:<24}")
             else:
-                print(f"{r['defense']:<10} {'Base':<8} {'FAIL':<5} {'—':<5} {'—':<5} {'—':<5} {'—':<10} {'—':<10} {'—':<12} {r.get('error', 'Arm failed'):<24}")
+                print(f"{r['defense']:<10} {'Base':<8} {'FAIL':<5} {'—':<5} {'—':<5} {'—':<5} {'—':<10} {'—':<10} {'—':<22} {r.get('error', 'Arm failed'):<24}")
         else:
-            print(f"{def_name.upper():<10} {'Base':<8} {'FAIL':<5} {'—':<5} {'—':<5} {'—':<5} {'—':<10} {'—':<10} {'—':<12} {'Arm not executed':<24}")
-    print(f"{'-'*96}")
-    print(f"{DIM}Note: RS confidence reflects ensemble vote fractions (11 sub-models), whereas AFP, FS, and None report direct Random Forest probability estimates. Equal verdicts do not imply identical internal representations.{RESET}\n")
+            print(f"{def_name.upper():<10} {'Base':<8} {'FAIL':<5} {'—':<5} {'—':<5} {'—':<5} {'—':<10} {'—':<10} {'—':<22} {'Arm not executed':<24}")
+    print(f"{'-'*102}")
+    print(f"{DIM}Note: RS confidence reflects ensemble vote fractions from Gaussian noisy copies with majority voting (11 sub-models). FS performs decimal precision reduction with d = max(0, 6 - int(squeezing_intensity)), distinguishing continuous intensity from retained decimal places. AFP (Adaptive Feature Poisoning: study-defined bounded noise, not centroid projection), FS, and None report direct Random Forest probability estimates. Equal verdicts do not imply identical internal representations.{RESET}\n")
 
     return all_arms_completed
 

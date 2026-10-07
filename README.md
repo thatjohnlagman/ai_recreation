@@ -5,7 +5,7 @@
 This repository contains the standalone thesis demonstration platform for:
 **Recall-Aware Adaptive Feature Perturbation for Machine Learning-Based Intrusion Detection Systems**.
 
-The platform couples an inline Machine Learning Intrusion Detection System (ML-IDS) guarded by active adversarial defenses (**Adaptive Feature Perturbation [AFP]**, **Randomized Smoothing [RS]**, and **Feature Squeezing [FS]**) with an adaptive **Recall-Aware Feedback Controller**. A companion console simulates black-box adversarial attacks and benign background traffic in real time.
+The platform couples an inline Machine Learning Intrusion Detection System (ML-IDS) guarded by active adversarial defenses (**Adaptive Feature Poisoning [AFP]**, **Randomized Smoothing [RS]**, and **Feature Squeezing [FS]**) with an adaptive **Recall-Aware Feedback Controller**. A companion console simulates black-box adversarial attacks and benign background traffic in real time.
 
 ---
 
@@ -41,7 +41,7 @@ python attacker_sim.py
 
 The console menu exposes the canonical study procedures:
 - **[1]** Send Legitimate Benign Traffic Flow (`Request allowed (HTTP 200)`)
-- **[2]** Launch Silent Probing (Sequential Unchanged Baseline Flows, 0 Queries)
+- **[2]** Launch Silent Probing (Sequential Unchanged Baseline Flows, 0 Preliminary Crafting Queries)
 - **[3]** Launch Surrogate Transferability Attack (Decision Tree Surrogate)
 - **[4]** Launch Decision Boundary Attack (1D Bisection Search)
 - **[5]** Continuous Real-time Traffic Stream
@@ -84,9 +84,9 @@ python operator_benchmarks.py --compare-all
 | **Model Type** | 200-tree binary RandomForest (`classes_=[0, 1]`) |
 | **Input Schema** | Exactly 78 numerical features (CSE-CIC-IDS2018 standard schema) |
 | **Feature Mask** | Exactly 63 modifiable features and 15 protected network-layer features |
-| **Active Defense (AFP)** | Adaptive Feature Poisoning (thesis title: Adaptive Feature Perturbation): Bounded noise scaled by standard deviation: $\varepsilon = 0.0003$, $\alpha = 0.5$ (no centroid projection) |
-| **Active Defense (RS)** | 11 noise members, Gaussian smoothing |
-| **Active Defense (FS)** | Feature bit squeezing |
+| **Active Defense (AFP)** | Adaptive Feature Poisoning: Study-defined bounded noise scaled by standard deviation: $\varepsilon = 0.0003$, $\alpha = 0.5$ (not centroid projection) |
+| **Active Defense (RS)** | Gaussian noisy copies with majority voting (11 noise members) |
+| **Active Defense (FS)** | Decimal precision reduction: $d = \max(0, 6 - \text{int}(\text{squeezing\_intensity}))$ |
 | **Recall-Aware Controller** | Rolling evaluation window ($W=5$), $R_{\text{crit}}=0.85$, $R_{\text{min}}=0.95$, fast decay $\times 0.40$, slow decay $\times 0.90$, growth $\times 1.05$ |
 | **Expanded Data Profile** | **90,000 rows** in `runtime_package/expanded_data/` (72,000 measurement targets, 18,000 crafting references; disjoint, full coverage) |
 | **Fixture20 Profile** | Preserved 20 rows in `runtime_package/demo_data/` (`X_demo.parquet`, `metadata_demo.parquet`) |
