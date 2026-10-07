@@ -679,15 +679,17 @@ def run_single_flow(
         print(f"[{t_str}] {badge} {resolved_family:<22} {sample_tag:<12} from {origin['ip']:<15} | Server Status: Resource Granted (Benign)")
 
     if SHOW_FEATURES and not is_query:
-        event_id = res["body"].get("event_id", "Unknown")
+        event_id = res["body"].get("details", {}).get("event_id", "Unknown")
         print(f"\n{CYAN}--- Final Vector Sent (Event ID: {event_id}) ---{RESET}")
         if vector is not None and chosen_idx is not None:
-            # Transformed candidate
             orig_vals = c.dataset.X.iloc[chosen_idx].values
             sent_vals = np.array(feat_list)
-            changed_idx = np.where(orig_vals != sent_vals)[0]
-            print(f"Type: Transformed Candidate | Changed Features: {len(changed_idx)}")
+            
+            # Use float32 comparison to avoid precision mismatch artifacts
+            changed_idx = np.where(orig_vals.astype(np.float32) != sent_vals.astype(np.float32))[0]
+            
             if len(changed_idx) > 0:
+                print(f"Type: Transformed Candidate | Changed Features: {len(changed_idx)}")
                 print(f"{'Feature Name':<40} | {'Original':<20} | {'Sent':<20} | {'Diff':<20}")
                 print("-" * 105)
                 for idx in changed_idx:
@@ -697,6 +699,7 @@ def run_single_flow(
                     diff = sent - orig
                     print(f"{fname:<40} | {orig:<20.6g} | {sent:<20.6g} | {diff:<20.6g}")
             else:
+                print(f"Type: Unchanged Baseline")
                 print("Vector matches original exactly.")
         else:
             print(f"Type: Unchanged Baseline")

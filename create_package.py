@@ -10,7 +10,7 @@ import csv
 from pathlib import Path
 
 REPO_ROOT = Path(".").resolve()
-ZIP_OUT = REPO_ROOT / "ids_standalone_tool_defense_ready_pages.zip"
+ZIP_OUT = REPO_ROOT / "ids_standalone_tool_defense_ready_pages_corrected.zip"
 MANIFEST_FILE = REPO_ROOT / "FILE_MANIFEST.csv"
 
 EXCLUDE_DIRS = {

@@ -39,14 +39,15 @@
         <thead>
           <tr>
             <th>Session ID</th>
-            <th>Start Time</th>
-            <th>End Time</th>
-            <th>Total Flows</th>
+            <th>Mode</th>
+            <th>Start</th>
+            <th>Queries</th>
+            <th>Targets</th>
             <th>TP</th>
             <th>FP</th>
             <th>TN</th>
             <th>FN</th>
-            <th>Recall</th>
+            <th>Metrics (Precision/Recall/F1/FPR)</th>
             <th>Actions</th>
           </tr>
         </thead>
@@ -74,22 +75,46 @@
         const tr = document.createElement('tr');
         
         let recallStr = "N/A";
+        let precStr = "N/A";
+        let f1Str = "N/A";
+        let fprStr = "N/A";
         let tp = row.tp || 0;
+        let fp = row.fp || 0;
+        let tn = row.tn || 0;
         let fn = row.fn || 0;
+        
+        let recall = 0;
+        let prec = 0;
+        
         if (tp + fn > 0) {
-            recallStr = (tp / (tp + fn)).toFixed(3);
+            recall = tp / (tp + fn);
+            recallStr = recall.toFixed(3);
+        }
+        if (tp + fp > 0) {
+            prec = tp / (tp + fp);
+            precStr = prec.toFixed(3);
+        }
+        if (prec + recall > 0) {
+            f1Str = (2 * prec * recall / (prec + recall)).toFixed(3);
+        }
+        if (fp + tn > 0) {
+            fprStr = (fp / (fp + tn)).toFixed(3);
         }
         
         tr.innerHTML = `
           <td><strong>${row.session_id}</strong></td>
+          <td>${row.controller_mode || 'Unknown'}</td>
           <td>${row.start_time}</td>
-          <td>${row.end_time}</td>
-          <td>${row.total_flows}</td>
+          <td>${row.query_count || 0}</td>
+          <td>${row.target_count || 0}</td>
           <td><span style="color:#10b981">${tp}</span></td>
-          <td><span style="color:#ef4444">${row.fp || 0}</span></td>
-          <td><span style="color:#10b981">${row.tn || 0}</span></td>
+          <td><span style="color:#ef4444">${fp}</span></td>
+          <td><span style="color:#10b981">${tn}</span></td>
           <td><span style="color:#ef4444">${fn}</span></td>
-          <td><strong>${recallStr}</strong></td>
+          <td style="font-size: 11px;">
+             <strong>P:</strong> ${precStr} | <strong>R:</strong> ${recallStr} <br/>
+             <strong>F1:</strong> ${f1Str} | <strong>FPR:</strong> ${fprStr}
+          </td>
           <td style="display: flex; gap: 8px;">
             <a href="/explorer?session_id=${row.session_id}" class="action-btn btn-blue" style="font-size:11px;">Explore</a>
             <a href="/api/history/export?session_id=${row.session_id}" class="action-btn btn-green" style="font-size:11px;">CSV</a>

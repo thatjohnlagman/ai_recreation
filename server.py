@@ -951,6 +951,11 @@ async def protected_server_handler(req: ServerRequestModel):
         triggered, old_state, new_state = engine.update_metrics_and_controller(ground_truth=ground_truth, predicted=pred_label, used_intensity=used_intensity)
 
     try:
+        if active_def == "rs":
+            conf_str = f"RS Vote Fraction: {attack_prob:.3f}"
+        else:
+            conf_str = f"RF Class Probability: {attack_prob:.3f}"
+
         traffic_history.save_flow_event({
             "event_id": event_id,
             "timestamp_utc": datetime.utcnow().isoformat() + "Z",
@@ -961,12 +966,13 @@ async def protected_server_handler(req: ServerRequestModel):
             "sample_id": req.sample_id,
             "binary_prediction": pred_label,
             "action": "Request rejected (HTTP 403)" if is_malicious else "Request allowed (HTTP 200)",
-            "confidence_meaning": str(round(attack_prob if is_malicious else (1.0 - attack_prob), 2)),
+            "confidence_meaning": conf_str,
             "defense": active_def.upper(),
             "used_intensity": used_intensity,
             "ground_truth_status": ground_truth_status,
             "controller_triggered": 1 if triggered else 0,
             "controller_state": {"old": old_state, "new": new_state},
+            "controller_mode": engine.controller_mode,
             "session_id": getattr(engine, "current_review_session_id", "sim-default"),
             "received_vector": received_vector,
             "classifier_input_vector": classifier_input_vector,
@@ -1054,7 +1060,8 @@ async def protected_server_handler(req: ServerRequestModel):
                     "data_profile": engine.data_profile,
                     "is_query": is_query_flow,
                     "action": "Request rejected (HTTP 403)",
-                    "verdict": "DROPPED"
+                    "verdict": "DROPPED",
+                    "event_id": event_id
                 }
             }
         )
@@ -1081,7 +1088,8 @@ async def protected_server_handler(req: ServerRequestModel):
                     "data_profile": engine.data_profile,
                     "is_query": is_query_flow,
                     "action": "Request allowed (HTTP 200)",
-                    "verdict": "FORWARDED"
+                    "verdict": "FORWARDED",
+                    "event_id": event_id
                 }
             }
         )
@@ -1190,10 +1198,16 @@ async def reset_metrics(request: Request):
     engine.recent_attacks.clear()
     engine.active_attack_scenario = "None"
     engine.active_simulation_session = None
+    engine.current_review_session_id = f"rev-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
     engine.set_defense(engine.active_defense_name)
     payload = engine.get_dashboard_payload()
     await ws_manager.broadcast({"event_type": "reset", "payload": payload})
     return JSONResponse(content=payload)
+
+def _protect_csv(val):
+    if isinstance(val, str) and val.startswith(('=', '+', '-', '@')):
+        return "'" + val
+    return val
 
 @app.get("/api/history")
 async def api_get_history(
@@ -1207,6 +1221,8 @@ async def api_get_history(
     is_attack: Optional[bool] = None,
     query_only: bool = False
 ):
+    if not verify_operator_authorization(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
     import traffic_history
     results, total = traffic_history.get_history(
         limit=limit,
@@ -1221,7 +1237,9 @@ async def api_get_history(
     return {"data": results, "total": total}
 
 @app.get("/api/history/event/{event_id}")
-async def api_get_event(event_id: str):
+async def api_get_event(event_id: str, request: Request):
+    if not verify_operator_authorization(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
     import traffic_history
     event = traffic_history.get_event(event_id)
     if not event:
@@ -1240,8 +1258,22 @@ async def api_get_event(event_id: str):
     
     return event
 
+class ReviewUpdateModel(BaseModel):
+    review_status: str
+    analyst_notes: str
+
+@app.post("/api/history/event/{event_id}/review")
+async def api_update_review(event_id: str, req: ReviewUpdateModel, request: Request):
+    if not verify_operator_authorization(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    import traffic_history
+    traffic_history.update_review(event_id, req.review_status, req.analyst_notes)
+    return {"status": "success"}
+
 @app.get("/api/history/sessions")
-async def api_get_sessions():
+async def api_get_sessions(request: Request):
+    if not verify_operator_authorization(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
     import traffic_history
     return traffic_history.get_sessions()
 
@@ -1249,8 +1281,26 @@ import csv
 import io
 from fastapi.responses import StreamingResponse
 
+def _export_generator(fieldnames, results, get_row_dict):
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=fieldnames)
+    writer.writeheader()
+    yield output.getvalue()
+    output.seek(0)
+    output.truncate(0)
+    
+    for row in results:
+        row_dict = get_row_dict(row)
+        if row_dict:
+            safe_dict = {k: _protect_csv(v) for k, v in row_dict.items()}
+            writer.writerow(safe_dict)
+            yield output.getvalue()
+            output.seek(0)
+            output.truncate(0)
+
 @app.get("/api/history/export")
 async def api_export_metadata(
+    request: Request,
     session_id: Optional[str] = None,
     role: Optional[str] = None,
     action: Optional[str] = None,
@@ -1258,22 +1308,19 @@ async def api_export_metadata(
     is_attack: Optional[bool] = None,
     query_only: bool = False
 ):
+    if not verify_operator_authorization(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
     import traffic_history
-    results, _ = traffic_history.get_history(limit=100000, offset=0, session_id=session_id, role=role, action=action, defense=defense, is_attack=is_attack, query_only=query_only)
+    results, _ = traffic_history.get_history(limit=1000000, offset=0, session_id=session_id, role=role, action=action, defense=defense, is_attack=is_attack, query_only=query_only)
     
-    output = io.StringIO()
     if not results:
         return StreamingResponse(iter(["No data"]), media_type="text/csv")
         
-    writer = csv.DictWriter(output, fieldnames=results[0].keys())
-    writer.writeheader()
-    writer.writerows(results)
-    
-    output.seek(0)
-    return StreamingResponse(iter([output.getvalue()]), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=traffic_metadata.csv"})
+    return StreamingResponse(_export_generator(list(results[0].keys()), results, lambda r: r), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=traffic_metadata.csv"})
 
 @app.get("/api/history/export/features")
 async def api_export_features(
+    request: Request,
     session_id: Optional[str] = None,
     role: Optional[str] = None,
     action: Optional[str] = None,
@@ -1281,30 +1328,62 @@ async def api_export_features(
     is_attack: Optional[bool] = None,
     query_only: bool = False
 ):
+    if not verify_operator_authorization(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
     import traffic_history
-    # We only export the final classifier input feature vector
-    results, _ = traffic_history.get_history(limit=100000, offset=0, session_id=session_id, role=role, action=action, defense=defense, is_attack=is_attack, query_only=query_only)
+    results, _ = traffic_history.get_history(limit=1000000, offset=0, session_id=session_id, role=role, action=action, defense=defense, is_attack=is_attack, query_only=query_only)
     
-    output = io.StringIO()
     if not results:
         return StreamingResponse(iter(["No data"]), media_type="text/csv")
     
-    engine = app.state.engine
-    fieldnames = ["event_id"] + engine.feature_names
-    writer = csv.DictWriter(output, fieldnames=fieldnames)
-    writer.writeheader()
+    fieldnames = ["event_id", "stage", "rs_member_index"] + engine.feature_names
     
-    for row in results:
-        event = traffic_history.get_event(row["event_id"])
-        vec = event.get("classifier_input_vector")
-        if vec is not None:
-            row_dict = {"event_id": row["event_id"]}
-            for i, val in enumerate(vec):
-                row_dict[engine.feature_names[i]] = val
-            writer.writerow(row_dict)
+    def get_feature_rows():
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        writer.writeheader()
+        yield output.getvalue()
+        output.seek(0)
+        output.truncate(0)
+        
+        for row in results:
+            event = traffic_history.get_event(row["event_id"])
             
-    output.seek(0)
-    return StreamingResponse(iter([output.getvalue()]), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=traffic_features.csv"})
+            # Received
+            vec_rec = event.get("received_vector")
+            if vec_rec is not None:
+                row_dict = {"event_id": row["event_id"], "stage": "received", "rs_member_index": ""}
+                for i, val in enumerate(vec_rec):
+                    row_dict[engine.feature_names[i]] = _protect_csv(val)
+                writer.writerow(row_dict)
+                yield output.getvalue()
+                output.seek(0)
+                output.truncate(0)
+                
+            # Final Classifier Input
+            vec_clf = event.get("classifier_input_vector")
+            if vec_clf is not None:
+                row_dict = {"event_id": row["event_id"], "stage": "final_classifier_input", "rs_member_index": ""}
+                for i, val in enumerate(vec_clf):
+                    row_dict[engine.feature_names[i]] = _protect_csv(val)
+                writer.writerow(row_dict)
+                yield output.getvalue()
+                output.seek(0)
+                output.truncate(0)
+                
+            # RS Members
+            vec_rs = event.get("rs_member_vectors")
+            if vec_rs is not None:
+                for idx, member in enumerate(vec_rs):
+                    row_dict = {"event_id": row["event_id"], "stage": "rs_member", "rs_member_index": str(idx)}
+                    for i, val in enumerate(member):
+                        row_dict[engine.feature_names[i]] = _protect_csv(val)
+                    writer.writerow(row_dict)
+                    yield output.getvalue()
+                    output.seek(0)
+                    output.truncate(0)
+                    
+    return StreamingResponse(get_feature_rows(), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=traffic_features.csv"})
 
 @app.get("/api/dashboard/stats")
 async def get_dashboard_stats():

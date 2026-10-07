@@ -106,14 +106,66 @@
       <div class="detail-grid" id="detail-grid">
         Loading details...
       </div>
+      
+      <div class="detail-card" style="margin-bottom: 15px;">
+        <h4>Analyst Review</h4>
+        <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+          <select id="review-status">
+             <option value="">-- No Status --</option>
+             <option value="Reviewed - Benign">Reviewed - Benign</option>
+             <option value="Reviewed - Malicious">Reviewed - Malicious</option>
+             <option value="Escalated">Escalated</option>
+          </select>
+          <button class="action-btn btn-blue" onclick="saveReview()">Save Review</button>
+        </div>
+        <textarea id="analyst-notes" style="width: 100%; height: 60px;" placeholder="Add persistent notes..."></textarea>
+      </div>
+
       <h3>Feature Vectors</h3>
-      <pre id="detail-vectors" style="font-size: 12px; white-space: pre-wrap;"></pre>
+      <div id="rs-selector-container" style="display:none; margin-bottom: 10px;">
+        <label>RS Member: <select id="rs-member-select" onchange="renderFeatureTable()"></select></label>
+      </div>
+      <div class="table-container" style="max-height: 400px; overflow-y: auto;">
+        <table class="data-table" id="feature-table">
+          <thead>
+            <tr>
+              <th>Feature Name</th>
+              <th>Received</th>
+              <th>Final Input</th>
+              <th>Diff</th>
+            </tr>
+          </thead>
+          <tbody id="feature-tbody"></tbody>
+        </table>
+      </div>
     </div>
   </div>
 
   <script>
     let offset = 0;
     const limit = 50;
+
+    let currentEvent = null;
+    let featureNames = [];
+
+    // Fetch feature names initially
+    async function init() {
+      const qs = new URLSearchParams(window.location.search);
+      const sid = qs.get('session_id');
+      if (sid) {
+          // add session id to window state
+          window.currentSessionId = sid;
+      }
+      
+      const statsRes = await fetch('/api/dashboard/stats');
+      if (statsRes.ok) {
+         const stats = await statsRes.json();
+         featureNames = stats.feature_names || Array.from({length: 78}, (_,i) => `Feature_${i}`);
+      } else {
+         featureNames = Array.from({length: 78}, (_,i) => `Feature_${i}`);
+      }
+      loadHistory();
+    }
 
     async function loadHistory() {
       const role = document.getElementById('filter-role').value;
@@ -129,12 +181,12 @@
       if (defense) url += `&defense=${defense}`;
       if (action) url += `&action=${action}`;
       if (attack) url += `&is_attack=${attack}`;
+      if (window.currentSessionId) url += `&session_id=${window.currentSessionId}`;
       
       // Update export links
       const exportMeta = document.querySelector('a[href^="/api/history/export"]');
       const exportFeat = document.querySelectorAll('.export-btn')[1];
       let queryStr = url.split('?')[1];
-      // remove limit and offset from export links
       queryStr = queryStr.replace(/limit=\d+&offset=\d+&?/, '');
       exportMeta.href = `/api/history/export?${queryStr}`;
       exportFeat.href = `/api/history/export/features?${queryStr}`;
@@ -175,10 +227,16 @@
     async function loadEvent(eventId) {
       document.getElementById('detail-modal').style.display = 'flex';
       document.getElementById('detail-grid').innerHTML = 'Loading...';
-      document.getElementById('detail-vectors').innerText = '';
+      document.getElementById('feature-tbody').innerHTML = '';
+      document.getElementById('rs-selector-container').style.display = 'none';
       
       const res = await fetch(`/api/history/event/${eventId}`);
+      if (!res.ok) {
+         document.getElementById('detail-grid').innerHTML = 'Error loading event (Unauthorized or Not Found).';
+         return;
+      }
       const event = await res.json();
+      currentEvent = event;
       
       let html = `
         <div class="detail-card">
@@ -195,21 +253,79 @@
           <p><strong>Action:</strong> ${event.action}</p>
           <p><strong>Prediction:</strong> ${event.binary_prediction === 1 ? 'Attack' : 'Benign'} (Conf: ${event.confidence_meaning})</p>
           <p><strong>Ground Truth:</strong> ${event.ground_truth_status}</p>
-          <p><strong>Defense:</strong> ${event.defense} (Intensity: ${event.used_intensity})</p>
+          <p><strong>Defense:</strong> ${event.defense} [${event.controller_mode || 'Unknown'}] (Intensity: ${event.used_intensity})</p>
           <p><strong>Controller Triggered:</strong> ${event.controller_triggered ? 'Yes' : 'No'}</p>
         </div>
       `;
       document.getElementById('detail-grid').innerHTML = html;
       
-      let vecText = `Original/Received Vector:\n${JSON.stringify(event.received_vector)}\n\n`;
-      vecText += `Final Classifier Input Vector (after defense):\n${JSON.stringify(event.classifier_input_vector)}\n\n`;
-      
-      if (event.rs_member_vectors) {
-         vecText += `RS Member Vectors (${event.rs_member_vectors.length} members):\n`;
-         vecText += `RS Member Predictions: ${JSON.stringify(event.rs_member_preds)}\n`;
+      document.getElementById('review-status').value = event.review_status || "";
+      document.getElementById('analyst-notes').value = event.analyst_notes || "";
+
+      if (event.rs_member_vectors && event.rs_member_vectors.length > 0) {
+          const sel = document.getElementById('rs-member-select');
+          sel.innerHTML = '';
+          event.rs_member_vectors.forEach((_, idx) => {
+              const predStr = event.rs_member_preds[idx] === 1 ? 'Attack' : 'Benign';
+              sel.innerHTML += `<option value="${idx}">Member ${idx} (Vote: ${predStr})</option>`;
+          });
+          document.getElementById('rs-selector-container').style.display = 'block';
       }
       
-      document.getElementById('detail-vectors').innerText = vecText;
+      renderFeatureTable();
+    }
+
+    function renderFeatureTable() {
+       if (!currentEvent) return;
+       const tbody = document.getElementById('feature-tbody');
+       tbody.innerHTML = '';
+       
+       const rec = currentEvent.received_vector;
+       let clf = currentEvent.classifier_input_vector;
+       
+       if (currentEvent.rs_member_vectors && currentEvent.rs_member_vectors.length > 0) {
+           const idx = parseInt(document.getElementById('rs-member-select').value) || 0;
+           clf = currentEvent.rs_member_vectors[idx];
+       }
+       
+       if (!rec || !clf) {
+           tbody.innerHTML = '<tr><td colspan="4">Vectors unavailable</td></tr>';
+           return;
+       }
+       
+       for (let i = 0; i < rec.length; i++) {
+           const r = rec[i];
+           const c = clf[i];
+           const d = c - r;
+           const dStr = Math.abs(d) > 1e-5 ? d.toFixed(5) : '0';
+           
+           const tr = document.createElement('tr');
+           tr.innerHTML = `
+              <td>${featureNames[i] || 'Feature_'+i}</td>
+              <td>${r.toExponential(3)}</td>
+              <td>${c.toExponential(3)}</td>
+              <td style="color: ${d !== 0 ? (d > 0 ? '#10b981' : '#ef4444') : 'inherit'}">${dStr}</td>
+           `;
+           tbody.appendChild(tr);
+       }
+    }
+
+    async function saveReview() {
+       if (!currentEvent) return;
+       const status = document.getElementById('review-status').value;
+       const notes = document.getElementById('analyst-notes').value;
+       
+       const res = await fetch(`/api/history/event/${currentEvent.event_id}/review`, {
+           method: 'POST',
+           headers: {'Content-Type': 'application/json'},
+           body: JSON.stringify({ review_status: status, analyst_notes: notes })
+       });
+       
+       if (res.ok) {
+           alert("Review saved.");
+       } else {
+           alert("Error saving review.");
+       }
     }
 
     function prevPage() {
@@ -225,7 +341,7 @@
     }
 
     window.onload = () => {
-      loadHistory();
+      init();
     };
   </script>
 </body>

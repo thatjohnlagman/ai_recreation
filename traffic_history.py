@@ -22,6 +22,11 @@ def get_db():
     return _local.conn
 
 def _setup_schema(conn):
+    try:
+        conn.execute('ALTER TABLE flow_history ADD COLUMN controller_mode TEXT')
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    
     conn.execute('''
         CREATE TABLE IF NOT EXISTS flow_history (
             event_id TEXT PRIMARY KEY,
@@ -39,6 +44,7 @@ def _setup_schema(conn):
             ground_truth_status TEXT,
             controller_triggered INTEGER,
             controller_state_json TEXT,
+            controller_mode TEXT,
             session_id TEXT,
             review_status TEXT,
             analyst_notes TEXT,
@@ -79,9 +85,9 @@ def save_flow_event(event: dict):
             INSERT INTO flow_history (
                 event_id, timestamp_utc, source_ip, destination_ip, data_profile, role,
                 sample_id, binary_prediction, action, confidence_meaning, defense, used_intensity,
-                ground_truth_status, controller_triggered, controller_state_json, session_id,
+                ground_truth_status, controller_triggered, controller_state_json, controller_mode, session_id,
                 review_status, analyst_notes, received_vector, classifier_input_vector, rs_member_vectors, rs_member_preds
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             event["event_id"],
             event["timestamp_utc"],
@@ -98,6 +104,7 @@ def save_flow_event(event: dict):
             event["ground_truth_status"],
             event.get("controller_triggered", 0),
             json.dumps(event.get("controller_state", {})),
+            event.get("controller_mode"),
             event.get("session_id"),
             "",
             "",
@@ -183,13 +190,16 @@ def get_sessions():
     conn = get_db()
     cur = conn.execute('''
         SELECT session_id, 
+               MAX(controller_mode) as controller_mode,
                MIN(timestamp_utc) as start_time, 
                MAX(timestamp_utc) as end_time, 
+               COUNT(CASE WHEN role = 'Query' THEN 1 END) as query_count,
+               COUNT(CASE WHEN role != 'Query' THEN 1 END) as target_count,
                COUNT(*) as total_flows,
-               SUM(CASE WHEN (ground_truth_status = 'Simulator: 1' OR ground_truth_status = 'Dataset: 1') AND binary_prediction = 1 THEN 1 ELSE 0 END) as tp,
-               SUM(CASE WHEN (ground_truth_status = 'Simulator: 0' OR ground_truth_status = 'Dataset: 0') AND binary_prediction = 1 THEN 1 ELSE 0 END) as fp,
-               SUM(CASE WHEN (ground_truth_status = 'Simulator: 0' OR ground_truth_status = 'Dataset: 0') AND binary_prediction = 0 THEN 1 ELSE 0 END) as tn,
-               SUM(CASE WHEN (ground_truth_status = 'Simulator: 1' OR ground_truth_status = 'Dataset: 1') AND binary_prediction = 0 THEN 1 ELSE 0 END) as fn
+               SUM(CASE WHEN role != 'Query' AND (ground_truth_status = 'Simulator: 1' OR ground_truth_status = 'Dataset: 1') AND binary_prediction = 1 THEN 1 ELSE 0 END) as tp,
+               SUM(CASE WHEN role != 'Query' AND (ground_truth_status = 'Simulator: 0' OR ground_truth_status = 'Dataset: 0') AND binary_prediction = 1 THEN 1 ELSE 0 END) as fp,
+               SUM(CASE WHEN role != 'Query' AND (ground_truth_status = 'Simulator: 0' OR ground_truth_status = 'Dataset: 0') AND binary_prediction = 0 THEN 1 ELSE 0 END) as tn,
+               SUM(CASE WHEN role != 'Query' AND (ground_truth_status = 'Simulator: 1' OR ground_truth_status = 'Dataset: 1') AND binary_prediction = 0 THEN 1 ELSE 0 END) as fn
         FROM flow_history 
         GROUP BY session_id 
         ORDER BY start_time DESC
