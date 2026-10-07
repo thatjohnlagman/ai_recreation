@@ -1,3 +1,0 @@
-BUNDLE_FILENAME=phase10b_cache_orchestration_review_bundle_v2_1.zip
-BUNDLE_STATUS=FINAL_VERIFICATION_RECORD
-NOTE=Final archive SHA-256 digest is calculated and reported externally upon archive completion.
