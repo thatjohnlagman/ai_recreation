@@ -17,9 +17,7 @@
       </div>
     </div>
     <div class="header-right">
-       <a href="#" onclick="openExportModal('sessions', 'filtered'); return false;" class="header-status-pill" style="text-decoration:none;">
-         <span class="status-dot green"></span><span class="header-status-label" style="color:var(--text-primary);">Export Session Report</span>
-       </a>
+
        <!-- Theme Toggle Button -->
        <button class="theme-toggle-btn icon-only" id="theme-toggle-btn" aria-label="Toggle Light and Dark Mode" title="Toggle Light / Dark Mode">
          <span class="theme-icon sun">
@@ -65,8 +63,9 @@
         <div class="primary-column" style="max-width: 100%;">
           
           <div class="panel-card">
-            <div class="panel-header">
+            <div class="panel-header" style="display:flex; justify-content:space-between; align-items:center;">
               <div class="panel-title-wrapper"><span class="panel-title">Archived Sessions</span></div>
+              <button onclick="openExportModal('sessions', 'filtered'); return false;" style="background:#10b981; color:white; border:none; padding:8px 16px; border-radius:var(--radius-md); font-weight:600; cursor:pointer; margin-left: auto;">Export Session Report</button>
             </div>
             <div class="table-container" style="border: none; background: transparent; padding: 0;">
               <table class="data-table" style="width: 100%; border-collapse: collapse;">

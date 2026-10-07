@@ -1095,7 +1095,7 @@ def interactive_menu():
         elif choice == "4":
             run_decision_boundary_attack()
         elif choice == "5":
-            run_continuous_stream(delay=1.0)
+            run_continuous_stream(delay=0.1)
         elif choice == "0":
             print("Exiting attacker simulation console.")
             break

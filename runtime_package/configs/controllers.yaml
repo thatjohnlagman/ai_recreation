@@ -27,7 +27,7 @@ controller_configurations:
     Rmin: 0.95
     fast_decay: 0.40
     slow_decay: 0.90
-    growth_factor: 1.05
+    growth_factor: 1.30
     primary_config: true   # C1 is used for RQ2 and RQ3 primary comparison
 
   C2:

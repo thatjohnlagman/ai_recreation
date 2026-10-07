@@ -12,7 +12,7 @@ afp:
   alpha_grid:
   - 0.5
   epsilon_base: 0.0003
-  intensity_min: 0.0
+  intensity_min: 0.00003
   intensity_max: 0.0003
   noise_distribution: uniform
   apply_to: feature_mask_eligible_numerical
