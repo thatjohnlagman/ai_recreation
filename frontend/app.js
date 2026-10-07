@@ -259,7 +259,7 @@ function initChart() {
           yAxisID: 'y'
         },
         {
-          label: "Defense Intensity",
+          label: "Intensity",
           data: [],
           borderColor: "#3b82f6",
           backgroundColor: "rgba(59, 130, 246, 0.08)",
@@ -342,9 +342,7 @@ function updateChart(history, defenseName) {
   recallChart.data.labels = history.labels;
   recallChart.data.datasets[0].data = history.recall;
   recallChart.data.datasets[1].data = history.afp_intensity;
-  if (defenseName) {
-      recallChart.data.datasets[1].label = `${defenseName.toUpperCase()} Intensity`;
-  }
+  recallChart.data.datasets[1].label = "Intensity";
   recallChart.update();
 }
 

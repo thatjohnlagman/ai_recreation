@@ -74,7 +74,7 @@
                     <th style="padding:12px 16px;">Session ID</th>
                     <th>Mode</th>
                     <th>Defense</th>
-                    <th>Start</th>
+                    <th>Start Time</th>
                     <th>Queries</th>
                     <th>Targets</th>
             <th>TP</th>
@@ -135,11 +135,14 @@
             f1Str = (2 * prec * recall / (prec + recall)).toFixed(3);
         }
         
+        const localTimeStr = formatLocalTime(row.start_time);
+        const fullDateStr = formatLocalDateTime(row.start_time);
+
         tr.innerHTML = `
           <td><strong>${row.session_id}</strong></td>
           <td>${row.controller_mode || 'Unknown'}</td>
           <td>${row.defense || 'Unknown'}</td>
-          <td>${row.start_time}</td>
+          <td title="${fullDateStr}" style="font-variant-numeric: tabular-nums;">${localTimeStr}</td>
           <td>${row.query_count || 0}</td>
           <td>${row.target_count || 0}</td>
           <td><span style="color:#10b981">${tp}</span></td>

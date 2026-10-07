@@ -1162,7 +1162,8 @@ async def api_get_history(
     defense: Optional[str] = None,
     is_attack: Optional[bool] = None,
     query_only: bool = False,
-    include_queries: bool = False
+    include_queries: bool = False,
+    order: str = "desc"
 ):
     import traffic_history
     results, total = traffic_history.get_history(
@@ -1174,7 +1175,8 @@ async def api_get_history(
         defense=defense,
         is_attack=is_attack,
         query_only=query_only,
-        include_queries=include_queries
+        include_queries=include_queries,
+        order=order
     )
     return {"data": results, "total": total}
 
