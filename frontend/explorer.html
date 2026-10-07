@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <title>Traffic Explorer - IDS + Recall-Aware AFP</title>
+  <link rel="stylesheet" href="/static/style.css?v=4.0">
+  <style>
+    .explorer-container { padding: 20px; }
+    .filters-bar { display: flex; gap: 15px; margin-bottom: 20px; align-items: center; background: var(--panel-bg); padding: 15px; border-radius: 10px; border: 1px solid var(--border-color); }
+    .filters-bar select, .filters-bar input, .filters-bar button { padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-primary); }
+    .filters-bar button { background: #3b82f6; color: white; border: none; cursor: pointer; font-weight: bold; }
+    .table-container { background: var(--panel-bg); border-radius: 10px; border: 1px solid var(--border-color); padding: 15px; overflow-x: auto; }
+    .data-table th, .data-table td { padding: 12px; text-align: left; border-bottom: 1px solid var(--border-color); color: var(--text-primary); }
+    .data-table th { font-weight: bold; color: var(--text-muted); text-transform: uppercase; font-size: 11px; }
+    .data-table tr:hover { background: var(--bg-hover, rgba(59,130,246,0.1)); cursor: pointer; }
+    .pagination { display: flex; justify-content: space-between; margin-top: 15px; color: var(--text-primary); align-items: center; }
+    .pagination button { padding: 8px 16px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--panel-bg); color: var(--text-primary); cursor: pointer; }
+    
+    /* Modal Styles */
+    .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 1000; justify-content: center; align-items: center; }
+    .modal-content { background: var(--panel-bg); width: 80%; max-height: 90vh; overflow-y: auto; border-radius: 12px; border: 1px solid var(--border-color); padding: 20px; position: relative; }
+    .modal-close { position: absolute; right: 20px; top: 20px; font-size: 24px; cursor: pointer; color: var(--text-muted); }
+    .modal-title { margin-top: 0; color: var(--text-primary); }
+    .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px; }
+    .detail-card { background: var(--bg-primary); padding: 15px; border-radius: 8px; border: 1px solid var(--border-color); }
+    pre { background: #1e1e1e; color: #d4d4d4; padding: 10px; border-radius: 6px; overflow-x: auto; }
+  </style>
+</head>
+<body>
+  <header class="app-header">
+    <div class="header-left">
+      <div class="header-title-group">
+        <h1 class="header-title">IDS + Recall-Aware AFP</h1>
+      </div>
+    </div>
+    <div class="header-nav" style="margin-left: 30px; display: flex; gap: 20px; align-items: center;">
+      <a href="/" style="color: var(--text-muted); text-decoration: none; font-weight: bold;">Dashboard</a>
+      <a href="/explorer" style="color: var(--text-primary); text-decoration: none; font-weight: bold; border-bottom: 2px solid #3b82f6; padding-bottom: 4px;">Traffic Explorer</a>
+      <a href="/sessions" style="color: var(--text-muted); text-decoration: none; font-weight: bold;">Sessions & Reports</a>
+    </div>
+    <div class="header-right">
+       <a href="/api/history/export" class="export-btn" style="padding: 8px 16px; background: #10b981; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;">Export Metadata CSV</a>
+       <a href="/api/history/export/features" class="export-btn" style="padding: 8px 16px; background: #f59e0b; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;">Export Features CSV</a>
+    </div>
+  </header>
+
+  <div class="explorer-container">
+    <div class="filters-bar">
+      <select id="filter-role">
+        <option value="">All Roles</option>
+        <option value="Measured Target" selected>Measured Target</option>
+        <option value="Query">Query</option>
+      </select>
+      <select id="filter-defense">
+        <option value="">All Defenses</option>
+        <option value="AFP">AFP</option>
+        <option value="RS">RS</option>
+        <option value="FS">FS</option>
+        <option value="NONE">NONE</option>
+      </select>
+      <select id="filter-action">
+        <option value="">All Actions</option>
+        <option value="Request allowed (HTTP 200)">Allowed</option>
+        <option value="Request rejected (HTTP 403)">Blocked</option>
+      </select>
+      <select id="filter-attack">
+        <option value="">All Ground Truth</option>
+        <option value="true">Attacks</option>
+        <option value="false">Benign</option>
+      </select>
+      <button onclick="offset=0; loadHistory()">Apply Filters</button>
+    </div>
+
+    <div class="table-container">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Time (UTC)</th>
+            <th>Role</th>
+            <th>Source IP</th>
+            <th>Defense</th>
+            <th>Intensity</th>
+            <th>Prediction</th>
+            <th>Action</th>
+            <th>Ground Truth</th>
+          </tr>
+        </thead>
+        <tbody id="history-tbody">
+          <tr><td colspan="8">Loading...</td></tr>
+        </tbody>
+      </table>
+      <div class="pagination">
+        <span id="page-info">Showing 0 of 0</span>
+        <div style="display: flex; gap: 10px;">
+          <button onclick="prevPage()">Previous</button>
+          <button onclick="nextPage()">Next</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="detail-modal" onclick="if(event.target===this) this.style.display='none'">
+    <div class="modal-content">
+      <span class="modal-close" onclick="document.getElementById('detail-modal').style.display='none'">&times;</span>
+      <h2 class="modal-title">Flow Event Details</h2>
+      <div class="detail-grid" id="detail-grid">
+        Loading details...
+      </div>
+      <h3>Feature Vectors</h3>
+      <pre id="detail-vectors" style="font-size: 12px; white-space: pre-wrap;"></pre>
+    </div>
+  </div>
+
+  <script>
+    let offset = 0;
+    const limit = 50;
+
+    async function loadHistory() {
+      const role = document.getElementById('filter-role').value;
+      const defense = document.getElementById('filter-defense').value;
+      const action = document.getElementById('filter-action').value;
+      const attack = document.getElementById('filter-attack').value;
+      
+      let url = `/api/history?limit=${limit}&offset=${offset}`;
+      if (role) {
+          if (role === 'Query') url += `&query_only=true`;
+          else url += `&role=${role}`;
+      }
+      if (defense) url += `&defense=${defense}`;
+      if (action) url += `&action=${action}`;
+      if (attack) url += `&is_attack=${attack}`;
+      
+      // Update export links
+      const exportMeta = document.querySelector('a[href^="/api/history/export"]');
+      const exportFeat = document.querySelectorAll('.export-btn')[1];
+      let queryStr = url.split('?')[1];
+      // remove limit and offset from export links
+      queryStr = queryStr.replace(/limit=\d+&offset=\d+&?/, '');
+      exportMeta.href = `/api/history/export?${queryStr}`;
+      exportFeat.href = `/api/history/export/features?${queryStr}`;
+
+      const res = await fetch(url);
+      const data = await res.json();
+      
+      const tbody = document.getElementById('history-tbody');
+      tbody.innerHTML = '';
+      
+      if (!data.data || data.data.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8">No history found matching filters.</td></tr>';
+        document.getElementById('page-info').innerText = 'Showing 0 of 0';
+        return;
+      }
+      
+      data.data.forEach(row => {
+        const tr = document.createElement('tr');
+        tr.onclick = () => loadEvent(row.event_id);
+        const predStr = row.binary_prediction === 1 ? '<span style="color:#ef4444;font-weight:bold;">ATTACK</span>' : '<span style="color:#10b981;font-weight:bold;">BENIGN</span>';
+        
+        tr.innerHTML = `
+          <td>${row.timestamp_utc}</td>
+          <td>${row.role}</td>
+          <td>${row.source_ip}</td>
+          <td>${row.defense}</td>
+          <td>${parseFloat(row.used_intensity).toExponential(2)}</td>
+          <td>${predStr} (Conf: ${row.confidence_meaning})</td>
+          <td>${row.action}</td>
+          <td>${row.ground_truth_status}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+      
+      document.getElementById('page-info').innerText = `Showing ${offset + 1} - ${offset + data.data.length} of ${data.total}`;
+    }
+
+    async function loadEvent(eventId) {
+      document.getElementById('detail-modal').style.display = 'flex';
+      document.getElementById('detail-grid').innerHTML = 'Loading...';
+      document.getElementById('detail-vectors').innerText = '';
+      
+      const res = await fetch(`/api/history/event/${eventId}`);
+      const event = await res.json();
+      
+      let html = `
+        <div class="detail-card">
+          <h4>Identity</h4>
+          <p><strong>Event ID:</strong> ${event.event_id}</p>
+          <p><strong>Time:</strong> ${event.timestamp_utc}</p>
+          <p><strong>Source IP:</strong> ${event.source_ip}</p>
+          <p><strong>Dest IP:</strong> ${event.destination_ip}</p>
+          <p><strong>Session:</strong> ${event.session_id}</p>
+          <p><strong>Role:</strong> ${event.role}</p>
+        </div>
+        <div class="detail-card">
+          <h4>Decision</h4>
+          <p><strong>Action:</strong> ${event.action}</p>
+          <p><strong>Prediction:</strong> ${event.binary_prediction === 1 ? 'Attack' : 'Benign'} (Conf: ${event.confidence_meaning})</p>
+          <p><strong>Ground Truth:</strong> ${event.ground_truth_status}</p>
+          <p><strong>Defense:</strong> ${event.defense} (Intensity: ${event.used_intensity})</p>
+          <p><strong>Controller Triggered:</strong> ${event.controller_triggered ? 'Yes' : 'No'}</p>
+        </div>
+      `;
+      document.getElementById('detail-grid').innerHTML = html;
+      
+      let vecText = `Original/Received Vector:\n${JSON.stringify(event.received_vector)}\n\n`;
+      vecText += `Final Classifier Input Vector (after defense):\n${JSON.stringify(event.classifier_input_vector)}\n\n`;
+      
+      if (event.rs_member_vectors) {
+         vecText += `RS Member Vectors (${event.rs_member_vectors.length} members):\n`;
+         vecText += `RS Member Predictions: ${JSON.stringify(event.rs_member_preds)}\n`;
+      }
+      
+      document.getElementById('detail-vectors').innerText = vecText;
+    }
+
+    function prevPage() {
+      if (offset >= limit) {
+        offset -= limit;
+        loadHistory();
+      }
+    }
+    
+    function nextPage() {
+      offset += limit;
+      loadHistory();
+    }
+
+    window.onload = () => {
+      loadHistory();
+    };
+  </script>
+</body>
+</html>

@@ -21,10 +21,13 @@ import asyncio
 import secrets
 import webbrowser
 import warnings
+import uuid
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 from collections import deque
+
+import traffic_history
 
 import numpy as np
 import pandas as pd
@@ -203,6 +206,7 @@ class SecurityEngine:
         # Simulation Session State
         self.active_attack_scenario: str = "None"
         self.active_simulation_session: Optional[str] = None
+        self.current_review_session_id = f"rev-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
 
         self.data_profile: str = os.environ.get("IDS_DATA_PROFILE", "expanded").strip().lower()
         self.dataset: Optional[LoadedDataset] = None
@@ -339,6 +343,15 @@ class SecurityEngine:
 
     def update_metrics_and_controller(self, ground_truth: Optional[int], predicted: int, used_intensity: float):
         """Updates confusion matrix counters (if ground truth known) and triggers batch-level controller updates."""
+        triggered = False
+        old_state_dict = {
+            "batch_tp": self.batch_tp,
+            "batch_fn": self.batch_fn,
+            "batch_size": getattr(self, "batch_size", 50),
+            "recall": self.recall,
+            "controller_state": str(self.controller_state) if self.controller_state else "None"
+        }
+        
         if ground_truth is not None:
             if ground_truth == 1:
                 if predicted == 1:
@@ -371,6 +384,7 @@ class SecurityEngine:
                 if self.controller_mode == "recall-aware":
                     # Evaluate when batch accumulates batch_size attack decisions
                     if (self.batch_tp + self.batch_fn) >= self.batch_size:
+                        triggered = True
                         try:
                             update = self.controller.submit_observations(self.batch_id, self.batch_tp, self.batch_fn)
                             self.controller_state = update.state
@@ -388,6 +402,15 @@ class SecurityEngine:
         self.history_labels.append(now_str)
         self.history_recall.append(self.recall if self.recall is not None else 0.0)
         self.history_intensity.append(used_intensity)
+        
+        new_state_dict = {
+            "batch_tp": self.batch_tp,
+            "batch_fn": self.batch_fn,
+            "batch_size": getattr(self, "batch_size", 50),
+            "recall": self.recall,
+            "controller_state": str(self.controller_state) if self.controller_state else "None"
+        }
+        return triggered, old_state_dict, new_state_dict
 
     def record_attack_ip(self, ip: str, location: Optional[str] = None):
         """Updates threat locations on map and top threat IPs table using real MMDB geolocation."""
@@ -830,6 +853,12 @@ async def protected_server_handler(req: ServerRequestModel):
     used_intensity = float(engine.current_intensity)
     pred_label: int = 0
     attack_prob: float = 0.05
+    
+    event_id = str(uuid.uuid4())
+    received_vector = features.copy()
+    classifier_input_vector = None
+    rs_member_vectors = None
+    rs_member_preds = None
 
     # Trusted simulation context for defense RNG seed (immune to caller scenario injection)
     # Uses fixed trusted context to make perturbation scenario-independent without modifying frozen defense modules.
@@ -845,20 +874,33 @@ async def protected_server_handler(req: ServerRequestModel):
             attack_scenario=trusted_seed_scenario,
             batch_id=engine.batch_id
         )
+        classifier_input_vector = X_proj.copy()
         proba = engine.model.predict_proba(X_proj)[0]
         pred_label = int(np.argmax(proba))
         attack_prob = float(proba[1])
 
     elif active_def == "rs" and "rs" in engine.defenses:
+        rs_member_inputs = []
+        rs_member_outputs = []
+        def wrapped_predict_func(X):
+            nonlocal rs_member_inputs, rs_member_outputs
+            rs_member_inputs.append(X.copy())
+            preds = engine.model.predict(X)
+            rs_member_outputs.append(preds.copy())
+            return preds
+            
         preds, _, vote_frac = engine.defenses["rs"].predict_ensemble(
             features.reshape(1, -1),
             sigma=used_intensity,
             seed=flow_seed,
             attack_scenario=trusted_seed_scenario,
             batch_id=engine.batch_id,
-            predict_func=engine.model.predict,
+            predict_func=wrapped_predict_func,
             return_scores=True
         )
+        if len(rs_member_inputs) > 0:
+            rs_member_vectors = np.vstack(rs_member_inputs)
+            rs_member_preds = np.concatenate(rs_member_outputs)
         pred_label = int(preds[0])
         attack_prob = float(vote_frac[0])
 
@@ -870,11 +912,13 @@ async def protected_server_handler(req: ServerRequestModel):
             attack_scenario=trusted_seed_scenario,
             batch_id=engine.batch_id
         )
+        classifier_input_vector = X_proj.copy()
         proba = engine.model.predict_proba(X_proj)[0]
         pred_label = int(np.argmax(proba))
         attack_prob = float(proba[1])
 
     else:
+        classifier_input_vector = features.reshape(1, -1).copy()
         proba = engine.model.predict_proba(features.reshape(1, -1))[0]
         pred_label = int(np.argmax(proba))
         attack_prob = float(proba[1])
@@ -893,6 +937,7 @@ async def protected_server_handler(req: ServerRequestModel):
 
     loc_display = resolve_ip_location(req.source_ip, req.country)
 
+    triggered, old_state, new_state = False, {}, {}
     if is_query_flow:
         engine.query_count += 1
     else:
@@ -903,10 +948,37 @@ async def protected_server_handler(req: ServerRequestModel):
                 engine.record_attack_ip(req.source_ip, loc_display)
 
         # 6. Update Engine Metrics & Controller Feedback (Using used_intensity)
-        engine.update_metrics_and_controller(ground_truth=ground_truth, predicted=pred_label, used_intensity=used_intensity)
+        triggered, old_state, new_state = engine.update_metrics_and_controller(ground_truth=ground_truth, predicted=pred_label, used_intensity=used_intensity)
+
+    try:
+        traffic_history.save_flow_event({
+            "event_id": event_id,
+            "timestamp_utc": datetime.utcnow().isoformat() + "Z",
+            "source_ip": req.source_ip,
+            "destination_ip": req.destination_ip or "",
+            "data_profile": engine.data_profile,
+            "role": "Query" if is_query_flow else "Measured Target",
+            "sample_id": req.sample_id,
+            "binary_prediction": pred_label,
+            "action": "Request rejected (HTTP 403)" if is_malicious else "Request allowed (HTTP 200)",
+            "confidence_meaning": str(round(attack_prob if is_malicious else (1.0 - attack_prob), 2)),
+            "defense": active_def.upper(),
+            "used_intensity": used_intensity,
+            "ground_truth_status": ground_truth_status,
+            "controller_triggered": 1 if triggered else 0,
+            "controller_state": {"old": old_state, "new": new_state},
+            "session_id": getattr(engine, "current_review_session_id", "sim-default"),
+            "received_vector": received_vector,
+            "classifier_input_vector": classifier_input_vector,
+            "rs_member_vectors": rs_member_vectors,
+            "rs_member_preds": rs_member_preds
+        })
+    except Exception as e:
+        print(f"[History] Failed to save history: {e}")
 
     # 7. Append to Telemetry Feeds
     feed_entry = {
+        "event_id": event_id,
         "timestamp": t_now,
         "source_ip": req.source_ip,
         "destination_ip": req.destination_ip if req.destination_ip else None,
@@ -1123,6 +1195,117 @@ async def reset_metrics(request: Request):
     await ws_manager.broadcast({"event_type": "reset", "payload": payload})
     return JSONResponse(content=payload)
 
+@app.get("/api/history")
+async def api_get_history(
+    request: Request,
+    limit: int = 50,
+    offset: int = 0,
+    session_id: Optional[str] = None,
+    role: Optional[str] = None,
+    action: Optional[str] = None,
+    defense: Optional[str] = None,
+    is_attack: Optional[bool] = None,
+    query_only: bool = False
+):
+    import traffic_history
+    results, total = traffic_history.get_history(
+        limit=limit,
+        offset=offset,
+        session_id=session_id,
+        role=role,
+        action=action,
+        defense=defense,
+        is_attack=is_attack,
+        query_only=query_only
+    )
+    return {"data": results, "total": total}
+
+@app.get("/api/history/event/{event_id}")
+async def api_get_event(event_id: str):
+    import traffic_history
+    event = traffic_history.get_event(event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    
+    # We must convert numpy arrays to lists for JSON serialization
+    def make_serializable(obj):
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return obj
+
+    event["received_vector"] = make_serializable(event.get("received_vector"))
+    event["classifier_input_vector"] = make_serializable(event.get("classifier_input_vector"))
+    event["rs_member_vectors"] = make_serializable(event.get("rs_member_vectors"))
+    event["rs_member_preds"] = make_serializable(event.get("rs_member_preds"))
+    
+    return event
+
+@app.get("/api/history/sessions")
+async def api_get_sessions():
+    import traffic_history
+    return traffic_history.get_sessions()
+
+import csv
+import io
+from fastapi.responses import StreamingResponse
+
+@app.get("/api/history/export")
+async def api_export_metadata(
+    session_id: Optional[str] = None,
+    role: Optional[str] = None,
+    action: Optional[str] = None,
+    defense: Optional[str] = None,
+    is_attack: Optional[bool] = None,
+    query_only: bool = False
+):
+    import traffic_history
+    results, _ = traffic_history.get_history(limit=100000, offset=0, session_id=session_id, role=role, action=action, defense=defense, is_attack=is_attack, query_only=query_only)
+    
+    output = io.StringIO()
+    if not results:
+        return StreamingResponse(iter(["No data"]), media_type="text/csv")
+        
+    writer = csv.DictWriter(output, fieldnames=results[0].keys())
+    writer.writeheader()
+    writer.writerows(results)
+    
+    output.seek(0)
+    return StreamingResponse(iter([output.getvalue()]), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=traffic_metadata.csv"})
+
+@app.get("/api/history/export/features")
+async def api_export_features(
+    session_id: Optional[str] = None,
+    role: Optional[str] = None,
+    action: Optional[str] = None,
+    defense: Optional[str] = None,
+    is_attack: Optional[bool] = None,
+    query_only: bool = False
+):
+    import traffic_history
+    # We only export the final classifier input feature vector
+    results, _ = traffic_history.get_history(limit=100000, offset=0, session_id=session_id, role=role, action=action, defense=defense, is_attack=is_attack, query_only=query_only)
+    
+    output = io.StringIO()
+    if not results:
+        return StreamingResponse(iter(["No data"]), media_type="text/csv")
+    
+    engine = app.state.engine
+    fieldnames = ["event_id"] + engine.feature_names
+    writer = csv.DictWriter(output, fieldnames=fieldnames)
+    writer.writeheader()
+    
+    for row in results:
+        event = traffic_history.get_event(row["event_id"])
+        vec = event.get("classifier_input_vector")
+        if vec is not None:
+            row_dict = {"event_id": row["event_id"]}
+            for i, val in enumerate(vec):
+                row_dict[engine.feature_names[i]] = val
+            writer.writerow(row_dict)
+            
+    output.seek(0)
+    return StreamingResponse(iter([output.getvalue()]), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=traffic_features.csv"})
+
 @app.get("/api/dashboard/stats")
 async def get_dashboard_stats():
     """Returns complete state payload for frontend initialization."""
@@ -1226,6 +1409,14 @@ async def serve_index():
     if index_path.exists():
         return FileResponse(str(index_path))
     return HTMLResponse("<h1>SOC dashboard not found. Please verify /frontend directory.</h1>")
+
+@app.get("/explorer")
+async def serve_explorer():
+    return FileResponse(FRONTEND_DIR / "explorer.html")
+
+@app.get("/sessions")
+async def serve_sessions():
+    return FileResponse(FRONTEND_DIR / "sessions.html")
 
 # -----------------------------------------------------------------------------
 # Main Execution Entrypoint

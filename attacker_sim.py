@@ -112,6 +112,7 @@ def set_target_url(target: str):
     DEFAULT_SIM_STOP_URL = f"{base_url}/api/simulation/stop"
 
 CURRENT_SIMULATION_SESSION_ID: Optional[str] = None
+SHOW_FEATURES: bool = False
 
 # Origin Pools for Simulation (Private IPs strictly labeled Private Network, public IPs Unknown)
 ORIGIN_POOL = [
@@ -677,6 +678,30 @@ def run_single_flow(
         badge = f"{BG_GREEN}{WHITE}{BOLD} ALLOWED (200) {RESET}"
         print(f"[{t_str}] {badge} {resolved_family:<22} {sample_tag:<12} from {origin['ip']:<15} | Server Status: Resource Granted (Benign)")
 
+    if SHOW_FEATURES and not is_query:
+        event_id = res["body"].get("event_id", "Unknown")
+        print(f"\n{CYAN}--- Final Vector Sent (Event ID: {event_id}) ---{RESET}")
+        if vector is not None and chosen_idx is not None:
+            # Transformed candidate
+            orig_vals = c.dataset.X.iloc[chosen_idx].values
+            sent_vals = np.array(feat_list)
+            changed_idx = np.where(orig_vals != sent_vals)[0]
+            print(f"Type: Transformed Candidate | Changed Features: {len(changed_idx)}")
+            if len(changed_idx) > 0:
+                print(f"{'Feature Name':<40} | {'Original':<20} | {'Sent':<20} | {'Diff':<20}")
+                print("-" * 105)
+                for idx in changed_idx:
+                    fname = c.feature_names[idx]
+                    orig = orig_vals[idx]
+                    sent = sent_vals[idx]
+                    diff = sent - orig
+                    print(f"{fname:<40} | {orig:<20.6g} | {sent:<20.6g} | {diff:<20.6g}")
+            else:
+                print("Vector matches original exactly.")
+        else:
+            print(f"Type: Unchanged Baseline")
+        print("-" * 60 + "\n")
+
     return res
 
 
@@ -1065,8 +1090,12 @@ def main():
     parser.add_argument("--target", default=DEFAULT_SERVER_URL, help="Target URL for protected server endpoint")
     parser.add_argument("--count", type=int, default=5, help="Number of flows for stream utility")
     parser.add_argument("--delay", type=float, default=0.3)
+    parser.add_argument("--show-features", action="store_true", help="Display feature changes for each submission")
 
     args = parser.parse_args()
+
+    global SHOW_FEATURES
+    SHOW_FEATURES = args.show_features
 
     # Make --target effective for all server endpoints dynamically
     if args.target:

@@ -9,8 +9,8 @@ import zipfile
 import csv
 from pathlib import Path
 
-REPO_ROOT = Path("c:/Users/reddr/ai_recreation").resolve()
-ZIP_OUT = REPO_ROOT / "ids_standalone_tool_defense_ready_corrected.zip"
+REPO_ROOT = Path(".").resolve()
+ZIP_OUT = REPO_ROOT / "ids_standalone_tool_defense_ready_pages.zip"
 MANIFEST_FILE = REPO_ROOT / "FILE_MANIFEST.csv"
 
 EXCLUDE_DIRS = {
@@ -22,6 +22,7 @@ EXCLUDE_DIRS = {
     "models",          # Inactive legacy 77-feature artifacts
     "datasets",        # Inactive legacy demo datasets
     "archive",         # Historical exploratory notebooks & prototype presentation apps
+    "runtime_state",   # Exclude history databases and tokens
 }
 
 EXCLUDE_EXTS = {
@@ -40,6 +41,7 @@ EXCLUDE_FILES = {
     "ids_standalone_tool_defense_ready.zip",
     "ids_standalone_tool_defense_ready_prev_fallback.zip",
     "ids_standalone_tool_defense_ready_corrected.zip",
+    "ids_standalone_tool_defense_ready_pages.zip",
     "operator_token.txt",  # Active local secret credential must never be packaged
     "create_package.py",
 }

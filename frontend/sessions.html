@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <title>Sessions & Reports - IDS + Recall-Aware AFP</title>
+  <link rel="stylesheet" href="/static/style.css?v=4.0">
+  <style>
+    .sessions-container { padding: 20px; }
+    .table-container { background: var(--panel-bg); border-radius: 10px; border: 1px solid var(--border-color); padding: 15px; overflow-x: auto; }
+    .data-table th, .data-table td { padding: 12px; text-align: left; border-bottom: 1px solid var(--border-color); color: var(--text-primary); }
+    .data-table th { font-weight: bold; color: var(--text-muted); text-transform: uppercase; font-size: 11px; }
+    .data-table tr:hover { background: var(--bg-hover, rgba(59,130,246,0.1)); }
+    .action-btn { padding: 6px 12px; border-radius: 6px; font-weight: bold; cursor: pointer; text-decoration: none; display: inline-block; }
+    .btn-green { background: #10b981; color: white; border: none; }
+    .btn-blue { background: #3b82f6; color: white; border: none; }
+  </style>
+</head>
+<body>
+  <header class="app-header">
+    <div class="header-left">
+      <div class="header-title-group">
+        <h1 class="header-title">IDS + Recall-Aware AFP</h1>
+      </div>
+    </div>
+    <div class="header-nav" style="margin-left: 30px; display: flex; gap: 20px; align-items: center;">
+      <a href="/" style="color: var(--text-muted); text-decoration: none; font-weight: bold;">Dashboard</a>
+      <a href="/explorer" style="color: var(--text-muted); text-decoration: none; font-weight: bold;">Traffic Explorer</a>
+      <a href="/sessions" style="color: var(--text-primary); text-decoration: none; font-weight: bold; border-bottom: 2px solid #3b82f6; padding-bottom: 4px;">Sessions & Reports</a>
+    </div>
+    <div class="header-right">
+       <a href="/api/history/export" class="action-btn btn-green">Export ALL Metadata</a>
+       <a href="/api/history/export/features" class="action-btn btn-blue" style="background:#f59e0b;">Export ALL Features</a>
+    </div>
+  </header>
+
+  <div class="sessions-container">
+    <div class="table-container">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Session ID</th>
+            <th>Start Time</th>
+            <th>End Time</th>
+            <th>Total Flows</th>
+            <th>TP</th>
+            <th>FP</th>
+            <th>TN</th>
+            <th>FN</th>
+            <th>Recall</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="sessions-tbody">
+          <tr><td colspan="10">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    async function loadSessions() {
+      const res = await fetch('/api/history/sessions');
+      const sessions = await res.json();
+      
+      const tbody = document.getElementById('sessions-tbody');
+      tbody.innerHTML = '';
+      
+      if (!sessions || sessions.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="10">No sessions recorded yet.</td></tr>';
+        return;
+      }
+      
+      sessions.forEach(row => {
+        const tr = document.createElement('tr');
+        
+        let recallStr = "N/A";
+        let tp = row.tp || 0;
+        let fn = row.fn || 0;
+        if (tp + fn > 0) {
+            recallStr = (tp / (tp + fn)).toFixed(3);
+        }
+        
+        tr.innerHTML = `
+          <td><strong>${row.session_id}</strong></td>
+          <td>${row.start_time}</td>
+          <td>${row.end_time}</td>
+          <td>${row.total_flows}</td>
+          <td><span style="color:#10b981">${tp}</span></td>
+          <td><span style="color:#ef4444">${row.fp || 0}</span></td>
+          <td><span style="color:#10b981">${row.tn || 0}</span></td>
+          <td><span style="color:#ef4444">${fn}</span></td>
+          <td><strong>${recallStr}</strong></td>
+          <td style="display: flex; gap: 8px;">
+            <a href="/explorer?session_id=${row.session_id}" class="action-btn btn-blue" style="font-size:11px;">Explore</a>
+            <a href="/api/history/export?session_id=${row.session_id}" class="action-btn btn-green" style="font-size:11px;">CSV</a>
+          </td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    window.onload = () => {
+      loadSessions();
+    };
+  </script>
+</body>
+</html>
