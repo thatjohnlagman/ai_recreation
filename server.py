@@ -206,7 +206,7 @@ class SecurityEngine:
         # Simulation Session State
         self.active_attack_scenario: str = "None"
         self.active_simulation_session: Optional[str] = None
-        self.current_review_session_id = f"rev-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        self.reporting_session_id: str = self._generate_session_id()
 
         self.data_profile: str = os.environ.get("IDS_DATA_PROFILE", "expanded").strip().lower()
         self.dataset: Optional[LoadedDataset] = None
@@ -278,6 +278,42 @@ class SecurityEngine:
         # Initialize default controller
         self.set_defense(self.active_defense_name)
         self.set_mode(self.controller_mode)
+        
+    def _generate_session_id(self):
+        import uuid
+        return f"rev-{datetime.utcnow().strftime('%Y%m%d-%H%M%S%f')}-{uuid.uuid4().hex[:4]}"
+        
+    def rotate_session(self):
+        """Starts a new reporting session and resets live dashboard counters."""
+        self.reporting_session_id = self._generate_session_id()
+        self.total_traffic = 0
+        self.detected_attacks = 0
+        self.tp = 0
+        self.fp = 0
+        self.fn = 0
+        self.tn = 0
+        self.query_count = 0
+        self.recall = None
+        self.fpr = None
+        
+        if self.controller is not None:
+            self.controller.reset()
+            self.batch_id = 0
+            self.batch_tp = 0
+            self.batch_fn = 0
+            if self.controller_mode == "recall-aware":
+                decision = self.controller.get_intensity(self.batch_id)
+                self.current_intensity = decision.intensity
+            else:
+                self.current_intensity = self.controller.base_intensity
+                
+        self.history_labels.clear()
+        self.history_recall.clear()
+        self.history_intensity.clear()
+        self.threat_locations.clear()
+        self.top_threat_ips.clear()
+        self.recent_feed.clear()
+        self.recent_attacks.clear()
 
     def set_defense(self, defense_name: str):
         """Sets the active defense mechanism ('afp', 'rs', 'fs', 'none')."""
@@ -316,6 +352,8 @@ class SecurityEngine:
             self.current_intensity = decision.intensity
         else:
             self.current_intensity = self.controller.base_intensity
+            
+        self.rotate_session()
 
     def set_mode(self, mode: str):
         """Toggles between 'recall-aware' (dynamic feedback) and 'base' (static intensity)."""
@@ -340,6 +378,8 @@ class SecurityEngine:
             else:
                 self.current_intensity = self.controller.base_intensity
                 self.controller_state = "Base"
+                
+        self.rotate_session()
 
     def update_metrics_and_controller(self, ground_truth: Optional[int], predicted: int, used_intensity: float):
         """Updates confusion matrix counters (if ground truth known) and triggers batch-level controller updates."""
@@ -516,11 +556,13 @@ class SecurityEngine:
                 "intensity": float(self.current_intensity),
                 "intensity_min": float(self.intensity_min),
                 "intensity_max": float(self.intensity_max),
-                "threshold_warning": 0.85,
-                "threshold_critical": 0.95,
+                "threshold_critical": 0.85,
+                "threshold_target": 0.95,
                 "health_status": "Awaiting Data" if self.recall is None else ("Healthy" if self.recall >= 0.85 else "Alert"),
                 "controller_state": self.controller_state,
                 "batch_id": self.batch_id,
+                "rolling_recall": float(self.controller.current_recall) if self.controller and getattr(self.controller, 'current_recall', None) is not None else None,
+                "window_batch_count": int(self.controller.window_batch_count) if self.controller and hasattr(self.controller, 'window_batch_count') else 0
             },
             "threat_locations": self.threat_locations,
             "top_threat_ips": self.top_threat_ips,
@@ -953,8 +995,10 @@ async def protected_server_handler(req: ServerRequestModel):
     try:
         if active_def == "rs":
             conf_str = f"RS Vote Fraction: {attack_prob:.3f}"
+            conf_type = "RS vote fraction"
         else:
             conf_str = f"RF Class Probability: {attack_prob:.3f}"
+            conf_type = "RF probability"
 
         traffic_history.save_flow_event({
             "event_id": event_id,
@@ -973,11 +1017,19 @@ async def protected_server_handler(req: ServerRequestModel):
             "controller_triggered": 1 if triggered else 0,
             "controller_state": {"old": old_state, "new": new_state},
             "controller_mode": engine.controller_mode,
-            "session_id": getattr(engine, "current_review_session_id", "sim-default"),
+            "session_id": engine.reporting_session_id,
             "received_vector": received_vector,
             "classifier_input_vector": classifier_input_vector,
             "rs_member_vectors": rs_member_vectors,
-            "rs_member_preds": rs_member_preds
+            "rs_member_preds": rs_member_preds,
+            "attack_score": float(attack_prob),
+            "predicted_class_confidence": float(attack_prob if is_malicious else (1.0 - attack_prob)),
+            "confidence_type": conf_type,
+            "next_intensity": float(engine.current_intensity),
+            "controller_rolling_recall": float(engine.controller.current_recall) if engine.controller and getattr(engine.controller, 'current_recall', None) is not None else None,
+            "controller_state_before": str(old_state.get('color', 'Base')) if old_state else "Base",
+            "controller_state_after": str(new_state.get('color', 'Base')) if new_state else "Base",
+            "controller_batch_id": engine.batch_id
         })
     except Exception as e:
         print(f"[History] Failed to save history: {e}")
@@ -1177,28 +1229,10 @@ async def reset_metrics(request: Request):
             status_code=401,
             content={"status": "error", "message": "Unauthorized: Valid operator token required in 'X-Operator-Token' header."}
         )
-    engine.total_traffic = 0
-    engine.detected_attacks = 0
-    engine.tp = 0
-    engine.fp = 0
-    engine.fn = 0
-    engine.tn = 0
-    engine.query_count = 0
-    engine.recall = None
-    engine.fpr = None
-    engine.batch_id = 0
-    engine.batch_tp = 0
-    engine.batch_fn = 0
-    engine.history_labels.clear()
-    engine.history_recall.clear()
-    engine.history_intensity.clear()
-    engine.threat_locations.clear()
-    engine.top_threat_ips.clear()
-    engine.recent_feed.clear()
-    engine.recent_attacks.clear()
+    engine.rotate_session()
     engine.active_attack_scenario = "None"
     engine.active_simulation_session = None
-    engine.current_review_session_id = f"rev-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    # Ensure controller reset explicitly if needed, but rotate_session covers it
     engine.set_defense(engine.active_defense_name)
     payload = engine.get_dashboard_payload()
     await ws_manager.broadcast({"event_type": "reset", "payload": payload})
@@ -1219,7 +1253,8 @@ async def api_get_history(
     action: Optional[str] = None,
     defense: Optional[str] = None,
     is_attack: Optional[bool] = None,
-    query_only: bool = False
+    query_only: bool = False,
+    include_queries: bool = False
 ):
     if not verify_operator_authorization(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -1232,9 +1267,25 @@ async def api_get_history(
         action=action,
         defense=defense,
         is_attack=is_attack,
-        query_only=query_only
+        query_only=query_only,
+        include_queries=include_queries
     )
     return {"data": results, "total": total}
+
+@app.get("/api/history/schema")
+async def api_get_schema(request: Request):
+    if not verify_operator_authorization(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    # engine.modifiable_mask is a numpy boolean array, need tolist()
+    mask = engine.modifiable_mask
+    if isinstance(mask, np.ndarray):
+        mask = mask.tolist()
+
+    return {
+        "feature_names": engine.feature_names,
+        "modifiable_mask": mask
+    }
 
 @app.get("/api/history/event/{event_id}")
 async def api_get_event(event_id: str, request: Request):
@@ -1306,17 +1357,59 @@ async def api_export_metadata(
     action: Optional[str] = None,
     defense: Optional[str] = None,
     is_attack: Optional[bool] = None,
-    query_only: bool = False
+    query_only: bool = False,
+    include_queries: bool = False,
+    preview: bool = False
 ):
     if not verify_operator_authorization(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     import traffic_history
-    results, _ = traffic_history.get_history(limit=1000000, offset=0, session_id=session_id, role=role, action=action, defense=defense, is_attack=is_attack, query_only=query_only)
+    import re
+    fetch_limit = 5 if preview else 1000000
+    results, _ = traffic_history.get_history(limit=fetch_limit, offset=0, session_id=session_id, role=role, action=action, defense=defense, is_attack=is_attack, query_only=query_only, include_queries=include_queries)
     
     if not results:
         return StreamingResponse(iter(["No data"]), media_type="text/csv")
         
-    return StreamingResponse(_export_generator(list(results[0].keys()), results, lambda r: r), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=traffic_metadata.csv"})
+    ts = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+    filename = "traffic_metadata.csv"
+    if session_id:
+        clean_id = re.sub(r'[^a-zA-Z0-9_-]', '', session_id)
+        filename = f"traffic_metadata_session_{clean_id}.csv"
+    elif any([role, action, defense, is_attack, query_only, include_queries]):
+        filename = f"traffic_metadata_filtered_{ts}.csv"
+    else:
+        filename = f"traffic_metadata_all_{ts}.csv"
+        
+    return StreamingResponse(_export_generator(list(results[0].keys()), results, lambda r: r), media_type="text/csv", headers={"Content-Disposition": f"attachment; filename={filename}"})
+
+@app.get("/api/history/export/sessions")
+async def api_export_sessions(request: Request, session_id: Optional[str] = None, preview: bool = False):
+    if not verify_operator_authorization(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    import traffic_history
+    import re
+    sessions = traffic_history.get_sessions()
+    
+    if session_id:
+        sessions = [s for s in sessions if s.get("session_id") == session_id]
+        
+    if preview:
+        sessions = sessions[:5]
+    
+    if not sessions:
+        return StreamingResponse(iter(["No data"]), media_type="text/csv")
+        
+    ts = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+    filename = "session_summary.csv"
+    if session_id:
+        clean_id = re.sub(r'[^a-zA-Z0-9_-]', '', session_id)
+        filename = f"session_summary_{clean_id}.csv"
+    else:
+        filename = f"session_summary_all_{ts}.csv"
+        
+    return StreamingResponse(_export_generator(list(sessions[0].keys()), sessions, lambda r: r), media_type="text/csv", headers={"Content-Disposition": f"attachment; filename={filename}"})
+
 
 @app.get("/api/history/export/features")
 async def api_export_features(
@@ -1326,12 +1419,16 @@ async def api_export_features(
     action: Optional[str] = None,
     defense: Optional[str] = None,
     is_attack: Optional[bool] = None,
-    query_only: bool = False
+    query_only: bool = False,
+    include_queries: bool = False,
+    preview: bool = False
 ):
     if not verify_operator_authorization(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     import traffic_history
-    results, _ = traffic_history.get_history(limit=1000000, offset=0, session_id=session_id, role=role, action=action, defense=defense, is_attack=is_attack, query_only=query_only)
+    import re
+    fetch_limit = 5 if preview else 1000000
+    results, _ = traffic_history.get_history(limit=fetch_limit, offset=0, session_id=session_id, role=role, action=action, defense=defense, is_attack=is_attack, query_only=query_only, include_queries=include_queries)
     
     if not results:
         return StreamingResponse(iter(["No data"]), media_type="text/csv")
@@ -1383,7 +1480,17 @@ async def api_export_features(
                     output.seek(0)
                     output.truncate(0)
                     
-    return StreamingResponse(get_feature_rows(), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=traffic_features.csv"})
+    ts = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+    filename = "traffic_features.csv"
+    if session_id:
+        clean_id = re.sub(r'[^a-zA-Z0-9_-]', '', session_id)
+        filename = f"traffic_features_session_{clean_id}.csv"
+    elif any([role, action, defense, is_attack, query_only, include_queries]):
+        filename = f"traffic_features_filtered_{ts}.csv"
+    else:
+        filename = f"traffic_features_all_{ts}.csv"
+        
+    return StreamingResponse(get_feature_rows(), media_type="text/csv", headers={"Content-Disposition": f"attachment; filename={filename}"})
 
 @app.get("/api/dashboard/stats")
 async def get_dashboard_stats():

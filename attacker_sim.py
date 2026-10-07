@@ -676,7 +676,14 @@ def run_single_flow(
         print(f"[{t_str}] {badge} {resolved_family:<22} {sample_tag:<12} from {origin['ip']:<15} | Conf: {conf} | Defense: {defense} [{mode}] (used: {used_int})")
     else:
         badge = f"{BG_GREEN}{WHITE}{BOLD} ALLOWED (200) {RESET}"
-        print(f"[{t_str}] {badge} {resolved_family:<22} {sample_tag:<12} from {origin['ip']:<15} | Server Status: Resource Granted (Benign)")
+        print(f"[{t_str}] {badge} {resolved_family:<22} {sample_tag:<12} from {origin['ip']:<15}")
+        
+        if is_attack is True:
+            print(f"    IDS Prediction: Benign\n    Ground Truth: Attack\n    Outcome: False Negative\n    Server Action: Request forwarded")
+        elif is_attack is False:
+            print(f"    IDS Prediction: Benign\n    Ground Truth: Benign\n    Outcome: True Negative\n    Server Action: Request forwarded")
+        else:
+            print(f"    IDS Prediction: Benign\n    Ground Truth: Unlabeled\n    Server Action: Request forwarded")
 
     if SHOW_FEATURES and not is_query:
         event_id = res["body"].get("details", {}).get("event_id", "Unknown")
@@ -1031,20 +1038,31 @@ def run_decision_boundary_attack(max_queries: int = 50, steps: int = 10) -> bool
         stop_simulation_session()
 
 
-def run_continuous_stream(delay: float = 1.0):
+def run_continuous_stream(delay: float = 1.0, count: int = 0):
     """Streams recorded traffic to demonstrate real-time dashboard updates."""
-    print(f"\n{CYAN}{BOLD}>>> Starting Continuous Recorded-Flow Stream (Press Ctrl+C to stop)...{RESET}\n")
+    if count > 0:
+        print(f"\n{CYAN}{BOLD}>>> Starting Rapid Stream of {count} flows (Press Ctrl+C to stop)...{RESET}\n")
+    else:
+        print(f"\n{CYAN}{BOLD}>>> Starting Continuous Recorded-Flow Stream (Press Ctrl+C to stop)...{RESET}\n")
+        
     attack_types = ["DDoS", "Port Scan", "Brute Force", "Malware", "Bot", "SlowHTTPTest"]
+    flows_sent = 0
 
     try:
-        while True:
+        while count == 0 or flows_sent < count:
             is_attack = (random.random() < 0.35)
             if is_attack:
                 a_type = random.choice(attack_types)
                 run_single_flow(flow_type=a_type, is_attack=True, scenario=None)
             else:
                 run_single_flow(flow_type="Normal", is_attack=False, scenario=None)
-            time.sleep(delay)
+            
+            flows_sent += 1
+            if delay > 0:
+                time.sleep(delay)
+                
+        if count > 0:
+            print(f"\n{GREEN}[+] Completed sending {count} flows.{RESET}\n")
     except KeyboardInterrupt:
         print(f"\n{YELLOW}[!] Stream paused by user.{RESET}\n")
 
@@ -1104,8 +1122,8 @@ def main():
     if args.target:
         set_target_url(args.target)
 
-    # Initialize profile and seed based on CLI flags
     active_profile = args.dataset or os.environ.get("IDS_DATA_PROFILE", "expanded").strip().lower()
+    random.seed(args.seed)
     try:
         current_ctx = get_ctx(active_profile, seed=args.seed)
     except Exception as e:
@@ -1118,6 +1136,9 @@ def main():
         sys.exit(1)
 
     success = True
+    if args.mode == "menu" and args.count != 5: # If count was explicitly passed but mode wasn't
+        args.mode = "stream"
+        
     if args.mode == "menu":
         interactive_menu()
     elif args.mode == "silent":
@@ -1130,7 +1151,9 @@ def main():
         r = run_single_flow("Normal", is_attack=False, scenario=None)
         success = (r is not None and r.get("status_code") == 200)
     elif args.mode == "stream":
-        run_continuous_stream(delay=args.delay)
+        # If the user asks for 20000 packets and delay 0.01, it takes a long time. 
+        # But this runs it properly.
+        run_continuous_stream(delay=args.delay, count=args.count if args.count != 5 else 0)
 
     if not success:
         sys.exit(1)

@@ -24,8 +24,22 @@ def get_db():
 def _setup_schema(conn):
     try:
         conn.execute('ALTER TABLE flow_history ADD COLUMN controller_mode TEXT')
-    except sqlite3.OperationalError:
-        pass  # Column already exists
+    except sqlite3.OperationalError: pass
+    
+    new_cols = [
+        ('attack_score', 'REAL'),
+        ('predicted_class_confidence', 'REAL'),
+        ('confidence_type', 'TEXT'),
+        ('next_intensity', 'REAL'),
+        ('controller_rolling_recall', 'REAL'),
+        ('controller_state_before', 'TEXT'),
+        ('controller_state_after', 'TEXT'),
+        ('controller_batch_id', 'INTEGER')
+    ]
+    for col, dtype in new_cols:
+        try:
+            conn.execute(f'ALTER TABLE flow_history ADD COLUMN {col} {dtype}')
+        except sqlite3.OperationalError: pass
     
     conn.execute('''
         CREATE TABLE IF NOT EXISTS flow_history (
@@ -86,8 +100,10 @@ def save_flow_event(event: dict):
                 event_id, timestamp_utc, source_ip, destination_ip, data_profile, role,
                 sample_id, binary_prediction, action, confidence_meaning, defense, used_intensity,
                 ground_truth_status, controller_triggered, controller_state_json, controller_mode, session_id,
-                review_status, analyst_notes, received_vector, classifier_input_vector, rs_member_vectors, rs_member_preds
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                review_status, analyst_notes, received_vector, classifier_input_vector, rs_member_vectors, rs_member_preds,
+                attack_score, predicted_class_confidence, confidence_type, next_intensity, controller_rolling_recall,
+                controller_state_before, controller_state_after, controller_batch_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             event["event_id"],
             event["timestamp_utc"],
@@ -111,15 +127,23 @@ def save_flow_event(event: dict):
             received_blob,
             classifier_input_blob,
             rs_members_blob,
-            rs_preds_blob
+            rs_preds_blob,
+            event.get("attack_score"),
+            event.get("predicted_class_confidence"),
+            event.get("confidence_type"),
+            event.get("next_intensity"),
+            event.get("controller_rolling_recall"),
+            event.get("controller_state_before"),
+            event.get("controller_state_after"),
+            event.get("controller_batch_id")
         ))
     except Exception as e:
         import logging
         logging.error(f"Failed to save flow history: {e}")
 
-def get_history(limit=50, offset=0, session_id=None, role=None, action=None, defense=None, is_attack=None, query_only=False):
+def get_history(limit=50, offset=0, session_id=None, role=None, action=None, defense=None, is_attack=None, query_only=False, include_queries=False):
     conn = get_db()
-    query = "SELECT event_id, timestamp_utc, source_ip, destination_ip, data_profile, role, sample_id, binary_prediction, action, confidence_meaning, defense, used_intensity, ground_truth_status, session_id, review_status FROM flow_history WHERE 1=1"
+    query = "SELECT event_id, timestamp_utc, source_ip, destination_ip, data_profile, role, sample_id, binary_prediction, action, confidence_meaning, defense, used_intensity, ground_truth_status, session_id, review_status, attack_score, predicted_class_confidence, confidence_type, next_intensity, controller_rolling_recall, controller_state_before, controller_state_after, controller_batch_id FROM flow_history WHERE 1=1"
     params = []
     
     if session_id:
@@ -141,12 +165,14 @@ def get_history(limit=50, offset=0, session_id=None, role=None, action=None, def
             query += " AND (ground_truth_status = 'Simulator: 0' OR ground_truth_status = 'Dataset: 0')"
     if query_only:
         query += " AND role = 'Query'"
+    elif role == 'All Roles' or include_queries:
+        pass
     else:
         # Default to NOT query (Measured) unless explicit
-        if role is None:
+        if role is None or role == 'Measured Target':
             query += " AND role != 'Query'"
             
-    count_query = query.replace("SELECT event_id, timestamp_utc, source_ip, destination_ip, data_profile, role, sample_id, binary_prediction, action, confidence_meaning, defense, used_intensity, ground_truth_status, session_id, review_status", "SELECT COUNT(*)")
+    count_query = query.replace("SELECT event_id, timestamp_utc, source_ip, destination_ip, data_profile, role, sample_id, binary_prediction, action, confidence_meaning, defense, used_intensity, ground_truth_status, session_id, review_status, attack_score, predicted_class_confidence, confidence_type, next_intensity, controller_rolling_recall, controller_state_before, controller_state_after, controller_batch_id", "SELECT COUNT(*)")
     
     query += " ORDER BY timestamp_utc DESC LIMIT ? OFFSET ?"
     params.extend([limit, offset])
@@ -190,7 +216,8 @@ def get_sessions():
     conn = get_db()
     cur = conn.execute('''
         SELECT session_id, 
-               MAX(controller_mode) as controller_mode,
+               CASE WHEN COUNT(DISTINCT controller_mode) > 1 THEN 'Mixed' ELSE MAX(controller_mode) END as controller_mode,
+               CASE WHEN COUNT(DISTINCT defense) > 1 THEN 'Mixed' ELSE MAX(defense) END as defense,
                MIN(timestamp_utc) as start_time, 
                MAX(timestamp_utc) as end_time, 
                COUNT(CASE WHEN role = 'Query' THEN 1 END) as query_count,

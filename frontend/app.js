@@ -19,15 +19,6 @@ let currentDefenseName = "AFP";
 let currentDefenseMode = "Recall-Aware";
 let currentDefenseIntensity = 0.0003;
 
-function escapeHtml(str) {
-  if (str === null || str === undefined) return "";
-  return String(str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
 
 // -----------------------------------------------------------------------------
 // Initialization
@@ -264,10 +255,11 @@ function initChart() {
           tension: 0.35,
           pointRadius: 2.5,
           pointBackgroundColor: "#10b981",
-          fill: false
+          fill: false,
+          yAxisID: 'y'
         },
         {
-          label: "AFP intensity",
+          label: "Defense Intensity",
           data: [],
           borderColor: "#3b82f6",
           backgroundColor: "rgba(59, 130, 246, 0.08)",
@@ -275,7 +267,8 @@ function initChart() {
           tension: 0.35,
           pointRadius: 2.5,
           pointBackgroundColor: "#3b82f6",
-          fill: false
+          fill: false,
+          yAxisID: 'y1'
         }
       ]
     },
@@ -304,6 +297,9 @@ function initChart() {
           }
         },
         y: {
+          type: 'linear',
+          display: true,
+          position: 'left',
           min: 0.00,
           max: 1.00,
           ticks: {
@@ -316,6 +312,23 @@ function initChart() {
             color: "rgba(26, 42, 71, 0.6)",
             borderDash: [3, 3]
           }
+        },
+        y1: {
+          type: 'linear',
+          display: true,
+          position: 'right',
+          grid: {
+            drawOnChartArea: false, // only want the grid lines for one axis to show up
+          },
+          ticks: {
+            color: "#64748b",
+            font: { size: 10 },
+            callback: function(val) {
+                // Return high precision if it's a tiny number (like max 0.0003 for AFP)
+                // ChartJS automatically bounds min/max based on data
+                return Number(val).toPrecision(2);
+            }
+          }
         }
       }
     }
@@ -324,18 +337,21 @@ function initChart() {
   updateChartTheme(currentTheme);
 }
 
-function updateChart(history) {
+function updateChart(history, defenseName) {
   if (!recallChart || !history) return;
   recallChart.data.labels = history.labels;
   recallChart.data.datasets[0].data = history.recall;
   recallChart.data.datasets[1].data = history.afp_intensity;
+  if (defenseName) {
+      recallChart.data.datasets[1].label = `${defenseName.toUpperCase()} Intensity`;
+  }
   recallChart.update();
 }
 
 // -----------------------------------------------------------------------------
 // Circular SVG Gauge & Research Defense Panel
 // -----------------------------------------------------------------------------
-function updateAfpPanel(afp, recallVal) {
+function updateAfpPanel(afp) {
   if (!afp) return;
   currentAfpEnabled = afp.enabled;
   currentDefenseName = (afp.defense_name || "afp").toUpperCase();
@@ -386,7 +402,11 @@ function updateAfpPanel(afp, recallVal) {
   // Controller State Pill
   const statePill = document.getElementById("controller-state-pill");
   if (statePill) {
-    statePill.textContent = stateName;
+    let text = stateName;
+    if (afp.mode === 'recall-aware' && afp.rolling_recall !== undefined && afp.rolling_recall !== null) {
+      text += ` (RR: ${Number(afp.rolling_recall).toFixed(3)})`;
+    }
+    statePill.textContent = text;
     statePill.className = `ra-status-badge ${stateName.toLowerCase()}`;
   }
 
@@ -395,24 +415,43 @@ function updateAfpPanel(afp, recallVal) {
   const gaugeText = document.getElementById("gauge-recall-val");
   const gaugePill = document.getElementById("gauge-health-pill");
 
-  const isRecallAvailable = (recallVal !== null && recallVal !== undefined && recallVal !== "—" && recallVal !== "");
+  const isRecallAvailable = (afp.mode === 'recall-aware' && afp.rolling_recall !== null && afp.rolling_recall !== undefined && afp.window_batch_count > 0);
+  const gaugeContext = document.getElementById("gauge-window-context");
+
   if (!isRecallAvailable) {
     if (gaugeCircle) gaugeCircle.style.strokeDashoffset = 264;
     if (gaugeText) gaugeText.textContent = "—";
     if (gaugePill) {
-      gaugePill.textContent = "Awaiting Data";
+      gaugePill.textContent = "Awaiting feedback";
       gaugePill.className = "gauge-badge-pill";
     }
+    if (gaugeContext) gaugeContext.textContent = afp.mode !== 'recall-aware' ? "Base mode active" : "Awaiting attack feedback";
   } else {
-    const gaugeVal = Number(recallVal);
+    const gaugeVal = Number(afp.rolling_recall);
     const totalCircumference = 264;
     const offset = totalCircumference * (1.0 - Math.min(1.0, Math.max(0, gaugeVal)));
+    
     if (gaugeCircle) gaugeCircle.style.strokeDashoffset = offset;
     if (gaugeText) gaugeText.textContent = gaugeVal.toFixed(3);
+    
     if (gaugePill) {
-      const isHealthy = gaugeVal >= (afp.threshold_warning || 0.85);
-      gaugePill.textContent = isHealthy ? "Healthy" : "Alert";
-      gaugePill.className = `gauge-badge-pill ${isHealthy ? "green" : "alert"}`;
+      let healthText = "Green";
+      let healthClass = "green";
+      
+      if (gaugeVal < 0.85) {
+        healthText = "Red";
+        healthClass = "alert";
+      } else if (gaugeVal < 0.95) {
+        healthText = "Yellow";
+        healthClass = "yellow";
+      }
+      
+      gaugePill.textContent = healthText;
+      gaugePill.className = `gauge-badge-pill ${healthClass}`;
+    }
+    
+    if (gaugeContext) {
+      gaugeContext.textContent = `Last ${afp.window_batch_count} completed attack batches`;
     }
   }
 
@@ -808,12 +847,19 @@ function syncDashboard(payload) {
     document.getElementById("kpi-total-traffic").textContent = payload.stats.total_traffic;
     document.getElementById("kpi-detected-attacks").textContent = payload.stats.detected_attacks;
     document.getElementById("kpi-recall").textContent = payload.stats.detection_recall;
-    document.getElementById("kpi-fpr").textContent = payload.stats.false_positive_rate;
+    let p = 0, r = 0, f1 = 0;
+    const tp = payload.stats.tp || 0;
+    const fp = payload.stats.fp || 0;
+    const fn = payload.stats.fn || 0;
+    if (tp + fp > 0) p = tp / (tp + fp);
+    if (tp + fn > 0) r = tp / (tp + fn);
+    if (p + r > 0) f1 = 2 * p * r / (p + r);
+    document.getElementById("kpi-prf").textContent = `${p.toFixed(2)} / ${r.toFixed(2)} / ${f1.toFixed(2)}`;
   }
 
   // 2. AFP Control Panel
   if (payload.afp) {
-    updateAfpPanel(payload.afp, payload.stats ? payload.stats.detection_recall : null);
+    updateAfpPanel(payload.afp);
   }
 
   // 3. Threat Map
@@ -834,7 +880,7 @@ function syncDashboard(payload) {
 
   // 5. Chart
   if (payload.history) {
-    updateChart(payload.history);
+    updateChart(payload.history, payload.state ? payload.state.defense : null);
   }
 }
 
@@ -895,6 +941,9 @@ function updateChartTheme(theme) {
   recallChart.options.scales.y.grid.color = gridColor;
   recallChart.options.scales.x.ticks.color = textColor;
   recallChart.options.scales.y.ticks.color = textColor;
+  if (recallChart.options.scales.y1) {
+      recallChart.options.scales.y1.ticks.color = textColor;
+  }
   recallChart.options.plugins.tooltip.backgroundColor = tooltipBg;
   recallChart.options.plugins.tooltip.borderColor = tooltipBorder;
   recallChart.options.plugins.tooltip.titleColor = tooltipTitle;

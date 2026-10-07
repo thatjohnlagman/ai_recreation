@@ -2,7 +2,7 @@
 <html lang="en" data-theme="light">
 <head>
   <meta charset="UTF-8">
-  <title>Traffic Explorer - IDS + Recall-Aware AFP</title>
+  <title>Traffic Explorer - Recall-Aware IDS Defense Platform</title>
   <link rel="stylesheet" href="/static/style.css?v=4.0">
   <style>
     .explorer-container { padding: 20px; }
@@ -14,94 +14,147 @@
     .data-table th { font-weight: bold; color: var(--text-muted); text-transform: uppercase; font-size: 11px; }
     .data-table tr:hover { background: var(--bg-hover, rgba(59,130,246,0.1)); cursor: pointer; }
     .pagination { display: flex; justify-content: space-between; margin-top: 15px; color: var(--text-primary); align-items: center; }
-    .pagination button { padding: 8px 16px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--panel-bg); color: var(--text-primary); cursor: pointer; }
+    .pagination button { padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-primary); cursor: pointer; font-weight: 600; font-size: 11px; }
+    .pagination button:hover { background: var(--bg-hover); }
     
-    /* Modal Styles */
-    .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 1000; justify-content: center; align-items: center; }
-    .modal-content { background: var(--panel-bg); width: 80%; max-height: 90vh; overflow-y: auto; border-radius: 12px; border: 1px solid var(--border-color); padding: 20px; position: relative; }
-    .modal-close { position: absolute; right: 20px; top: 20px; font-size: 24px; cursor: pointer; color: var(--text-muted); }
-    .modal-title { margin-top: 0; color: var(--text-primary); }
-    .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px; }
-    .detail-card { background: var(--bg-primary); padding: 15px; border-radius: 8px; border: 1px solid var(--border-color); }
-    pre { background: #1e1e1e; color: #d4d4d4; padding: 10px; border-radius: 6px; overflow-x: auto; }
+    .status-tag { padding: 2px 8px; border-radius: 12px; font-size: 10px; font-weight: 700; text-transform: uppercase; }
+    .tag-green { background: var(--color-green-glow); color: var(--color-green); }
+    .tag-red { background: var(--color-red-glow); color: var(--color-red); }
   </style>
+  <script src="/static/utils.js"></script>
 </head>
 <body>
+  <div class="app-container">
   <header class="app-header">
     <div class="header-left">
       <div class="header-title-group">
-        <h1 class="header-title">IDS + Recall-Aware AFP</h1>
+        <h1 class="header-title">Recall-Aware IDS Defense Platform</h1>
+        <p class="header-subtitle">Enhanced Detection with Adaptive Perturbation Defense</p>
       </div>
     </div>
-    <div class="header-nav" style="margin-left: 30px; display: flex; gap: 20px; align-items: center;">
-      <a href="/" style="color: var(--text-muted); text-decoration: none; font-weight: bold;">Dashboard</a>
-      <a href="/explorer" style="color: var(--text-primary); text-decoration: none; font-weight: bold; border-bottom: 2px solid #3b82f6; padding-bottom: 4px;">Traffic Explorer</a>
-      <a href="/sessions" style="color: var(--text-muted); text-decoration: none; font-weight: bold;">Sessions & Reports</a>
-    </div>
     <div class="header-right">
-       <a href="/api/history/export" class="export-btn" style="padding: 8px 16px; background: #10b981; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;">Export Metadata CSV</a>
-       <a href="/api/history/export/features" class="export-btn" style="padding: 8px 16px; background: #f59e0b; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;">Export Features CSV</a>
+       <a href="#" onclick="openExportModal('metadata', 'filtered'); return false;" class="header-status-pill" style="text-decoration:none;">
+         <span class="status-dot green"></span><span class="header-status-label" style="color:var(--text-primary);">Export Data</span>
+       </a>
+       <!-- Theme Toggle Button -->
+       <button class="theme-toggle-btn icon-only" id="theme-toggle-btn" aria-label="Toggle Light and Dark Mode" title="Toggle Light / Dark Mode">
+         <span class="theme-icon sun">
+           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+             <circle cx="12" cy="12" r="5"/>
+             <line x1="12" y1="1" x2="12" y2="3"/>
+             <line x1="12" y1="21" x2="12" y2="23"/>
+             <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+             <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+             <line x1="1" y1="12" x2="3" y2="12"/>
+             <line x1="21" y1="12" x2="23" y2="12"/>
+             <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+             <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+           </svg>
+         </span>
+         <span class="theme-icon moon">
+           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+             <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+           </svg>
+         </span>
+       </button>
     </div>
   </header>
 
-  <div class="explorer-container">
-    <div class="filters-bar">
-      <select id="filter-role">
-        <option value="">All Roles</option>
-        <option value="Measured Target" selected>Measured Target</option>
-        <option value="Query">Query</option>
-      </select>
-      <select id="filter-defense">
-        <option value="">All Defenses</option>
-        <option value="AFP">AFP</option>
-        <option value="RS">RS</option>
-        <option value="FS">FS</option>
-        <option value="NONE">NONE</option>
-      </select>
-      <select id="filter-action">
-        <option value="">All Actions</option>
-        <option value="Request allowed (HTTP 200)">Allowed</option>
-        <option value="Request rejected (HTTP 403)">Blocked</option>
-      </select>
-      <select id="filter-attack">
-        <option value="">All Ground Truth</option>
-        <option value="true">Attacks</option>
-        <option value="false">Benign</option>
-      </select>
-      <button onclick="offset=0; loadHistory()">Apply Filters</button>
-    </div>
+  <!-- Main Navigation Bar -->
+  <nav class="main-nav-bar" style="display: flex; gap: 30px; padding: 12px 24px; background: var(--bg-card); border-bottom: 1px solid var(--border-color); box-shadow: 0 1px 3px rgba(0,0,0,0.05); position: sticky; top: 60px; z-index: 999;">
+    <a href="/" style="color: var(--text-muted); text-decoration: none; font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px; padding-bottom: 4px; transition: color 0.2s;" onmouseover="this.style.color='var(--text-primary)'" onmouseout="this.style.color='var(--text-muted)'">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>
+      Dashboard
+    </a>
+    <a href="/explorer" style="color: var(--text-primary); text-decoration: none; font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px; border-bottom: 2px solid var(--accent-blue); padding-bottom: 4px;">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+      Traffic Explorer
+    </a>
+    <a href="/sessions" style="color: var(--text-muted); text-decoration: none; font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px; padding-bottom: 4px; transition: color 0.2s;" onmouseover="this.style.color='var(--text-primary)'" onmouseout="this.style.color='var(--text-muted)'">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+      Sessions & Reports
+    </a>
+  </nav>
 
-    <div class="table-container">
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>Time (UTC)</th>
-            <th>Role</th>
-            <th>Source IP</th>
-            <th>Defense</th>
-            <th>Intensity</th>
-            <th>Prediction</th>
-            <th>Action</th>
-            <th>Ground Truth</th>
-          </tr>
-        </thead>
-        <tbody id="history-tbody">
-          <tr><td colspan="8">Loading...</td></tr>
-        </tbody>
-      </table>
-      <div class="pagination">
-        <span id="page-info">Showing 0 of 0</span>
-        <div style="display: flex; gap: 10px;">
-          <button onclick="prevPage()">Previous</button>
-          <button onclick="nextPage()">Next</button>
+    <div class="workspace-body full-width">
+      <main class="dashboard-content" style="display: block; padding: 30px;">
+        <div class="primary-column" style="max-width: 100%;">
+          
+          <div class="panel-card" style="margin-bottom: 20px;">
+            <div class="panel-header">
+              <div class="panel-title-wrapper"><span class="panel-title">Filters</span></div>
+            </div>
+            <div class="filters-bar" style="border: none; background: transparent; padding: 15px 20px;">
+              <select id="filter-role" style="background:var(--bg-card-sub); border:1px solid var(--border-color); color:var(--text-primary); border-radius:var(--radius-md); padding:8px 12px; font-size:12px;">
+                <option value="">All Roles</option>
+                <option value="Measured Target" selected>Measured Target</option>
+                <option value="Query">Query</option>
+              </select>
+              <select id="filter-defense" style="background:var(--bg-card-sub); border:1px solid var(--border-color); color:var(--text-primary); border-radius:var(--radius-md); padding:8px 12px; font-size:12px;">
+                <option value="">All Defenses</option>
+                <option value="AFP">AFP</option>
+                <option value="RS">RS</option>
+                <option value="FS">FS</option>
+                <option value="NONE">NONE</option>
+              </select>
+              <select id="filter-action" style="background:var(--bg-card-sub); border:1px solid var(--border-color); color:var(--text-primary); border-radius:var(--radius-md); padding:8px 12px; font-size:12px;">
+                <option value="">All Actions</option>
+                <option value="Request allowed (HTTP 200)">Allowed</option>
+                <option value="Request rejected (HTTP 403)">Blocked</option>
+              </select>
+              <select id="filter-attack" style="background:var(--bg-card-sub); border:1px solid var(--border-color); color:var(--text-primary); border-radius:var(--radius-md); padding:8px 12px; font-size:12px;">
+                <option value="">All Ground Truth</option>
+                <option value="true">Attacks</option>
+                <option value="false">Benign</option>
+              </select>
+              <button onclick="offset=0; loadHistory()" style="background:var(--accent-blue); color:white; border:none; padding:8px 16px; border-radius:var(--radius-md); font-weight:600; cursor:pointer;">Apply Filters</button>
+            </div>
+          </div>
+
+          <div class="panel-card">
+            <div class="panel-header">
+              <div class="panel-title-wrapper"><span class="panel-title">Traffic Events</span></div>
+              <div class="panel-actions">
+                <span id="page-info" style="font-size:12px; color:var(--text-muted); margin-right:15px;"></span>
+                <div class="pagination" style="margin:0;">
+                  <button onclick="prevPage()">Prev</button>
+                  <button onclick="nextPage()" style="margin-left:8px;">Next</button>
+                </div>
+              </div>
+            </div>
+            <div class="table-container" style="border: none; background: transparent; padding: 0;">
+              <table class="data-table" style="width: 100%; border-collapse: collapse;">
+                <thead>
+                  <tr>
+                    <th style="padding:12px 16px;">Time (UTC)</th>
+                    <th>Session ID</th>
+                    <th>Role</th>
+                    <th>Source IP</th>
+                    <th>Defense</th>
+                    <th>Intensity</th>
+                    <th>Prediction</th>
+                    <th>Action</th>
+                    <th>Ground Truth</th>
+                  </tr>
+                </thead>
+                <tbody id="history-tbody">
+                  <tr><td colspan="8" style="padding:16px;">Loading...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
         </div>
-      </div>
+      </main>
     </div>
   </div>
 
+
   <div class="modal-overlay" id="detail-modal" onclick="if(event.target===this) this.style.display='none'">
     <div class="modal-content">
-      <span class="modal-close" onclick="document.getElementById('detail-modal').style.display='none'">&times;</span>
+      <span class="modal-close" onclick="document.getElementById('detail-modal').style.display='none'">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+      </span>
       <h2 class="modal-title">Flow Event Details</h2>
       <div class="detail-grid" id="detail-grid">
         Loading details...
@@ -109,30 +162,35 @@
       
       <div class="detail-card" style="margin-bottom: 15px;">
         <h4>Analyst Review</h4>
-        <div style="display: flex; gap: 10px; margin-bottom: 10px;">
-          <select id="review-status">
+        <div style="display: flex; gap: 10px; margin-bottom: 12px;">
+          <select id="review-status" style="background:var(--bg-primary); border:1px solid var(--border-color); color:var(--text-primary); border-radius:var(--radius-md); padding:6px 12px; font-size:12px; flex-grow: 1;">
              <option value="">-- No Status --</option>
              <option value="Reviewed - Benign">Reviewed - Benign</option>
              <option value="Reviewed - Malicious">Reviewed - Malicious</option>
              <option value="Escalated">Escalated</option>
           </select>
-          <button class="action-btn btn-blue" onclick="saveReview()">Save Review</button>
+          <button style="background:var(--accent-blue); color:white; border:none; padding:6px 16px; border-radius:var(--radius-md); font-weight:600; cursor:pointer;" onclick="saveReview()">Save Review</button>
         </div>
-        <textarea id="analyst-notes" style="width: 100%; height: 60px;" placeholder="Add persistent notes..."></textarea>
+        <textarea id="analyst-notes" style="width: 100%; height: 60px; background:var(--bg-primary); border:1px solid var(--border-color); color:var(--text-primary); border-radius:var(--radius-md); padding:10px; font-family:inherit; font-size:12px; resize:vertical;" placeholder="Add persistent notes..."></textarea>
       </div>
 
-      <h3>Feature Vectors</h3>
-      <div id="rs-selector-container" style="display:none; margin-bottom: 10px;">
-        <label>RS Member: <select id="rs-member-select" onchange="renderFeatureTable()"></select></label>
+      <h3 style="margin-bottom:6px; color:var(--text-primary);">Feature Vectors</h3>
+      <p style="font-size: 11px; color: var(--text-muted); margin-bottom: 12px; line-height: 1.4;">Values are preprocessed numerical flow features. Received represents the vector supplied to the IDS. Final Classifier Input represents the actual post-defense vector used for classification.</p>
+      <div id="rs-selector-container" style="display:none; margin-bottom: 15px;">
+        <label style="font-size:12px; font-weight:600; color:var(--text-muted);">RS Member: 
+          <select id="rs-member-select" onchange="renderFeatureTable()" style="background:var(--bg-primary); border:1px solid var(--border-color); color:var(--text-primary); border-radius:var(--radius-sm); padding:4px 8px; margin-left:8px;"></select>
+        </label>
       </div>
-      <div class="table-container" style="max-height: 400px; overflow-y: auto;">
-        <table class="data-table" id="feature-table">
-          <thead>
+      <div class="table-container" style="max-height: 400px; overflow-y: auto; border: 1px solid var(--border-color); background: var(--bg-card); padding: 0;">
+        <table class="data-table" id="feature-table" style="width:100%; border-collapse:collapse;">
+          <thead style="position: sticky; top: 0; background: var(--bg-card-sub); box-shadow: 0 1px 0 var(--border-color);">
             <tr>
+              <th style="padding:12px 16px;">Index</th>
               <th>Feature Name</th>
               <th>Received</th>
-              <th>Final Input</th>
-              <th>Diff</th>
+              <th>Final Classifier Input</th>
+              <th>Difference</th>
+              <th>Modifiable</th>
             </tr>
           </thead>
           <tbody id="feature-tbody"></tbody>
@@ -147,6 +205,7 @@
 
     let currentEvent = null;
     let featureNames = [];
+    let featureMask = [];
 
     // Fetch feature names initially
     async function init() {
@@ -157,12 +216,21 @@
           window.currentSessionId = sid;
       }
       
-      const statsRes = await fetch('/api/dashboard/stats');
-      if (statsRes.ok) {
-         const stats = await statsRes.json();
-         featureNames = stats.feature_names || Array.from({length: 78}, (_,i) => `Feature_${i}`);
-      } else {
-         featureNames = Array.from({length: 78}, (_,i) => `Feature_${i}`);
+      try {
+        const schemaRes = await fetch('/api/history/schema');
+        if (!schemaRes.ok) throw new Error('Schema fetch failed');
+        const schema = await schemaRes.json();
+        
+        if (!schema.feature_names || schema.feature_names.length !== 78) {
+           throw new Error(`Expected exactly 78 feature names, got ${schema.feature_names ? schema.feature_names.length : 'none'}`);
+        }
+        
+        featureNames = schema.feature_names;
+        featureMask = schema.modifiable_mask || Array.from({length: 78}, () => false);
+      } catch (err) {
+        console.error(err);
+        alert("Error loading feature schema: " + err.message);
+        featureNames = []; // Force empty so it's visibly broken if it fails
       }
       loadHistory();
     }
@@ -185,11 +253,11 @@
       
       // Update export links
       const exportMeta = document.querySelector('a[href^="/api/history/export"]');
-      const exportFeat = document.querySelectorAll('.export-btn')[1];
+      const exportFeat = document.querySelectorAll('a[href^="/api/history/export/features"]')[0];
       let queryStr = url.split('?')[1];
       queryStr = queryStr.replace(/limit=\d+&offset=\d+&?/, '');
-      exportMeta.href = `/api/history/export?${queryStr}`;
-      exportFeat.href = `/api/history/export/features?${queryStr}`;
+      if (exportMeta) exportMeta.href = `/api/history/export?${queryStr}`;
+      if (exportFeat) exportFeat.href = `/api/history/export/features?${queryStr}`;
 
       const res = await fetch(url);
       const data = await res.json();
@@ -207,16 +275,20 @@
         const tr = document.createElement('tr');
         tr.onclick = () => loadEvent(row.event_id);
         const predStr = row.binary_prediction === 1 ? '<span style="color:#ef4444;font-weight:bold;">ATTACK</span>' : '<span style="color:#10b981;font-weight:bold;">BENIGN</span>';
+        let gtStr = row.ground_truth_status;
+        if (gtStr === 'Dataset: 1') gtStr = 'Attack, dataset-verified (label 1)';
+        else if (gtStr === 'Dataset: 0') gtStr = 'Benign, dataset-verified (label 0)';
         
         tr.innerHTML = `
           <td>${row.timestamp_utc}</td>
+          <td>${row.session_id || 'N/A'}</td>
           <td>${row.role}</td>
           <td>${row.source_ip}</td>
           <td>${row.defense}</td>
           <td>${parseFloat(row.used_intensity).toExponential(2)}</td>
-          <td>${predStr} (Conf: ${row.confidence_meaning})</td>
+          <td>${predStr} <span style="font-size:10px; color:var(--text-muted);">(Conf: ${row.confidence_meaning})</span></td>
           <td>${row.action}</td>
-          <td>${row.ground_truth_status}</td>
+          <td>${gtStr}</td>
         `;
         tbody.appendChild(tr);
       });
@@ -238,23 +310,36 @@
       const event = await res.json();
       currentEvent = event;
       
+      let gtStr = event.ground_truth_status;
+      if (gtStr === 'Dataset: 1') gtStr = 'Attack, dataset-verified (label 1)';
+      else if (gtStr === 'Dataset: 0') gtStr = 'Benign, dataset-verified (label 0)';
+
       let html = `
         <div class="detail-card">
           <h4>Identity</h4>
-          <p><strong>Event ID:</strong> ${event.event_id}</p>
-          <p><strong>Time:</strong> ${event.timestamp_utc}</p>
-          <p><strong>Source IP:</strong> ${event.source_ip}</p>
-          <p><strong>Dest IP:</strong> ${event.destination_ip}</p>
-          <p><strong>Session:</strong> ${event.session_id}</p>
-          <p><strong>Role:</strong> ${event.role}</p>
+          <p><strong>Event ID:</strong> ${escapeHtml(event.event_id)}</p>
+          <p><strong>Time:</strong> ${escapeHtml(event.timestamp_utc)}</p>
+          <p><strong>Source IP:</strong> ${escapeHtml(event.source_ip)}</p>
+          <p><strong>Dest IP:</strong> ${escapeHtml(event.destination_ip)}</p>
+          <p><strong>Session:</strong> ${escapeHtml(event.session_id)}</p>
+          <p><strong>Role:</strong> ${escapeHtml(event.role)}</p>
         </div>
         <div class="detail-card">
           <h4>Decision</h4>
-          <p><strong>Action:</strong> ${event.action}</p>
-          <p><strong>Prediction:</strong> ${event.binary_prediction === 1 ? 'Attack' : 'Benign'} (Conf: ${event.confidence_meaning})</p>
-          <p><strong>Ground Truth:</strong> ${event.ground_truth_status}</p>
-          <p><strong>Defense:</strong> ${event.defense} [${event.controller_mode || 'Unknown'}] (Intensity: ${event.used_intensity})</p>
+          <p><strong>Action:</strong> ${escapeHtml(event.action)}</p>
+          <p><strong>Prediction:</strong> ${event.binary_prediction === 1 ? 'Attack' : 'Benign'} (Conf: ${escapeHtml(event.confidence_meaning)})</p>
+          <p><strong>Ground Truth:</strong> ${escapeHtml(gtStr)}</p>
+          <p><strong>Defense:</strong> ${escapeHtml(event.defense)} [${escapeHtml(event.controller_mode || 'Unknown')}] (Intensity: ${escapeHtml(event.used_intensity)})</p>
           <p><strong>Controller Triggered:</strong> ${event.controller_triggered ? 'Yes' : 'No'}</p>
+        </div>
+        <div class="detail-card" style="grid-column: 1 / -1; display: ${event.controller_mode === 'recall-aware' ? 'block' : 'none'};">
+          <h4>Controller Metrics at Event</h4>
+          <div style="display: flex; justify-content: space-between; gap: 10px;">
+            <p><strong>Rolling Recall:</strong> ${event.controller_rolling_recall !== null && event.controller_rolling_recall !== undefined ? Number(event.controller_rolling_recall).toFixed(4) : 'N/A'}</p>
+            <p><strong>Critical Min:</strong> 0.85</p>
+            <p><strong>Target Min:</strong> 0.95</p>
+            <p><strong>Next Intensity:</strong> ${event.next_intensity !== null && event.next_intensity !== undefined ? Number(event.next_intensity).toFixed(4) : 'N/A'}</p>
+          </div>
         </div>
       `;
       document.getElementById('detail-grid').innerHTML = html;
@@ -288,8 +373,18 @@
            clf = currentEvent.rs_member_vectors[idx];
        }
        
+       if (featureNames.length !== 78) {
+           tbody.innerHTML = '<tr><td colspan="6" style="color:var(--color-red); padding:16px;">Error: Missing or invalid schema. Check console.</td></tr>';
+           return;
+       }
+       
        if (!rec || !clf) {
-           tbody.innerHTML = '<tr><td colspan="4">Vectors unavailable</td></tr>';
+           tbody.innerHTML = '<tr><td colspan="6">Vectors unavailable</td></tr>';
+           return;
+       }
+
+       if (rec.length !== 78 || clf.length !== 78) {
+           tbody.innerHTML = `<tr><td colspan="6" style="color:var(--color-red); padding:16px;">Error: Vector length mismatch (Expected 78).</td></tr>`;
            return;
        }
        
@@ -298,13 +393,18 @@
            const c = clf[i];
            const d = c - r;
            const dStr = Math.abs(d) > 1e-5 ? d.toFixed(5) : '0';
+           const isMod = featureMask[i];
            
            const tr = document.createElement('tr');
            tr.innerHTML = `
-              <td>${featureNames[i] || 'Feature_'+i}</td>
+              <td>${i}</td>
+              <td style="font-family:var(--font-mono); font-size:11px;">${featureNames[i]}</td>
               <td>${r.toExponential(3)}</td>
               <td>${c.toExponential(3)}</td>
               <td style="color: ${d !== 0 ? (d > 0 ? '#10b981' : '#ef4444') : 'inherit'}">${dStr}</td>
+              <td>
+                <span class="status-tag ${isMod ? 'tag-green' : 'tag-red'}">${isMod ? 'Modifiable' : 'Protected'}</span>
+              </td>
            `;
            tbody.appendChild(tr);
        }
@@ -340,9 +440,26 @@
       loadHistory();
     }
 
+    // Theme behavior mirroring index.html
+    const themeBtn = document.getElementById('theme-toggle-btn');
+    themeBtn.addEventListener('click', () => {
+      const doc = document.documentElement;
+      const current = doc.getAttribute('data-theme');
+      const nextTheme = current === 'light' ? 'dark' : 'light';
+      doc.setAttribute('data-theme', nextTheme);
+      localStorage.setItem('app_theme', nextTheme);
+    });
+
     window.onload = () => {
+      const savedTheme = localStorage.getItem('app_theme');
+      if (savedTheme) {
+        document.documentElement.setAttribute('data-theme', savedTheme);
+      } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
       init();
     };
   </script>
+  <script src="/static/export-modal.js"></script>
 </body>
 </html>

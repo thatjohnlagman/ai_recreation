@@ -133,6 +133,8 @@ class RecallAwareController:
         self.current_intensity = self.base_intensity
         self.pending_decision = None
         self.window = collections.deque()
+        self.current_recall = None
+        self.window_batch_count = 0
 
     def get_intensity(self, batch_id: Any) -> ControllerDecision:
         """Returns the intensity to use for the specified batch."""
@@ -221,5 +223,7 @@ class RecallAwareController:
         self.current_intensity = clipped_next_intensity
         self.expected_batch_id += 1
         self.pending_decision = None
+        self.current_recall = rolling_recall
+        self.window_batch_count = len(proposed_window)
 
         return update_obj

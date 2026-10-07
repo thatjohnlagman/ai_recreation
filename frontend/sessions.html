@@ -2,52 +2,87 @@
 <html lang="en" data-theme="light">
 <head>
   <meta charset="UTF-8">
-  <title>Sessions & Reports - IDS + Recall-Aware AFP</title>
+  <title>Sessions & Reports - Recall-Aware IDS Defense Platform</title>
   <link rel="stylesheet" href="/static/style.css?v=4.0">
-  <style>
-    .sessions-container { padding: 20px; }
-    .table-container { background: var(--panel-bg); border-radius: 10px; border: 1px solid var(--border-color); padding: 15px; overflow-x: auto; }
-    .data-table th, .data-table td { padding: 12px; text-align: left; border-bottom: 1px solid var(--border-color); color: var(--text-primary); }
-    .data-table th { font-weight: bold; color: var(--text-muted); text-transform: uppercase; font-size: 11px; }
-    .data-table tr:hover { background: var(--bg-hover, rgba(59,130,246,0.1)); }
-    .action-btn { padding: 6px 12px; border-radius: 6px; font-weight: bold; cursor: pointer; text-decoration: none; display: inline-block; }
-    .btn-green { background: #10b981; color: white; border: none; }
-    .btn-blue { background: #3b82f6; color: white; border: none; }
-  </style>
+
+  <script src="/static/utils.js"></script>
 </head>
 <body>
+  <div class="app-container">
   <header class="app-header">
     <div class="header-left">
       <div class="header-title-group">
-        <h1 class="header-title">IDS + Recall-Aware AFP</h1>
+        <h1 class="header-title">Recall-Aware IDS Defense Platform</h1>
+        <p class="header-subtitle">Enhanced Detection with Adaptive Perturbation Defense</p>
       </div>
     </div>
-    <div class="header-nav" style="margin-left: 30px; display: flex; gap: 20px; align-items: center;">
-      <a href="/" style="color: var(--text-muted); text-decoration: none; font-weight: bold;">Dashboard</a>
-      <a href="/explorer" style="color: var(--text-muted); text-decoration: none; font-weight: bold;">Traffic Explorer</a>
-      <a href="/sessions" style="color: var(--text-primary); text-decoration: none; font-weight: bold; border-bottom: 2px solid #3b82f6; padding-bottom: 4px;">Sessions & Reports</a>
-    </div>
     <div class="header-right">
-       <a href="/api/history/export" class="action-btn btn-green">Export ALL Metadata</a>
-       <a href="/api/history/export/features" class="action-btn btn-blue" style="background:#f59e0b;">Export ALL Features</a>
+       <a href="#" onclick="openExportModal('sessions', 'filtered'); return false;" class="header-status-pill" style="text-decoration:none;">
+         <span class="status-dot green"></span><span class="header-status-label" style="color:var(--text-primary);">Export Session Report</span>
+       </a>
+       <!-- Theme Toggle Button -->
+       <button class="theme-toggle-btn icon-only" id="theme-toggle-btn" aria-label="Toggle Light and Dark Mode" title="Toggle Light / Dark Mode">
+         <span class="theme-icon sun">
+           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+             <circle cx="12" cy="12" r="5"/>
+             <line x1="12" y1="1" x2="12" y2="3"/>
+             <line x1="12" y1="21" x2="12" y2="23"/>
+             <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+             <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+             <line x1="1" y1="12" x2="3" y2="12"/>
+             <line x1="21" y1="12" x2="23" y2="12"/>
+             <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+             <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+           </svg>
+         </span>
+         <span class="theme-icon moon">
+           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+             <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+           </svg>
+         </span>
+       </button>
     </div>
   </header>
 
-  <div class="sessions-container">
-    <div class="table-container">
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>Session ID</th>
-            <th>Mode</th>
-            <th>Start</th>
-            <th>Queries</th>
-            <th>Targets</th>
+  <!-- Main Navigation Bar -->
+  <nav class="main-nav-bar" style="display: flex; gap: 30px; padding: 12px 24px; background: var(--bg-card); border-bottom: 1px solid var(--border-color); box-shadow: 0 1px 3px rgba(0,0,0,0.05); position: sticky; top: 60px; z-index: 999;">
+    <a href="/" style="color: var(--text-muted); text-decoration: none; font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px; padding-bottom: 4px; transition: color 0.2s;" onmouseover="this.style.color='var(--text-primary)'" onmouseout="this.style.color='var(--text-muted)'">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>
+      Dashboard
+    </a>
+    <a href="/explorer" style="color: var(--text-muted); text-decoration: none; font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px; padding-bottom: 4px; transition: color 0.2s;" onmouseover="this.style.color='var(--text-primary)'" onmouseout="this.style.color='var(--text-muted)'">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+      Traffic Explorer
+    </a>
+    <a href="/sessions" style="color: var(--text-primary); text-decoration: none; font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px; border-bottom: 2px solid var(--accent-blue); padding-bottom: 4px;">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+      Sessions & Reports
+    </a>
+  </nav>
+
+    <div class="workspace-body full-width">
+      <main class="dashboard-content" style="display: block; padding: 30px;">
+        <div class="primary-column" style="max-width: 100%;">
+          
+          <div class="panel-card">
+            <div class="panel-header">
+              <div class="panel-title-wrapper"><span class="panel-title">Archived Sessions</span></div>
+            </div>
+            <div class="table-container" style="border: none; background: transparent; padding: 0;">
+              <table class="data-table" style="width: 100%; border-collapse: collapse;">
+                <thead>
+                  <tr>
+                    <th style="padding:12px 16px;">Session ID</th>
+                    <th>Mode</th>
+                    <th>Defense</th>
+                    <th>Start</th>
+                    <th>Queries</th>
+                    <th>Targets</th>
             <th>TP</th>
             <th>FP</th>
             <th>TN</th>
             <th>FN</th>
-            <th>Metrics (Precision/Recall/F1/FPR)</th>
+            <th>Metrics (Precision/Recall/F1)</th>
             <th>Actions</th>
           </tr>
         </thead>
@@ -56,6 +91,10 @@
         </tbody>
       </table>
     </div>
+  </div>
+  </div>
+  </main>
+  </div>
   </div>
 
   <script>
@@ -77,7 +116,6 @@
         let recallStr = "N/A";
         let precStr = "N/A";
         let f1Str = "N/A";
-        let fprStr = "N/A";
         let tp = row.tp || 0;
         let fp = row.fp || 0;
         let tn = row.tn || 0;
@@ -97,13 +135,11 @@
         if (prec + recall > 0) {
             f1Str = (2 * prec * recall / (prec + recall)).toFixed(3);
         }
-        if (fp + tn > 0) {
-            fprStr = (fp / (fp + tn)).toFixed(3);
-        }
         
         tr.innerHTML = `
           <td><strong>${row.session_id}</strong></td>
           <td>${row.controller_mode || 'Unknown'}</td>
+          <td>${row.defense || 'Unknown'}</td>
           <td>${row.start_time}</td>
           <td>${row.query_count || 0}</td>
           <td>${row.target_count || 0}</td>
@@ -112,21 +148,40 @@
           <td><span style="color:#10b981">${tn}</span></td>
           <td><span style="color:#ef4444">${fn}</span></td>
           <td style="font-size: 11px;">
-             <strong>P:</strong> ${precStr} | <strong>R:</strong> ${recallStr} <br/>
-             <strong>F1:</strong> ${f1Str} | <strong>FPR:</strong> ${fprStr}
+             <strong>P:</strong> ${escapeHtml(precStr)} | <strong>R:</strong> ${escapeHtml(recallStr)} <br/>
+             <strong>F1:</strong> ${escapeHtml(f1Str)}
           </td>
-          <td style="display: flex; gap: 8px;">
-            <a href="/explorer?session_id=${row.session_id}" class="action-btn btn-blue" style="font-size:11px;">Explore</a>
-            <a href="/api/history/export?session_id=${row.session_id}" class="action-btn btn-green" style="font-size:11px;">CSV</a>
+          <td>
+            <div style="display: flex; gap: 8px; align-items: center;">
+              <button onclick="window.location.href='/explorer?session_id=${row.session_id}'" style="background:var(--bg-primary); border:1px solid var(--border-color); color:var(--text-primary); padding:6px 12px; border-radius:var(--radius-md); font-weight:600; font-size:11px; cursor:pointer; transition:background 0.2s;">Explore</button>
+              <button onclick="openExportModal('metadata', 'session', '${row.session_id}')" style="background:#10b981; border:none; color:white; padding:6px 12px; border-radius:var(--radius-md); font-weight:600; font-size:11px; cursor:pointer; transition:opacity 0.2s;">Export</button>
+            </div>
           </td>
         `;
         tbody.appendChild(tr);
       });
     }
 
+    // Theme behavior mirroring index.html
+    const themeBtn = document.getElementById('theme-toggle-btn');
+    themeBtn.addEventListener('click', () => {
+      const doc = document.documentElement;
+      const current = doc.getAttribute('data-theme');
+      const nextTheme = current === 'light' ? 'dark' : 'light';
+      doc.setAttribute('data-theme', nextTheme);
+      localStorage.setItem('app_theme', nextTheme);
+    });
+
     window.onload = () => {
+      const savedTheme = localStorage.getItem('app_theme');
+      if (savedTheme) {
+        document.documentElement.setAttribute('data-theme', savedTheme);
+      } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
       loadSessions();
     };
   </script>
+  <script src="/static/export-modal.js"></script>
 </body>
 </html>
