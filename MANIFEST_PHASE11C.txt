@@ -5,6 +5,7 @@ artifacts/analysis/figures/base_vs_c1_f1_score.png
 artifacts/analysis/figures/base_vs_c1_precision.png
 artifacts/analysis/figures/base_vs_c1_recall.png
 artifacts/analysis/figures/sensitivity_c1_c7_afp_recall.png
+artifacts/analysis/figures/sensitivity_c1_c7_recall.png
 artifacts/analysis/phase11c_rq1_base_performance.csv
 artifacts/analysis/phase11c_rq2_controller_performance.csv
 artifacts/analysis/phase11c_rq3_statistical_decisions.csv
@@ -16,7 +17,7 @@ artifacts/reports/git_evidence_phase11c.txt
 artifacts/reports/phase11c_analysis_execution.log
 artifacts/reports/phase11c_focused_tests.log
 artifacts/reports/phase11c_full_suite.log
-artifacts/reports/phase11c_traceability_report.txt
+artifacts/reports/phase11c_traceability_report.csv
 docs/PHASE11C_CHAPTER4_DRAFT.md
 scripts/build_phase11c_bundle.py
 scripts/run_phase11c_results.py
