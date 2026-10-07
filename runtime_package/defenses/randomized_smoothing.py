@@ -28,19 +28,19 @@ class RandomizedSmoothing(BaseDefense):
         
         member_votes = np.zeros((n_samples, 2), dtype=int)
         
-        for m in range(self.ensemble_size):
-            seed_int = self.get_noise_seed(seed, attack_scenario, "rs", batch_id, ensemble_id=m)
-            rng = np.random.RandomState(seed_int)
+        for start_idx in range(0, n_samples, chunk_size):
+            end_idx = min(start_idx + chunk_size, n_samples)
+            X_chunk = X[start_idx:end_idx]
+            chunk_len = end_idx - start_idx
             
-            # Generate the FULL standard noise matrix exactly once per ensemble member
-            standard_noise_full = rng.normal(0.0, 1.0, size=X.shape).astype(np.float32)
-            
-            for start_idx in range(0, n_samples, chunk_size):
-                end_idx = min(start_idx + chunk_size, n_samples)
-                X_chunk = X[start_idx:end_idx]
+            member_projs = []
+            for m in range(self.ensemble_size):
+                seed_int = self.get_noise_seed(seed, attack_scenario, "rs", batch_id, ensemble_id=m)
+                rng = np.random.RandomState(seed_int)
                 
-                # Consume slices of that matrix
-                noise = standard_noise_full[start_idx:end_idx] * sigma
+                # Generate standard noise matching chunk
+                standard_noise = rng.normal(0.0, 1.0, size=X.shape).astype(np.float32)[start_idx:end_idx]
+                noise = standard_noise * sigma
                 noise[:, self.protected_mask] = 0.0
                 
                 X_cand = X_chunk + noise
@@ -58,15 +58,19 @@ class RandomizedSmoothing(BaseDefense):
                 total_final_bounds_violation_count += res.final_bounds_violation_count
                 total_protected_feature_modification_count += res.protected_feature_modification_count
                 
-                preds = predict_func(X_proj)
+                member_projs.append(X_proj)
                 
-                if not np.all(np.isin(preds, [0, 1])):
-                    raise ValueError("Prediction function must return strictly binary labels [0, 1].")
-                    
-                for i, p in enumerate(preds):
+            # Vectorized model prediction across all ensemble members
+            X_all_members = np.vstack(member_projs)
+            preds_all = predict_func(X_all_members)
+            
+            if not np.all(np.isin(preds_all, [0, 1])):
+                raise ValueError("Prediction function must return strictly binary labels [0, 1].")
+                
+            for m in range(self.ensemble_size):
+                m_preds = preds_all[m * chunk_len : (m + 1) * chunk_len]
+                for i, p in enumerate(m_preds):
                     member_votes[start_idx + i, int(p)] += 1
-                    
-            # standard_noise_full is garbage collected here at the end of the outer loop iteration
             
         for i in range(n_samples):
             if member_votes[i, 1] > member_votes[i, 0]:

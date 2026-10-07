@@ -60,12 +60,6 @@ from defenses.feature_squeezing import FeatureSqueezing
 from runtime_package.data_loader import get_dataset, LoadedDataset
 from runtime_package.geoip.resolver import resolve_ip_geo, DB_ATTRIBUTION_TEXT, DB_ATTRIBUTION_HTML
 
-# -----------------------------------------------------------------------------
-# Operator Authorization Configuration (Removed for presentation)
-# -----------------------------------------------------------------------------
-def verify_operator_authorization(request: Request) -> bool:
-    """Always returns True; authorization has been removed to simplify the codebase for the presentation."""
-    return True
 
 # -----------------------------------------------------------------------------
 # Canonical Attack Procedure Validation
@@ -1115,39 +1109,24 @@ async def stop_simulation_session():
 # Defense & Controller Management API Endpoints (Authorized Operators Only)
 # -----------------------------------------------------------------------------
 @app.post("/api/dashboard/set-defense")
-async def api_set_defense(req: SetDefenseModel, request: Request):
-    """Switches active defense (afp, rs, fs, none) with operator authorization."""
-    if not verify_operator_authorization(request):
-        return JSONResponse(
-            status_code=401,
-            content={"status": "error", "message": "Unauthorized: Valid operator token required in 'X-Operator-Token' header."}
-        )
+async def api_set_defense(req: SetDefenseModel):
+    """Switches active defense (afp, rs, fs, none)."""
     engine.set_defense(req.defense)
     payload = engine.get_dashboard_payload()
     await ws_manager.broadcast({"event_type": "defense_changed", "payload": payload})
     return JSONResponse(content={"defense": engine.active_defense_name, "status": "Active" if engine.active_defense_name != "none" else "Bypassed"})
 
 @app.post("/api/dashboard/set-mode")
-async def api_set_mode(req: SetModeModel, request: Request):
-    """Switches mode between 'recall-aware' and 'base' with operator authorization."""
-    if not verify_operator_authorization(request):
-        return JSONResponse(
-            status_code=401,
-            content={"status": "error", "message": "Unauthorized: Valid operator token required in 'X-Operator-Token' header."}
-        )
+async def api_set_mode(req: SetModeModel):
+    """Switches mode between 'recall-aware' and 'base'."""
     engine.set_mode(req.mode)
     payload = engine.get_dashboard_payload()
     await ws_manager.broadcast({"event_type": "mode_changed", "payload": payload})
     return JSONResponse(content={"mode": engine.controller_mode, "state": engine.controller_state})
 
 @app.post("/api/dashboard/toggle-afp")
-async def toggle_afp(req: ToggleAFPModel, request: Request):
-    """Backward compatibility toggle button with operator authorization."""
-    if not verify_operator_authorization(request):
-        return JSONResponse(
-            status_code=401,
-            content={"status": "error", "message": "Unauthorized: Valid operator token required in 'X-Operator-Token' header."}
-        )
+async def toggle_afp(req: ToggleAFPModel):
+    """Backward compatibility toggle button."""
     if req.enabled:
         engine.set_defense("afp")
     else:
@@ -1157,13 +1136,8 @@ async def toggle_afp(req: ToggleAFPModel, request: Request):
     return JSONResponse(content={"defense": engine.active_defense_name, "status": "Active" if engine.active_defense_name != "none" else "Bypassed"})
 
 @app.post("/api/dashboard/reset")
-async def reset_metrics(request: Request):
-    """Resets counters and controller state to cold start baseline with operator authorization."""
-    if not verify_operator_authorization(request):
-        return JSONResponse(
-            status_code=401,
-            content={"status": "error", "message": "Unauthorized: Valid operator token required in 'X-Operator-Token' header."}
-        )
+async def reset_metrics():
+    """Resets counters and controller state to cold start baseline."""
     engine.rotate_session()
     engine.active_attack_scenario = "None"
     engine.active_simulation_session = None
@@ -1180,7 +1154,6 @@ def _protect_csv(val):
 
 @app.get("/api/history")
 async def api_get_history(
-    request: Request,
     limit: int = 50,
     offset: int = 0,
     session_id: Optional[str] = None,
@@ -1191,8 +1164,6 @@ async def api_get_history(
     query_only: bool = False,
     include_queries: bool = False
 ):
-    if not verify_operator_authorization(request):
-        raise HTTPException(status_code=401, detail="Unauthorized")
     import traffic_history
     results, total = traffic_history.get_history(
         limit=limit,
@@ -1208,10 +1179,7 @@ async def api_get_history(
     return {"data": results, "total": total}
 
 @app.get("/api/history/schema")
-async def api_get_schema(request: Request):
-    if not verify_operator_authorization(request):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    
+async def api_get_schema():
     # engine.modifiable_mask is a numpy boolean array, need tolist()
     mask = engine.modifiable_mask
     if isinstance(mask, np.ndarray):
@@ -1223,9 +1191,7 @@ async def api_get_schema(request: Request):
     }
 
 @app.get("/api/history/event/{event_id}")
-async def api_get_event(event_id: str, request: Request):
-    if not verify_operator_authorization(request):
-        raise HTTPException(status_code=401, detail="Unauthorized")
+async def api_get_event(event_id: str):
     import traffic_history
     event = traffic_history.get_event(event_id)
     if not event:
@@ -1249,17 +1215,13 @@ class ReviewUpdateModel(BaseModel):
     analyst_notes: str
 
 @app.post("/api/history/event/{event_id}/review")
-async def api_update_review(event_id: str, req: ReviewUpdateModel, request: Request):
-    if not verify_operator_authorization(request):
-        raise HTTPException(status_code=401, detail="Unauthorized")
+async def api_update_review(event_id: str, req: ReviewUpdateModel):
     import traffic_history
     traffic_history.update_review(event_id, req.review_status, req.analyst_notes)
     return {"status": "success"}
 
 @app.get("/api/history/sessions")
-async def api_get_sessions(request: Request):
-    if not verify_operator_authorization(request):
-        raise HTTPException(status_code=401, detail="Unauthorized")
+async def api_get_sessions():
     import traffic_history
     return traffic_history.get_sessions()
 
@@ -1286,7 +1248,6 @@ def _export_generator(fieldnames, results, get_row_dict):
 
 @app.get("/api/history/export")
 async def api_export_metadata(
-    request: Request,
     session_id: Optional[str] = None,
     role: Optional[str] = None,
     action: Optional[str] = None,
@@ -1296,8 +1257,6 @@ async def api_export_metadata(
     include_queries: bool = False,
     preview: bool = False
 ):
-    if not verify_operator_authorization(request):
-        raise HTTPException(status_code=401, detail="Unauthorized")
     import traffic_history
     import re
     fetch_limit = 5 if preview else 1000000
@@ -1319,9 +1278,7 @@ async def api_export_metadata(
     return StreamingResponse(_export_generator(list(results[0].keys()), results, lambda r: r), media_type="text/csv", headers={"Content-Disposition": f"attachment; filename={filename}"})
 
 @app.get("/api/history/export/sessions")
-async def api_export_sessions(request: Request, session_id: Optional[str] = None, preview: bool = False):
-    if not verify_operator_authorization(request):
-        raise HTTPException(status_code=401, detail="Unauthorized")
+async def api_export_sessions(session_id: Optional[str] = None, preview: bool = False):
     import traffic_history
     import re
     sessions = traffic_history.get_sessions()
@@ -1348,7 +1305,6 @@ async def api_export_sessions(request: Request, session_id: Optional[str] = None
 
 @app.get("/api/history/export/features")
 async def api_export_features(
-    request: Request,
     session_id: Optional[str] = None,
     role: Optional[str] = None,
     action: Optional[str] = None,
@@ -1358,8 +1314,6 @@ async def api_export_features(
     include_queries: bool = False,
     preview: bool = False
 ):
-    if not verify_operator_authorization(request):
-        raise HTTPException(status_code=401, detail="Unauthorized")
     import traffic_history
     import re
     fetch_limit = 5 if preview else 1000000

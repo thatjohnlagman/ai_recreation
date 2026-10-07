@@ -1,195 +1,123 @@
-# Running Instructions — IDS + Recall-Aware Research Platform
+# Running Instructions (Quick & Sequential Guide)
 
-Complete operational guide to start, configure, and evaluate the **ML-IDS + Recall-Aware Defense Platform**, the real-time SOC web dashboard, the research attacker simulation console, and the authorized operator benchmark utility in both **Expanded (90k)** and **Fixture20 (20-flow)** modes.
+Follow these steps sequentially to run and test the ML-IDS Defense Platform.
 
 ---
 
-## 1. Environment & Prerequisites
+## Step 1: Initial Setup (One-time)
 
-Ensure the virtual environment and pinned dependencies are active in your working terminal:
+Open PowerShell in the project directory:
 
 ```powershell
-# Windows PowerShell
-cd c:\Users\reddr\ai_recreation
+# 1. Create the virtual environment using Python 3.12
+py -3.12 -m venv .venv
+
+# 2. Activate the virtual environment
 .\.venv\Scripts\Activate.ps1
+
+# 3. Install required packages
 pip install -r requirements.txt
 ```
 
-### Operator Authorization & Automatic Startup
-Server management routes (`/api/dashboard/set-defense`, `/api/dashboard/set-mode`, `/api/dashboard/toggle-afp`, `/api/dashboard/reset`) require operator authorization.
+---
 
-There is **no shared fallback password** (`ids-operator-secret-2026` has been completely eliminated). Instead:
-- Normal server startup auto-generates a private per-installation/per-run token in `.operator_token` (excluded from git and ZIP packaging).
-- Local dashboard sessions are authorized automatically via `launch_dashboard.py` using a single-use launch ticket establishing a server-validated `HttpOnly` cookie.
-- No token entry, prompt dialog, or login screen is required in the browser.
+## Step 2: Start the IDS Server (Terminal 1)
+
+In your first terminal with `.venv` active, start the server:
+
+```powershell
+python server.py
+```
+* **What it does:**
+  * Loads the 78-feature Random Forest model (`frozen_rf.joblib`).
+  * Initializes the active defense (AFP) and Recall-Aware feedback controller.
+  * Binds the server to `http://127.0.0.1:8000`.
+
+*(Optional: Run `python server.py --launch` to start the server and automatically open the dashboard in your browser).*
 
 ---
 
-## 2. Dataset Architecture & Role Separation
+## Step 3: Open the Dashboard (Browser)
 
-### Dataset Profiles via Shared Loader (`runtime_package/data_loader.py`)
-
-| Property | `expanded` (Default Research Profile) | `fixture20` (Regression / Fallback Profile) |
-| :--- | :--- | :--- |
-| **Total Rows** | **90,000** rows (78 float32 features) | **20** rows (78 float32 features) |
-| **Measurement Pool** | **72,000** target rows (59,743 Benign, 12,257 Attack) | **20** rows (10 Benign, 10 Attack) |
-| **Crafting Pool** | **18,000** reference rows (14,936 Benign, 3,064 Attack) | Reused 20 rows for legacy compatibility |
-| **Combined Fingerprint** | SHA-256 over `[X_eval, metadata_eval, evaluation_roles]` | SHA-256 over `[X_demo, metadata_demo]` |
-| **Role Overlap** | **0** overlap (disjoint, full coverage) | N/A |
-| **Live Controller Cadence** | Atomic updates every **5 attack targets** | Atomic updates every **5 attack targets** |
-| **Source Data** | `runtime_package/expanded_data/data/processed/` | `runtime_package/demo_data/` (byte-preserved) |
-
-### Role Separation: Attacker vs. Defender vs. Operator
-1. **Attacker Console (`attacker_sim.py`)**: Submits recorded traffic-flow features and executes the three black-box study procedures. It has **zero management authority**: it cannot switch defense, change controller mode, or reset defender counters.
-2. **Defender Server & Dashboard (`server.py` + `frontend/`)**: Displays real ML predictions, confidence, defense settings, HTTP actions, and reference-label metrics. All procedure names, claimed scenario badges, and dataset family labels are completely removed from defender displays.
-3. **Operator Utilities (`operator_benchmarks.py`)**: Dedicated script for operators to perform Base vs. Recall-Aware comparisons and cross-defense benchmarks, authenticated via local `.operator_token`, `--token`, or environment variable.
+Open your browser and navigate to:
+```
+http://127.0.0.1:8000/
+```
+* **Pages available:**
+  * **Dashboard (`/`)**: Real-time SOC dashboard, live traffic telemetry, threat world map, and defense controls.
+  * **Traffic Explorer (`/explorer`)**: Inspect and filter individual flows and their 78 network features.
+  * **Sessions & Reports (`/sessions`)**: View historical simulation runs, confusion matrix, precision/recall, and export CSV reports.
 
 ---
 
-## 3. Starting the Protected Server & SOC Dashboard
+## Step 4: Run Traffic & Attacks (Terminal 2)
 
-### Terminal 1: Launch Protected Server (Default: Expanded Mode, Loopback)
-```powershell
-# Windows PowerShell (Expanded Mode)
-$env:IDS_DATA_PROFILE = "expanded"
-.\.venv\Scripts\python.exe server.py
-```
-*(For fixture20 fallback/regression mode, set `$env:IDS_DATA_PROFILE = "fixture20"` before launching).*
-The presentation server binds loopback-only to `127.0.0.1:8000`.
-
-### Terminal 2: One-Command Authorized Dashboard Launch
-```powershell
-.\.venv\Scripts\python.exe launch_dashboard.py
-```
-- Opens your browser to `http://127.0.0.1:8000/launch?ticket=...`.
-- The single-use ticket is consumed, establishing an `HttpOnly` browser session cookie (`ids_operator_session`), and redirects cleanly to `http://127.0.0.1:8000/`.
-- No token prompt, auth pill, or password entry is shown. All management buttons (defense selection, mode switching, reset) work automatically.
-
-- **SOC Web Dashboard Layout**:
-  - **Header**: Clean status indicators for IDS engine status, active defense, and dataset profile (`Expanded (72k)`).
-  - **Threat Map**: Renders an offline world outline via bundled Natural Earth 110m GeoJSON vectors, enriched with approximate GeoIP telemetry via the bundled DB-IP City Lite MMDB. OpenStreetMap tiles load as an optional online enhancement.
-  - **Selected Flow Forensics (4 Clean Inspector Cards)**:
-    - Card 1: Source Origin (Demo IP address and network classification: Private Network vs. Geolocated).
-    - Card 2: Demonstration Destination (`None` or explicit demonstration destination).
-    - Card 3: IDS Classification & Confidence: Pure ML-derived binary verdict (`Attack` or `Benign`) with exact inference probability.
-    - Card 4: Defense & Action: Active defense mechanism, perturbation epsilon, and HTTP action (`Request allowed (HTTP 200)` or `Request rejected (HTTP 403)`).
-
----
-
-## 4. Running the Attacker Simulation Console
-
-Open **Terminal 2** to launch the attacker simulation.
-
-### Interactive Menu
-```powershell
-# Windows PowerShell (Terminal 2)
-$env:IDS_DATA_PROFILE = "expanded"
-.\.venv\Scripts\python.exe attacker_sim.py
-```
-
-The menu strictly exposes the 3 canonical study procedures plus benign/stream traffic utilities:
-```text
-[1] Send recorded benign flow
-[2] Silent Probing: submit unchanged malicious flow, zero preliminary queries
-[3] Surrogate Transferability: craft using a local surrogate and crafting references
-[4] Decision-Boundary Attack: search using server responses and crafting references
-[5] Continuous recorded-flow stream
-[0] Exit
-```
-
-### Direct CLI Commands
+Open a **second terminal**, activate `.venv`, and run the attacker simulation:
 
 ```powershell
-# 1. Send recorded benign flow
-.\.venv\Scripts\python.exe attacker_sim.py --mode benign --count 5
+.\.venv\Scripts\Activate.ps1
+python attacker_sim.py
+```
 
-# 2. Silent Probing (unchanged attack flow, 0 crafting queries)
-.\.venv\Scripts\python.exe attacker_sim.py --mode silent
+Choose from the interactive menu:
+* **`[1]` Send Legitimate Benign Traffic**: Tests normal network traffic (shows `HTTP 200 Allowed`).
+* **`[2]` Silent Probing**: Sends raw malicious flows without modifications to test baseline detection.
+* **`[3]` Surrogate Transferability Attack**: Crafts evasion samples using a local Decision Tree surrogate.
+* **`[4]` Decision-Boundary Attack**: Performs an interactive 1D bisection search to probe the model's decision boundary.
+* **`[5]` Continuous Traffic Stream**: Streams mixed benign and attack flows in real time to the live dashboard.
+* **`[0]` Exit**
 
-# 3. Surrogate Transferability (crafts perturbation using local surrogate + 20 crafting references)
-.\.venv\Scripts\python.exe attacker_sim.py --mode surrogate
+### Direct CLI Commands (Headless / Non-Interactive):
+```powershell
+# Send 5 benign flows
+python attacker_sim.py --mode benign --count 5
 
-# 4. Decision-Boundary Attack (1D bisection search using server query responses)
-.\.venv\Scripts\python.exe attacker_sim.py --mode boundary
+# Launch a continuous live traffic stream
+python attacker_sim.py --mode stream
 
-# 5. Continuous traffic stream (mixed benign / attack at 1 flow/second)
-.\.venv\Scripts\python.exe attacker_sim.py --mode stream
-
-# Deterministic sequence replay with explicit seed
-.\.venv\Scripts\python.exe attacker_sim.py --mode silent --seed 42
+# Run specific attacks
+python attacker_sim.py --mode silent
+python attacker_sim.py --mode surrogate
+python attacker_sim.py --mode boundary
 ```
 
 ---
 
-## 5. Running Operator Benchmarks
+## Step 5: (Optional) Run Operator Benchmarks (Terminal 2)
 
-Automated cross-defense comparisons and control-path evaluation have been relocated to `operator_benchmarks.py`.
+By default, benchmarks evaluate **200 batches (1,000 flows)** with statistical summaries:
 
 ```powershell
-# Compare Base vs. Recall-Aware on active defense (or specify --defense)
-.\.venv\Scripts\python.exe operator_benchmarks.py --mode compare
+# Compare Base vs. Recall-Aware on AFP (default: 200 batches / 1000 flows)
+python operator_benchmarks.py --mode compare
 
-# Explicitly test Base vs. Recall-Aware on AFP
-.\.venv\Scripts\python.exe operator_benchmarks.py --mode compare --defense afp
+# Run comparison specifically on another defense (rs, fs, none)
+python operator_benchmarks.py --mode compare --defense rs
 
-# Run cross-defense comparison across AFP, RS, FS, and None
-.\.venv\Scripts\python.exe operator_benchmarks.py --mode compare-all
+# Compare all defense types (AFP, RS, FS, None) across both Base and Recall-Aware modes
+python operator_benchmarks.py --mode compare-all
 
-# Reset defender evaluation metrics and controller state
-.\.venv\Scripts\python.exe operator_benchmarks.py --mode reset
+# Fast cross-defense comparison (e.g. AFP and Feature Squeezing only)
+python operator_benchmarks.py --mode compare-all --defenses afp,fs
 
-# Switch defense and controller mode via operator CLI
-.\.venv\Scripts\python.exe operator_benchmarks.py --mode set-defense --defense rs
-.\.venv\Scripts\python.exe operator_benchmarks.py --mode set-mode --controller base
+# Custom batch size (e.g. 50 batches = 250 flows)
+python operator_benchmarks.py --mode compare --batches 50
+
+# Reset metrics and controller state
+python operator_benchmarks.py --mode reset
 ```
-
-The operator script loads `operator_token.txt` automatically, or accepts `--token <TOKEN>` / `$env:IDS_OPERATOR_TOKEN`.
 
 ---
 
-## 6. Verification & Test Suites
+## Step 6: (Optional) Run Automated Tests
 
-### Suite 1: Expanded Data Integration Suite (11 Checks)
-Verifies expanded dataset loading, non-replacement sampling, role separation, 401 unauthorized rejection, and 400 unsupported procedure rejection:
 ```powershell
-# Requires server running with IDS_DATA_PROFILE=expanded
-$env:IDS_DATA_PROFILE = "expanded"
-.\.venv\Scripts\python.exe tests/test_expanded_data_integration.py
-```
-
-### Suite 2: Defense Readiness Suite (12 Checks)
-Verifies frozen RF hash, 18 core algorithm files, authorized management calls, and canonical procedures:
-```powershell
-.\.venv\Scripts\python.exe tests/verify_defense_readiness.py
-```
-
-### Suite 3: Master Runtime Audit Suite (Tests A through G)
-Verifies no background leakages, silent probing, genuine evasion, reference family handling, and defense switching:
-```powershell
-.\.venv\Scripts\python.exe tests/run_audit_tests.py
-```
-
-### Suite 4: Full Pytest Suite (27 tests)
-```powershell
+# Run the pytest test suite
 pytest -v
+
+# Run the 12-point defense readiness verification
+python tests/verify_defense_readiness.py
+
+# Run master audit tests
+python tests/run_audit_tests.py
 ```
-
----
-
-## 7. Useful REST Endpoints
-
-### Public Endpoints (No Operator Token Required)
-- `GET  /launch?ticket=<TICKET>`: Consumes one-time launch ticket, sets `ids_operator_session` HttpOnly cookie, and redirects to dashboard.
-- `GET  /api/dashboard/stats`: Returns telemetry counters, `data_profile`, `data_fingerprint`, `data_stats`, and `afp` controller state.
-- `POST /api/server/data`: Main inspection endpoint; accepts standardized 78-feature vector or `sample_id`.
-- `POST /api/simulation/start`: Starts simulation session and returns server-confirmed `session_id`.
-- `POST /api/simulation/stop`: Concludes simulation session.
-- `WS   /ws`: Real-time WebSocket telemetry stream.
-
-### Operator Management Endpoints (`ids_operator_session` Cookie OR `X-Operator-Token` Header Required)
-- `POST /api/operator/issue-ticket`: Issues a single-use launch ticket for loopback dashboard startup.
-- `GET  /api/operator/status`: Reports operator authorization status.
-- `POST /api/dashboard/set-defense`: Switches defense (`{"defense": "afp" | "rs" | "fs" | "none"}`). Returns 401 if unauthenticated.
-- `POST /api/dashboard/set-mode`: Switches controller mode (`{"mode": "recall-aware" | "base"}`). Returns 401 if unauthenticated.
-- `POST /api/dashboard/toggle-afp`: Toggles AFP active/bypass. Returns 401 if unauthenticated.
-- `POST /api/dashboard/reset`: Resets metrics, controller state, and feeds. Returns 401 if unauthenticated.

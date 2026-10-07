@@ -64,12 +64,12 @@ BG_BLUE = "\033[44m"
 BG_YELLOW = "\033[43m"
 BLACK = "\033[30m"
 
-DEFAULT_SERVER_URL = "http://localhost:8000/api/server/data"
-DEFAULT_DEFENSE_URL = "http://localhost:8000/api/dashboard/set-defense"
-DEFAULT_MODE_URL = "http://localhost:8000/api/dashboard/set-mode"
-DEFAULT_TOGGLE_URL = "http://localhost:8000/api/dashboard/toggle-afp"
-DEFAULT_SIM_START_URL = "http://localhost:8000/api/simulation/start"
-DEFAULT_SIM_STOP_URL = "http://localhost:8000/api/simulation/stop"
+DEFAULT_SERVER_URL = "http://127.0.0.1:8000/api/server/data"
+DEFAULT_DEFENSE_URL = "http://127.0.0.1:8000/api/dashboard/set-defense"
+DEFAULT_MODE_URL = "http://127.0.0.1:8000/api/dashboard/set-mode"
+DEFAULT_TOGGLE_URL = "http://127.0.0.1:8000/api/dashboard/toggle-afp"
+DEFAULT_SIM_START_URL = "http://127.0.0.1:8000/api/simulation/start"
+DEFAULT_SIM_STOP_URL = "http://127.0.0.1:8000/api/simulation/stop"
 
 def get_server_url() -> str:
     return DEFAULT_SERVER_URL
