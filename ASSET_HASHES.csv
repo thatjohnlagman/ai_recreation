@@ -1,0 +1,3 @@
+filepath,size_bytes,sha256,changed_since_30ab73a
+runtime_package/model/frozen_rf.joblib,55251670,9608672c5d5e38a9272c560679cdd2291399de0e0917c8c9dff373bfd200f51d,No
+runtime_state/traffic_history.sqlite3,214040576,b3279bfcd137709b8141e80c7ecdeaf4812e823f529fc3f8ef55c3eac52eb9a2,Yes
