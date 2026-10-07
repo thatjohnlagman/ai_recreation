@@ -11,7 +11,14 @@ afp:
   - 0.0005
   alpha_grid:
   - 0.5
+  # -------------------------------------------------------------------
+  # PRIMARY DEMO DEFENSE: Adaptive Feature Poisoning (AFP)
+  # This actively injects adversarial perturbation bounds (epsilon)
+  # directly into the packet features to confuse inbound ML attacks.
+  # -------------------------------------------------------------------
   epsilon_base: 0.0003
+  
+  # The Recall-Aware Controller dynamically scales epsilon between these bounds!
   intensity_min: 0.00003
   intensity_max: 0.0003
   noise_distribution: uniform

@@ -23,11 +23,19 @@ controller_configurations:
     id: "C1"
     sensitivity_focus: "Balanced default"
     window_size: 5
+    
+    # Thresholds that define the controller's current state:
     Rcritical: 0.85
     Rmin: 0.95
+    
+    # State Multipliers:
+    # RED STATE (Recall < 0.85) -> Drops epsilon fast to regain detection!
     fast_decay: 0.40
+    # YELLOW STATE (Recall < 0.95) -> Slows down drop to safely find equilibrium.
     slow_decay: 0.90
+    # GREEN STATE (Recall >= 0.95) -> Safe! Quickly regrows epsilon for maximum defense.
     growth_factor: 1.30
+    
     primary_config: true   # C1 is used for RQ2 and RQ3 primary comparison
 
   C2:

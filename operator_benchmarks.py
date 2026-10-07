@@ -49,59 +49,21 @@ from attacker_sim import (
     RESET, BOLD, DIM, RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN, WHITE
 )
 
-PRIVATE_TOKEN_FILE = BASE_DIR / ".operator_token"
-TOKEN_FILE = BASE_DIR / "operator_token.txt"
-
-
-def get_operator_token(cli_token: Optional[str] = None) -> str:
-    """
-    Resolves the operator token with the following priority:
-    1. CLI argument (--token)
-    2. Environment variable (IDS_OPERATOR_TOKEN)
-    3. Server-generated private token (.operator_token)
-    4. Local configuration token (operator_token.txt)
-    """
-    if cli_token and cli_token.strip():
-        return cli_token.strip()
-    env_token = os.environ.get("IDS_OPERATOR_TOKEN")
-    if env_token and env_token.strip():
-        return env_token.strip()
-    if PRIVATE_TOKEN_FILE.exists():
-        try:
-            content = PRIVATE_TOKEN_FILE.read_text(encoding="utf-8").strip()
-            if content:
-                return content
-        except Exception:
-            pass
-    if TOKEN_FILE.exists():
-        try:
-            content = TOKEN_FILE.read_text(encoding="utf-8").strip()
-            if content:
-                return content
-        except Exception:
-            pass
-    raise RuntimeError(
-        "Operator authorization token not found. Please start the server (which creates "
-        ".operator_token) or configure $env:IDS_OPERATOR_TOKEN or pass --token."
-    )
-
-
+# Token logic removed
 def get_management_url(path: str) -> str:
     base = get_base_url()
     return f"{base}/api/dashboard/{path.lstrip('/')}"
 
 
 def set_server_defense(defense_name: str, token: Optional[str] = None) -> bool:
-    """Configures server defense ('afp', 'rs', 'fs', 'none') with operator authorization."""
-    auth_token = get_operator_token(token)
+    """Configures server defense ('afp', 'rs', 'fs', 'none')."""
     url = get_management_url("set-defense")
     payload = json.dumps({"defense": defense_name}).encode("utf-8")
     req = urllib.request.Request(
         url,
         data=payload,
         headers={
-            "Content-Type": "application/json",
-            "X-Operator-Token": auth_token
+            "Content-Type": "application/json"
         }
     )
     try:
@@ -118,16 +80,14 @@ def set_server_defense(defense_name: str, token: Optional[str] = None) -> bool:
 
 
 def set_server_mode(mode: str, token: Optional[str] = None) -> bool:
-    """Configures controller mode ('recall-aware', 'base') with operator authorization."""
-    auth_token = get_operator_token(token)
+    """Configures controller mode ('recall-aware', 'base')."""
     url = get_management_url("set-mode")
     payload = json.dumps({"mode": mode}).encode("utf-8")
     req = urllib.request.Request(
         url,
         data=payload,
         headers={
-            "Content-Type": "application/json",
-            "X-Operator-Token": auth_token
+            "Content-Type": "application/json"
         }
     )
     try:
@@ -145,14 +105,12 @@ def set_server_mode(mode: str, token: Optional[str] = None) -> bool:
 
 def reset_server_state(token: Optional[str] = None) -> bool:
     """Resets dashboard metrics and controller state to cold start baseline."""
-    auth_token = get_operator_token(token)
     url = get_management_url("reset")
     req = urllib.request.Request(
         url,
         data=b"{}",
         headers={
-            "Content-Type": "application/json",
-            "X-Operator-Token": auth_token
+            "Content-Type": "application/json"
         }
     )
     try:

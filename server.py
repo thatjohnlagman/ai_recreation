@@ -61,76 +61,11 @@ from runtime_package.data_loader import get_dataset, LoadedDataset
 from runtime_package.geoip.resolver import resolve_ip_geo, DB_ATTRIBUTION_TEXT, DB_ATTRIBUTION_HTML
 
 # -----------------------------------------------------------------------------
-# Operator Authorization Configuration & Verification
+# Operator Authorization Configuration (Removed for presentation)
 # -----------------------------------------------------------------------------
-PRIVATE_TOKEN_FILE = BASE_DIR / ".operator_token"
-TOKEN_FILE = BASE_DIR / "operator_token.txt"
-
-def get_configured_operator_token() -> str:
-    """Resolves authorized operator token from env var, private token file, or generates a private run token."""
-    env_token = os.environ.get("IDS_OPERATOR_TOKEN")
-    if env_token and env_token.strip():
-        return env_token.strip()
-    if PRIVATE_TOKEN_FILE.exists():
-        try:
-            content = PRIVATE_TOKEN_FILE.read_text(encoding="utf-8").strip()
-            if content:
-                return content
-        except Exception:
-            pass
-    if TOKEN_FILE.exists():
-        try:
-            content = TOKEN_FILE.read_text(encoding="utf-8").strip()
-            if content:
-                return content
-        except Exception:
-            pass
-    token = secrets.token_urlsafe(32)
-    try:
-        PRIVATE_TOKEN_FILE.write_text(token, encoding="utf-8")
-        print(f"[Auth] Generated private operator token in .operator_token.")
-    except Exception as e:
-        print(f"[Auth] Warning: Could not write .operator_token: {e}")
-    return token
-
-# In-memory operator session and launch ticket tracking
-active_operator_sessions: Dict[str, float] = {}   # session_id -> expire_timestamp
-one_time_launch_tickets: Dict[str, float] = {}    # ticket -> expire_timestamp
-
-def create_launch_ticket() -> str:
-    """Creates a short-lived, single-use launch ticket for loopback operator initialization."""
-    now = time.time()
-    for t in list(one_time_launch_tickets.keys()):
-        if one_time_launch_tickets[t] < now:
-            del one_time_launch_tickets[t]
-    ticket = secrets.token_urlsafe(16)
-    one_time_launch_tickets[ticket] = now + 120.0
-    return ticket
-
 def verify_operator_authorization(request: Request) -> bool:
-    """
-    Verifies that incoming management request includes a valid operator token
-    or an active, authenticated loopback operator session cookie.
-    """
-    expected = get_configured_operator_token()
-    # 1. Header token check (for CLI benchmarks and automated tests)
-    token = request.headers.get("X-Operator-Token")
-    if not token:
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer "):
-            token = auth_header[7:].strip()
-    if token and token == expected:
-        return True
-
-    # 2. HttpOnly session cookie check (for authorized local browser dashboard)
-    cookie_session = request.cookies.get("ids_operator_session")
-    if cookie_session and cookie_session in active_operator_sessions:
-        if time.time() < active_operator_sessions[cookie_session]:
-            return True
-        else:
-            del active_operator_sessions[cookie_session]
-
-    return False
+    """Always returns True; authorization has been removed to simplify the codebase for the presentation."""
+    return True
 
 # -----------------------------------------------------------------------------
 # Canonical Attack Procedure Validation
@@ -1513,75 +1448,7 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
 
-# -----------------------------------------------------------------------------
-# Operator Dashboard Launch & Local Session Provisioning
-# -----------------------------------------------------------------------------
-@app.get("/launch")
-async def operator_launch_handler(request: Request, ticket: Optional[str] = None):
-    """
-    One-time launch ticket endpoint.
-    Restricted to loopback visitors. Consumes ticket once, provisions an HttpOnly
-    session cookie, and redirects to the clean root dashboard URL.
-    """
-    client_host = request.client.host if request.client else ""
-    if client_host not in ["127.0.0.1", "::1", "localhost", "testclient"]:
-        return HTMLResponse(
-            "<h3>Loopback Only</h3><p>Operator launcher is restricted to local loopback access.</p>",
-            status_code=403
-        )
-
-    now = time.time()
-    if not ticket or ticket not in one_time_launch_tickets or one_time_launch_tickets[ticket] < now:
-        return HTMLResponse(
-            "<h3>Unauthorized / Expired Launch Ticket</h3><p>The launch ticket was invalid or expired. "
-            "Please run <code>python launch_dashboard.py</code> to open an authorized session.</p>",
-            status_code=401
-        )
-
-    # Consume ticket immediately (one-time use)
-    del one_time_launch_tickets[ticket]
-
-    # Create server-validated session
-    session_id = secrets.token_hex(24)
-    active_operator_sessions[session_id] = now + 86400.0  # 24 hours
-
-    response = RedirectResponse(url="/", status_code=303)
-    response.set_cookie(
-        key="ids_operator_session",
-        value=session_id,
-        httponly=True,
-        samesite="lax",
-        max_age=86400,
-        path="/"
-    )
-    return response
-
-@app.post("/api/operator/issue-ticket")
-async def issue_launch_ticket_handler(request: Request):
-    """Issues a fresh one-time launch ticket for authorized local operators."""
-    if not verify_operator_authorization(request):
-        # Allow loopback client with valid token on disk if no auth header passed
-        client_host = request.client.host if request.client else ""
-        if client_host in ["127.0.0.1", "::1", "localhost", "testclient"]:
-            expected = get_configured_operator_token()
-            token = request.headers.get("X-Operator-Token")
-            if not token or token != expected:
-                return JSONResponse(status_code=401, content={"status": "error", "message": "Unauthorized operator token."})
-        else:
-            return JSONResponse(status_code=401, content={"status": "error", "message": "Operator authorization required."})
-
-    ticket = create_launch_ticket()
-    return JSONResponse(status_code=200, content={
-        "status": "success",
-        "ticket": ticket,
-        "launch_url": f"http://127.0.0.1:8000/launch?ticket={ticket}"
-    })
-
-@app.get("/api/operator/status")
-async def operator_status_handler(request: Request):
-    """Returns authorization status of the current client."""
-    is_auth = verify_operator_authorization(request)
-    return JSONResponse(status_code=200, content={"authorized": is_auth})
+# Removed operator dashboard launch endpoints to simplify presentation
 
 # -----------------------------------------------------------------------------
 # Static Files & Frontend Routing
@@ -1610,27 +1477,26 @@ async def serve_sessions():
 if __name__ == "__main__":
     import uvicorn
     import argparse
+    import threading
+    import urllib.request
+    import time
+    import webbrowser
 
     parser = argparse.ArgumentParser(description="Standalone IDS + Recall-Aware Defense Server")
     parser.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1 loopback)")
     parser.add_argument("--port", type=int, default=8000, help="Bind port (default: 8000)")
-    parser.add_argument("--launch", "--open", action="store_true", help="Automatically launch authorized dashboard in browser")
+    parser.add_argument("--launch", "--open", action="store_true", help="Automatically launch dashboard in browser")
     args = parser.parse_args()
 
-    token = get_configured_operator_token()
-    initial_ticket = create_launch_ticket()
-    launch_url = f"http://{args.host}:{args.port}/launch?ticket={initial_ticket}"
+    launch_url = f"http://{args.host}:{args.port}/"
     print("\n========================================================")
     print("  IDS + Recall-Aware Research Runtime Platform")
     print(f"  SOC Web Dashboard: http://{args.host}:{args.port}")
     print(f"  Protected Server:  http://{args.host}:{args.port}/api/server/data")
     print(f"  WebSocket Feed:    ws://{args.host}:{args.port}/ws")
-    print(f"  Local Launch Auth: http://{args.host}:{args.port}/launch?ticket=[REDACTED]")
     print("========================================================\n")
 
     if args.launch:
-        import threading
-        import urllib.request
         def open_browser():
             ready_url = f"http://{args.host}:{args.port}/api/dashboard/stats"
             deadline = time.time() + 15.0
@@ -1644,7 +1510,8 @@ if __name__ == "__main__":
                             break
                 except Exception:
                     time.sleep(0.1)
-            webbrowser.open(launch_url)
+            if server_ready:
+                webbrowser.open(launch_url)
         threading.Thread(target=open_browser, daemon=True).start()
 
     log_config = get_redacted_log_config()

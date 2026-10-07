@@ -1039,7 +1039,16 @@ def run_decision_boundary_attack(max_queries: int = 50, steps: int = 10) -> bool
 
 
 def run_continuous_stream(delay: float = 1.0, count: int = 0):
-    """Streams recorded traffic to demonstrate real-time dashboard updates."""
+    """
+    ---------------------------------------------------------
+    DEMONSTRATION TOOL: Continuous Traffic Stream
+    ---------------------------------------------------------
+    Streams recorded traffic to demonstrate real-time dashboard updates.
+    The pacing (delay) dictates how fast traffic hits the IDS. 
+    By default, we set delay=0.1s in the interactive menu below to show 
+    rapid, real-time responses from the Recall-Aware controller.
+    ---------------------------------------------------------
+    """
     if count > 0:
         print(f"\n{CYAN}{BOLD}>>> Starting Rapid Stream of {count} flows (Press Ctrl+C to stop)...{RESET}\n")
     else:
@@ -1068,6 +1077,14 @@ def run_continuous_stream(delay: float = 1.0, count: int = 0):
 
 
 def interactive_menu():
+    """
+    ---------------------------------------------------------
+    DEMONSTRATION CONSOLE MENU
+    ---------------------------------------------------------
+    Provides an interactive CLI for the presenter to launch:
+      1-4: Specific benign or evasion attacks.
+      5: The rapid traffic stream for dashboard visualization.
+    """
     print_banner()
     while True:
         print(f"{WHITE}{BOLD}======================================================================{RESET}")

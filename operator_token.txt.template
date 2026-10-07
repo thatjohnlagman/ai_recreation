@@ -1,3 +1,0 @@
-# IDS Operator Token Configuration Template
-# To specify a custom private operator token, place your secret token string on a single line below.
-# If omitted, the server automatically generates a private, local token on startup.
