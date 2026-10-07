@@ -1,1 +1,0 @@
-Explicitly stating: The directory is NOT a Git repository.
