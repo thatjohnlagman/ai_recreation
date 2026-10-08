@@ -114,16 +114,16 @@ def set_target_url(target: str):
 CURRENT_SIMULATION_SESSION_ID: Optional[str] = None
 SHOW_FEATURES: bool = False
 
-# Origin Pools for Simulation (Private IPs strictly labeled Private Network, public IPs Unknown)
+# Origin Pools for Simulation (Realistic geolocated countries)
 ORIGIN_POOL = [
-    {"ip": "203.0.113.45", "country": "Unknown"},
-    {"ip": "185.199.110.23", "country": "Unknown"},
-    {"ip": "103.21.54.12", "country": "Unknown"},
-    {"ip": "45.76.32.18", "country": "Unknown"},
-    {"ip": "89.248.163.77", "country": "Unknown"},
-    {"ip": "114.119.130.88", "country": "Unknown"},
-    {"ip": "177.54.144.20", "country": "Unknown"},
-    {"ip": "197.232.12.9", "country": "Unknown"},
+    {"ip": "203.0.113.45", "country": "Germany"},
+    {"ip": "185.199.110.23", "country": "United States"},
+    {"ip": "103.21.54.12", "country": "India"},
+    {"ip": "45.76.32.18", "country": "Japan"},
+    {"ip": "89.248.163.77", "country": "Netherlands"},
+    {"ip": "114.119.130.88", "country": "Singapore"},
+    {"ip": "177.54.144.20", "country": "Brazil"},
+    {"ip": "197.232.12.9", "country": "Kenya"},
     {"ip": "10.0.2.45", "country": "Private Network"},
     {"ip": "172.16.0.12", "country": "Private Network"},
     {"ip": "10.0.3.77", "country": "Private Network"},

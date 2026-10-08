@@ -141,7 +141,7 @@ def save_flow_event(event: dict):
         import logging
         logging.error(f"Failed to save flow history: {e}")
 
-def get_history(limit=50, offset=0, session_id=None, role=None, action=None, defense=None, is_attack=None, query_only=False, include_queries=False, order="desc"):
+def get_history(limit=50, offset=0, session_id=None, role=None, action=None, defense=None, controller_mode=None, is_attack=None, query_only=False, include_queries=False, order="desc"):
     conn = get_db()
     query = "SELECT event_id, timestamp_utc, source_ip, destination_ip, data_profile, role, sample_id, binary_prediction, action, confidence_meaning, defense, used_intensity, ground_truth_status, session_id, review_status, attack_score, predicted_class_confidence, confidence_type, next_intensity, controller_rolling_recall, controller_state_before, controller_state_after, controller_batch_id FROM flow_history WHERE 1=1"
     params = []
@@ -158,6 +158,9 @@ def get_history(limit=50, offset=0, session_id=None, role=None, action=None, def
     if defense:
         query += " AND defense = ?"
         params.append(defense)
+    if controller_mode:
+        query += " AND controller_mode = ?"
+        params.append(controller_mode)
     if is_attack is not None:
         if is_attack:
             query += " AND (ground_truth_status = 'Simulator: 1' OR ground_truth_status = 'Dataset: 1')"

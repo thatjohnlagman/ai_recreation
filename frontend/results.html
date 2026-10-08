@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Results - Cross-Defense Evaluation & Impact Summary</title>
+  <link rel="stylesheet" href="/static/style.css?v=5.0">
+  <script src="/static/utils.js"></script>
+  <script src="/static/vendor/chart.umd.min.js"></script>
+  <style>
+    /* ==========================================================================
+       Results Page Resilient Design System (Inherits dashboard tab patterns)
+       ========================================================================== */
+
+    /* Segmented Controls (identical to dashboard tab) */
+    .segmented-control {
+      display: inline-flex;
+      background: rgba(11, 19, 38, 0.8);
+      border: 1px solid rgba(30, 42, 71, 0.9);
+      border-radius: 8px;
+      padding: 2px;
+      gap: 2px;
+    }
+
+    [data-theme="light"] .segmented-control {
+      background: #ffffff;
+      border-color: #cbd5e1;
+    }
+
+    .segment-btn {
+      background: transparent !important;
+      border: none !important;
+      color: #94a3b8 !important;
+      font-family: inherit;
+      font-size: 11px !important;
+      font-weight: 600 !important;
+      padding: 5px 14px !important;
+      border-radius: 6px !important;
+      cursor: pointer !important;
+      transition: all 0.18s ease !important;
+      outline: none !important;
+    }
+
+    [data-theme="light"] .segment-btn {
+      color: #64748b !important;
+    }
+
+    .segment-btn:hover {
+      color: #f1f5f9 !important;
+      background: rgba(59, 130, 246, 0.15) !important;
+    }
+
+    [data-theme="light"] .segment-btn:hover {
+      color: #0f172a !important;
+      background: rgba(59, 130, 246, 0.1) !important;
+    }
+
+    .segment-btn.active {
+      background: #2563eb !important;
+      color: #ffffff !important;
+      box-shadow: 0 1px 5px rgba(37, 99, 235, 0.45) !important;
+    }
+
+    .results-workspace-content {
+      flex: 1;
+      width: 100%;
+      padding: 20px 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      overflow-y: auto;
+      min-width: 0;
+      box-sizing: border-box;
+    }
+
+    /* Side-by-Side Comparison Columns */
+    .comparison-columns-container {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+      width: 100%;
+      min-width: 0;
+      align-items: stretch;
+    }
+
+    @media (max-width: 1100px) {
+      .comparison-columns-container {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .comparison-col {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      min-width: 0;
+      width: 100%;
+    }
+
+    /* Bottom Row: P R F1 + Recall vs Intensity */
+    .metrics-and-chart-row {
+      display: grid;
+      grid-template-columns: 195px minmax(0, 1fr);
+      gap: 12px;
+      align-items: stretch;
+      width: 100%;
+      min-width: 0;
+    }
+
+    @media (max-width: 1280px) {
+      .metrics-and-chart-row {
+        grid-template-columns: 1fr;
+        gap: 10px;
+      }
+    }
+
+    .prf-card-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+      min-width: 0;
+      width: 100%;
+    }
+
+    .prf-mini-card {
+      background: var(--bg-card-sub);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-sm);
+      padding: 10px 4px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      min-width: 0;
+      overflow: hidden;
+      gap: 2px;
+      transition: border-color 0.2s ease;
+    }
+
+    .prf-mini-card:hover {
+      border-color: var(--border-color-light);
+    }
+
+    .prf-badge {
+      font-size: 16px;
+      font-weight: 800;
+      font-family: var(--font-mono, monospace);
+      line-height: 1;
+    }
+
+    .prf-badge.blue { color: #3b82f6; }
+    .prf-badge.green { color: #10b981; }
+    .prf-badge.purple { color: #8b5cf6; }
+
+    .prf-val {
+      font-size: 12.5px;
+      font-weight: 700;
+      color: var(--text-primary);
+      line-height: 1.2;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 100%;
+    }
+
+    .prf-lbl {
+      font-size: 9px;
+      font-weight: 600;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      letter-spacing: 0.4px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* Chart Box inside column */
+    .column-chart-box {
+      background: var(--bg-card-sub);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-sm);
+      padding: 8px 10px;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      overflow: hidden;
+      width: 100%;
+      position: relative;
+    }
+
+    .column-chart-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 4px;
+      min-width: 0;
+    }
+
+    .column-chart-title {
+      font-size: 10.5px;
+      font-weight: 700;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .column-chart-legend {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 10px;
+      color: var(--text-muted);
+      flex-shrink: 0;
+    }
+
+    .legend-dot {
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      margin-right: 2px;
+    }
+
+    .legend-dot.green { background: #10b981; }
+    .legend-dot.slate { background: #64748b; }
+    .legend-dot.red { background: #ef4444; }
+
+    .column-chart-box .chart-canvas-container {
+      height: 125px;
+      width: 100%;
+      position: relative;
+      min-width: 0;
+      overflow: hidden;
+    }
+
+    /* Bottom Two Cards Layout */
+    .bottom-two-cards-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+      width: 100%;
+      min-width: 0;
+    }
+
+    @media (max-width: 1100px) {
+      .bottom-two-cards-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    /* Status dot & badge extensions */
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+      flex-shrink: 0;
+    }
+
+    .status-dot.green { background: #10b981; box-shadow: 0 0 6px #10b981; }
+    .status-dot.cyan { background: #06b6d4; box-shadow: 0 0 6px #06b6d4; }
+    .status-dot.yellow { background: #f59e0b; box-shadow: 0 0 6px #f59e0b; }
+    .status-dot.gray { background: #94a3b8; }
+
+    .ra-status-badge {
+      font-size: 10px;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      display: inline-flex;
+      align-items: center;
+      white-space: nowrap;
+    }
+
+    .ra-status-badge.green {
+      background: rgba(16, 185, 129, 0.15);
+      color: #10b981;
+      border: 1px solid rgba(16, 185, 129, 0.35);
+    }
+
+    .ra-status-badge.yellow {
+      background: rgba(245, 158, 11, 0.15);
+      color: #f59e0b;
+      border: 1px solid rgba(245, 158, 11, 0.35);
+    }
+
+    .ra-status-badge.red {
+      background: rgba(239, 68, 68, 0.15);
+      color: #ef4444;
+      border: 1px solid rgba(239, 68, 68, 0.35);
+    }
+
+    .ra-status-badge.base {
+      background: rgba(100, 116, 139, 0.15);
+      color: #94a3b8;
+      border: 1px solid rgba(100, 116, 139, 0.35);
+    }
+
+    .ra-status-badge.bypassed {
+      background: rgba(148, 163, 184, 0.15);
+      color: #94a3b8;
+      border: 1px solid rgba(148, 163, 184, 0.3);
+    }
+
+    .delta-pill {
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-weight: 700;
+      font-family: var(--font-mono, monospace);
+      font-size: 11px;
+    }
+
+    .delta-pill.positive {
+      background: rgba(16, 185, 129, 0.15);
+      color: #10b981;
+    }
+
+    .delta-pill.neutral {
+      background: rgba(148, 163, 184, 0.15);
+      color: #94a3b8;
+    }
+
+    .delta-pill.negative {
+      background: rgba(239, 68, 68, 0.15);
+      color: #ef4444;
+    }
+
+    .telemetry-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      background: var(--bg-card-sub);
+      border: 1px solid var(--border-color);
+      border-radius: 20px;
+      font-size: 11px;
+      color: var(--text-secondary);
+      font-weight: 500;
+      white-space: nowrap;
+    }
+
+    .pulse-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #10b981;
+      display: inline-block;
+      animation: pulseAnim 2s infinite;
+    }
+
+    @keyframes pulseAnim {
+      0% { transform: scale(0.95); opacity: 0.7; }
+      50% { transform: scale(1.2); opacity: 1; }
+      100% { transform: scale(0.95); opacity: 0.7; }
+    }
+
+    .btn-subtle {
+      background: var(--bg-card-sub);
+      color: var(--text-secondary);
+      border: 1px solid var(--border-color);
+      padding: 5px 12px;
+      border-radius: var(--radius-md);
+      font-size: 11.5px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      white-space: nowrap;
+    }
+
+    .btn-subtle:hover {
+      color: var(--text-primary);
+      background: var(--bg-hover);
+    }
+
+    .btn-action {
+      background: var(--accent-blue);
+      color: white;
+      border: none;
+      padding: 5px 14px;
+      border-radius: var(--radius-md);
+      font-size: 11.5px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+      white-space: nowrap;
+    }
+
+    .btn-action:hover {
+      background: var(--accent-blue-hover);
+    }
+
+    .takeaway-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      font-size: 12.5px;
+      line-height: 1.5;
+      color: var(--text-primary);
+    }
+
+    .takeaway-bullet {
+      color: var(--accent-blue);
+      font-size: 15px;
+      line-height: 1;
+      margin-top: 1px;
+    }
+
+    .active-matrix-row,
+    .active-arm-row {
+      background: rgba(59, 130, 246, 0.08) !important;
+    }
+
+    .active-matrix-row td:first-child,
+    .active-arm-row td:first-child {
+      border-left: 3px solid var(--accent-blue) !important;
+      padding-left: 8px;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="app-container">
+    <header class="app-header">
+      <div class="header-left">
+        <div class="header-title-group">
+          <h1 class="header-title">Recall-Aware IDS Defense Platform</h1>
+          <p class="header-subtitle">Cross-Defense Evaluation &amp; Operator Comparison</p>
+        </div>
+      </div>
+      <div class="header-right">
+        <span class="telemetry-chip" style="margin-right: 10px;">
+          <span class="pulse-dot"></span>
+          Live Stream Synced
+        </span>
+
+        <!-- Theme Toggle Button -->
+        <button class="theme-toggle-btn icon-only" id="theme-toggle-btn" aria-label="Toggle Light and Dark Mode"
+          title="Toggle Light / Dark Mode">
+          <span class="theme-icon sun">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="5" />
+              <line x1="12" y1="1" x2="12" y2="3" />
+              <line x1="12" y1="21" x2="12" y2="23" />
+              <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
+              <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+              <line x1="1" y1="12" x2="3" y2="12" />
+              <line x1="21" y1="12" x2="23" y2="12" />
+              <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
+              <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+            </svg>
+          </span>
+          <span class="theme-icon moon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+            </svg>
+          </span>
+        </button>
+
+        <div class="header-datetime" id="live-datetime">UTC Clock</div>
+      </div>
+    </header>
+
+    <!-- Main Navigation Bar -->
+    <nav class="main-nav-bar"
+      style="display: flex; gap: 30px; padding: 12px 24px; background: var(--bg-card); border-bottom: 1px solid var(--border-color); box-shadow: 0 1px 3px rgba(0,0,0,0.05); position: sticky; top: 60px; z-index: 999;">
+      <a href="/"
+        style="color: var(--text-muted); text-decoration: none; font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px; padding-bottom: 4px; transition: color 0.2s;"
+        onmouseover="this.style.color='var(--text-primary)'" onmouseout="this.style.color='var(--text-muted)'">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
+          <polyline points="9 22 9 12 15 12 15 22"></polyline>
+        </svg>
+        Dashboard
+      </a>
+      <a href="/explorer"
+        style="color: var(--text-muted); text-decoration: none; font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px; padding-bottom: 4px; transition: color 0.2s;"
+        onmouseover="this.style.color='var(--text-primary)'" onmouseout="this.style.color='var(--text-muted)'">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="8"></circle>
+          <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+        </svg>
+        Traffic Explorer
+      </a>
+      <a href="/sessions"
+        style="color: var(--text-muted); text-decoration: none; font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px; padding-bottom: 4px; transition: color 0.2s;"
+        onmouseover="this.style.color='var(--text-primary)'" onmouseout="this.style.color='var(--text-muted)'">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+          <polyline points="14 2 14 8 20 8"></polyline>
+          <line x1="16" y1="13" x2="8" y2="13"></line>
+          <line x1="16" y1="17" x2="8" y2="17"></line>
+          <polyline points="10 9 9 9 8 9"></polyline>
+        </svg>
+        Sessions &amp; Reports
+      </a>
+      <a href="/results"
+        style="color: var(--text-primary); text-decoration: none; font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px; border-bottom: 2px solid var(--accent-blue); padding-bottom: 4px;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M18 20V10M12 20V4M6 20v-6"></path>
+        </svg>
+        Results
+      </a>
+    </nav>
+
+    <!-- Main Workspace Layout -->
+    <div class="workspace-body full-width">
+      <main class="results-workspace-content">
+
+        <!-- 1. Top Defense Selector Bar: AFP / RS / FS / None -->
+        <div class="panel-card" style="padding: 10px 16px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; min-width: 0;">
+            <!-- Segmented Control matching Dashboard tab -->
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <span class="control-label" style="font-weight: 700; color: var(--text-muted); font-size: 11px;">DEFENSE:</span>
+              <div class="segmented-control" id="defense-selector-group">
+                <button type="button" class="segment-btn active" id="btn-def-afp" onclick="handleSelectDefense('afp')">AFP</button>
+                <button type="button" class="segment-btn" id="btn-def-rs" onclick="handleSelectDefense('rs')">RS</button>
+                <button type="button" class="segment-btn" id="btn-def-fs" onclick="handleSelectDefense('fs')">FS</button>
+                <button type="button" class="segment-btn" id="btn-def-none" onclick="handleSelectDefense('none')">None</button>
+              </div>
+            </div>
+
+            <!-- Telemetry status chips & Action Buttons -->
+            <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+              <span class="telemetry-chip">
+                <span class="pulse-dot"></span>
+                Active: <strong id="lbl-active-defense" style="color: var(--text-primary); margin-left: 2px;">AFP</strong>
+              </span>
+              <span class="telemetry-chip">
+                Mode: <strong id="lbl-active-mode" style="color: var(--accent-blue); margin-left: 2px;">Recall-Aware</strong>
+              </span>
+              <span class="telemetry-chip">
+                Continuous Traffic: <strong id="lbl-session-traffic" style="font-family: var(--font-mono, monospace); color: var(--text-primary); margin-left: 2px;">0</strong>
+              </span>
+              <button class="btn-subtle" onclick="handleResetResults()">Reset Baseline</button>
+              <button class="btn-action" onclick="exportResultsCSV()">Export CSV</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 2. Two Side-by-Side Comparison Columns: Base vs. Recall Aware Controller -->
+        <div class="comparison-columns-container">
+
+          <!-- Left Column: Base -->
+          <div class="comparison-col">
+
+            <!-- Base: Top Box -->
+            <div class="panel-card">
+              <div class="panel-header-inline">
+                <div class="header-inline-left">
+                  <span class="status-dot gray"></span>
+                  <h2 class="panel-title">Base</h2>
+                  <span class="ra-status-badge base">Static Baseline</span>
+                </div>
+                <span class="insp-card-label" id="base-defense-indicator" style="font-size: 11px;">Defense: AFP</span>
+              </div>
+              <div class="inspector-grid" style="grid-template-columns: repeat(3, minmax(0, 1fr));">
+                <div class="inspector-card">
+                  <div class="insp-card-label">Static Intensity</div>
+                  <div class="insp-card-value font-mono" id="base-intensity-display">0.00030</div>
+                </div>
+                <div class="inspector-card">
+                  <div class="insp-card-label">Control Policy</div>
+                  <div class="insp-card-value" style="font-size: 11.5px;">Fixed Calibration</div>
+                </div>
+                <div class="inspector-card">
+                  <div class="insp-card-label">Evaluated Flows</div>
+                  <div class="insp-card-value font-mono" id="base-flows-display">50,000</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Base: Detection Feed -->
+            <div class="panel-card">
+              <div class="panel-header-inline">
+                <h2 class="panel-title" style="font-size: 13px;">Detection Feed (Base)</h2>
+                <span class="insp-card-label" style="font-size: 10px;">Static Baseline Telemetry</span>
+              </div>
+              <div class="table-container" style="max-height: 165px; overflow-y: auto;">
+                <table class="data-table" style="font-size: 11.5px;">
+                  <thead>
+                    <tr>
+                      <th style="padding: 6px 8px;">Time</th>
+                      <th style="padding: 6px 8px;">Source IP</th>
+                      <th style="padding: 6px 8px;">Traffic Family</th>
+                      <th style="padding: 6px 8px;">Action</th>
+                      <th style="padding: 6px 8px; text-align: right;">Conf</th>
+                    </tr>
+                  </thead>
+                  <tbody id="base-feed-tbody">
+                    <tr>
+                      <td colspan="5" style="text-align: center; color: var(--text-muted); padding: 18px;">
+                        Loading Base stream...
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Base: [P] [R] [F1] + Recall vs Intensity Chart -->
+            <div class="panel-card">
+              <div class="metrics-and-chart-row">
+                <!-- 3 Vertical Cards: P, R, F1 -->
+                <div class="prf-card-grid">
+                  <div class="prf-mini-card">
+                    <span class="prf-badge blue">P</span>
+                    <span class="prf-val font-mono" id="base-p-val">100.0%</span>
+                    <span class="prf-lbl">Precision</span>
+                  </div>
+                  <div class="prf-mini-card">
+                    <span class="prf-badge green">R</span>
+                    <span class="prf-val font-mono" id="base-r-val">77.8%</span>
+                    <span class="prf-lbl">Recall</span>
+                  </div>
+                  <div class="prf-mini-card">
+                    <span class="prf-badge purple">F1</span>
+                    <span class="prf-val font-mono" id="base-f1-val">87.5%</span>
+                    <span class="prf-lbl">F1-Score</span>
+                  </div>
+                </div>
+
+                <!-- Recall vs Intensity Chart Box -->
+                <div class="column-chart-box">
+                  <div class="column-chart-header">
+                    <span class="column-chart-title">Recall vs. Intensity (Base)</span>
+                    <div class="column-chart-legend">
+                      <span><span class="legend-dot green"></span>Recall</span>
+                      <span><span class="legend-dot slate"></span>Intensity</span>
+                    </div>
+                  </div>
+                  <div class="chart-canvas-container">
+                    <canvas id="baseChart"></canvas>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+
+          <!-- Right Column: Recall Aware Controller -->
+          <div class="comparison-col">
+
+            <!-- Recall Aware Controller: Top Box -->
+            <div class="panel-card">
+              <div class="panel-header-inline">
+                <div class="header-inline-left">
+                  <span class="status-dot cyan"></span>
+                  <h2 class="panel-title">Recall Aware Controller</h2>
+                  <span class="ra-status-badge yellow" id="ra-state-pill">Yellow (Active)</span>
+                </div>
+                <span class="insp-card-label" id="ra-defense-indicator" style="font-size: 11px;">Defense: AFP</span>
+              </div>
+              <div class="inspector-grid" style="grid-template-columns: repeat(3, minmax(0, 1fr));">
+                <div class="inspector-card">
+                  <div class="insp-card-label">Dynamic Intensity</div>
+                  <div class="insp-card-value font-mono" id="ra-intensity-display" style="color: #3b82f6;">0.00003</div>
+                </div>
+                <div class="inspector-card">
+                  <div class="insp-card-label">Evasions Blocked</div>
+                  <div class="insp-card-value font-mono" id="ra-evasions-display" style="color: #10b981;">+2,900</div>
+                </div>
+                <div class="inspector-card">
+                  <div class="insp-card-label">Evaluated Flows</div>
+                  <div class="insp-card-value font-mono" id="ra-flows-display">50,000</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Recall Aware Controller: Detection Feed -->
+            <div class="panel-card">
+              <div class="panel-header-inline">
+                <h2 class="panel-title" style="font-size: 13px;">Detection Feed (Recall-Aware)</h2>
+                <span class="insp-card-label" style="font-size: 10px;">Closed-Loop Feedback Telemetry</span>
+              </div>
+              <div class="table-container" style="max-height: 165px; overflow-y: auto;">
+                <table class="data-table" style="font-size: 11.5px;">
+                  <thead>
+                    <tr>
+                      <th style="padding: 6px 8px;">Time</th>
+                      <th style="padding: 6px 8px;">Source IP</th>
+                      <th style="padding: 6px 8px;">Traffic Family</th>
+                      <th style="padding: 6px 8px;">Action</th>
+                      <th style="padding: 6px 8px; text-align: right;">Conf</th>
+                    </tr>
+                  </thead>
+                  <tbody id="ra-feed-tbody">
+                    <tr>
+                      <td colspan="5" style="text-align: center; color: var(--text-muted); padding: 18px;">
+                        Loading Recall-Aware stream...
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Recall Aware Controller: [P] [R] [F1] + Recall vs Intensity Chart -->
+            <div class="panel-card">
+              <div class="metrics-and-chart-row">
+                <!-- 3 Vertical Cards: P, R, F1 -->
+                <div class="prf-card-grid">
+                  <div class="prf-mini-card">
+                    <span class="prf-badge blue">P</span>
+                    <span class="prf-val font-mono" id="ra-p-val">100.0%</span>
+                    <span class="prf-lbl">Precision</span>
+                  </div>
+                  <div class="prf-mini-card">
+                    <span class="prf-badge green">R</span>
+                    <span class="prf-val font-mono" id="ra-r-val">89.4%</span>
+                    <span class="prf-lbl">Recall</span>
+                  </div>
+                  <div class="prf-mini-card">
+                    <span class="prf-badge purple">F1</span>
+                    <span class="prf-val font-mono" id="ra-f1-val">94.4%</span>
+                    <span class="prf-lbl">F1-Score</span>
+                  </div>
+                </div>
+
+                <!-- Recall vs Intensity Chart Box -->
+                <div class="column-chart-box">
+                  <div class="column-chart-header">
+                    <span class="column-chart-title">Recall vs. Intensity (Recall-Aware)</span>
+                    <div class="column-chart-legend">
+                      <span><span class="legend-dot green"></span>Recall</span>
+                      <span><span class="legend-dot red"></span>Intensity</span>
+                    </div>
+                  </div>
+                  <div class="chart-canvas-container">
+                    <canvas id="raChart"></canvas>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+
+        </div>
+
+        <!-- 3. Wide Container: Cross-Defense Evaluation Matrix -->
+        <div class="panel-card">
+          <div class="panel-header-inline">
+            <div class="header-inline-left">
+              <h2 class="panel-title">Cross-Defense Evaluation Matrix</h2>
+              <span class="telemetry-chip" style="font-size: 10px;">10,000 Batches Reference &amp; Live Stream</span>
+            </div>
+            <span class="insp-card-label" style="font-size: 11px;">All 8 Defense/Mode Arms</span>
+          </div>
+
+          <div class="table-container">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Defense</th>
+                  <th>Mode</th>
+                  <th class="text-right">TP</th>
+                  <th class="text-right">FN</th>
+                  <th class="text-right">FP</th>
+                  <th class="text-right">TN</th>
+                  <th class="text-right">Recall</th>
+                  <th class="text-right">Precision</th>
+                  <th class="text-right">F1</th>
+                  <th class="text-right">FPR</th>
+                  <th>Intensity</th>
+                  <th>State</th>
+                </tr>
+              </thead>
+              <tbody id="matrix-tbody">
+                <tr>
+                  <td colspan="12" style="text-align:center; padding: 20px; color: var(--text-muted);">Loading evaluation matrix...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- 4. Bottom Two Side-by-Side Cards: Operator Summary & Key Takeaways -->
+        <div class="bottom-two-cards-grid">
+
+          <!-- Left Card: Operator Summary -->
+          <div class="panel-card">
+            <div class="panel-header">
+              <h2 class="panel-title">Operator Summary: Base vs. Recall-Aware Comparison &amp; Impact Deltas</h2>
+            </div>
+            <div class="table-container">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Defense</th>
+                    <th class="text-right">Base Recall</th>
+                    <th class="text-right">RA Recall</th>
+                    <th class="text-center">Delta Recall</th>
+                    <th class="text-center">Evasions Prevented</th>
+                    <th>Intensity Shift</th>
+                    <th>State</th>
+                  </tr>
+                </thead>
+                <tbody id="summary-tbody">
+                  <tr>
+                    <td colspan="7" style="text-align:center; padding: 20px; color: var(--text-muted);">Loading comparison summary...</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Right Card: Key Takeaways & Operator Findings -->
+          <div class="panel-card">
+            <div class="panel-header">
+              <h2 class="panel-title">Key Takeaways &amp; Operator Findings</h2>
+            </div>
+            <div id="takeaways-box" style="display: flex; flex-direction: column; gap: 12px; padding: 4px 0;">
+              <div class="takeaway-item">
+                <span class="takeaway-bullet">&#9679;</span>
+                <div><strong>Top Protected Defense:</strong> Feature Squeezing (FS) achieved highest attack recall under Recall-Aware control.</div>
+              </div>
+              <div class="takeaway-item">
+                <span class="takeaway-bullet">&#9679;</span>
+                <div><strong>Total Evasions Prevented:</strong> Additional malicious flows intercepted across active defenses via dynamic feedback.</div>
+              </div>
+              <div class="takeaway-item">
+                <span class="takeaway-bullet">&#9679;</span>
+                <div><strong>False Positive Control:</strong> 0.00% False Positive Rate maintained across all tested defenses.</div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+      </main>
+    </div>
+  </div>
+
+  <script src="/static/results.js?v=3.0"></script>
+</body>
+
+</html>
