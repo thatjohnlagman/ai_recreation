@@ -94,39 +94,32 @@ const STATIC_C1_C7_MATRIX = [
   {"defense": "fs", "mode": "C7", "precision_str": "99.70%", "f1_str": "96.46%", "recall_str": "93.46%", "research_config": "growth_factor=1.10"},
 ];
 
-function toggleLiveBenchmark() {
+async function toggleLiveBenchmark() {
   useLiveBenchmark = !useLiveBenchmark;
   const btns = document.querySelectorAll(".btn-toggle-benchmark");
   btns.forEach(btn => {
     btn.textContent = useLiveBenchmark ? "Stop Live Benchmark" : "Compute Live Benchmark";
     btn.className = useLiveBenchmark ? "btn-action btn-toggle-benchmark" : "btn-subtle btn-toggle-benchmark";
   });
-  // Immediately re-render with the latest choice
-  if (latestResultsData) {
-    renderMatrixTable(latestResultsData);
-    renderSummaryTable(latestResultsData.summary);
-    renderConfigSummaryTable(latestResultsData.matrix);
+  
+  if (useLiveBenchmark) {
+    try {
+      await fetch("/api/dashboard/reset", { method: "POST" });
+      await fetchResults();
+    } catch (e) {
+      console.warn("Reset failed", e);
+    }
+  } else {
+    if (latestResultsData) {
+      renderAll(latestResultsData);
+    }
   }
 }
 
 // Seed sample flows for feeds when table is empty
-const SAMPLE_BASE_FEEDS = [
-  { time: "14:22:10", ip: "192.168.10.45", family: "Botnet Ares", action: "403 Blocked", conf: "98.2%" },
-  { time: "14:21:55", ip: "185.220.101.5", family: "DDoS LOIC-HTTP", action: "403 Blocked", conf: "99.5%" },
-  { time: "14:21:30", ip: "10.0.1.104", family: "Benign Corporate", action: "200 Allowed", conf: "99.9%" },
-  { time: "14:20:58", ip: "194.26.29.112", family: "Brute Force SSH", action: "403 Blocked", conf: "94.8%" },
-  { time: "14:20:12", ip: "198.51.100.89", family: "Infiltration Metasploit", action: "200 Allowed (FN)", conf: "61.2%" },
-  { time: "14:19:40", ip: "10.0.2.215", family: "Benign Internal Web", action: "200 Allowed", conf: "99.8%" }
-];
+const SAMPLE_BASE_FEEDS = [];
 
-const SAMPLE_RA_FEEDS = [
-  { time: "14:22:15", ip: "192.168.10.45", family: "Botnet Ares", action: "403 Blocked", conf: "99.1%" },
-  { time: "14:22:01", ip: "198.51.100.89", family: "Infiltration Metasploit", action: "403 Intercepted", conf: "92.4%" },
-  { time: "14:21:42", ip: "185.220.101.5", family: "DDoS LOIC-HTTP", action: "403 Blocked", conf: "99.8%" },
-  { time: "14:21:18", ip: "10.0.1.104", family: "Benign Corporate", action: "200 Allowed", conf: "99.9%" },
-  { time: "14:20:44", ip: "194.26.29.112", family: "Brute Force SSH", action: "403 Blocked", conf: "97.6%" },
-  { time: "14:20:05", ip: "10.0.3.50", family: "Benign Database Sync", action: "200 Allowed", conf: "100.0%" }
-];
+const SAMPLE_RA_FEEDS = [];
 
 document.addEventListener("DOMContentLoaded", () => {
   initCharts();
@@ -145,7 +138,6 @@ window.addEventListener("themeChanged", () => {
 async function handleSelectDefense(defCode) {
   currentSelectedDefense = (defCode || "afp").toLowerCase();
 
-  // Update tabs active state
   ["afp", "rs", "fs", "none"].forEach(code => {
     const btn = document.getElementById(`btn-def-${code}`);
     if (btn) {
@@ -157,7 +149,6 @@ async function handleSelectDefense(defCode) {
     }
   });
 
-  // Switch defense on server without resetting continuous traffic
   try {
     await fetch("/api/dashboard/set-defense", {
       method: "POST",
@@ -168,11 +159,12 @@ async function handleSelectDefense(defCode) {
     console.warn("Failed to set defense on server:", err);
   }
 
-  // Update side-by-side comparison columns & charts
-  updateComparisonColumns();
-  
-  // Refresh matrix to immediately reflect the new active defense in C1-C7 cards
-  pollEvaluationResults();
+  if (!useLiveBenchmark && latestResultsData) {
+    renderAll(latestResultsData);
+  } else {
+    updateComparisonColumns();
+    pollEvaluationResults();
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -360,22 +352,32 @@ function renderAll(data) {
 }
 
 function updateComparisonColumns() {
-  if (!latestResultsData || !latestResultsData.matrix) return;
-
   const defKey = currentSelectedDefense;
   const defUpper = defKey.toUpperCase();
+  
+  let matrixToUse = [];
+  let summaryToUse = [];
+  
+  if (!useLiveBenchmark) {
+    matrixToUse = STATIC_C1_C7_MATRIX;
+    summaryToUse = STATIC_BENCHMARK_SUMMARY;
+  } else {
+    matrixToUse = (latestResultsData && latestResultsData.matrix) ? latestResultsData.matrix : [];
+    summaryToUse = (latestResultsData && latestResultsData.summary) ? latestResultsData.summary : [];
+  }
 
   // Find Base arm and Recall-Aware arm for the selected defense
-  const baseArm = latestResultsData.matrix.find(m => m.defense.toLowerCase() === defKey && m.mode.toLowerCase() === "base") || {
-    recall_str: "77.80%", precision_str: "100.00%", f1_str: "87.51%", intensity: "0.00030", tp: 19450, fn: 5550
+  const baseArm = matrixToUse.find(m => m.defense.toLowerCase() === defKey && m.mode.toLowerCase() === "base") || {
+    recall_str: "77.80%", precision_str: "100.00%", f1_str: "87.51%", intensity: "-", tp: 0, fn: 0
   };
 
-  const raArm = latestResultsData.matrix.find(m => m.defense.toLowerCase() === defKey && m.mode.toLowerCase() === "recall-aware") || {
-    recall_str: "89.40%", precision_str: "100.00%", f1_str: "94.40%", intensity: "0.00003", state: "Yellow", tp: 22350, fn: 2650
+  const raModeToSearch = useLiveBenchmark ? "recall-aware" : "c1";
+  const raArm = matrixToUse.find(m => m.defense.toLowerCase() === defKey && m.mode.toLowerCase() === raModeToSearch) || {
+    recall_str: "89.40%", precision_str: "100.00%", f1_str: "94.40%", intensity: "-", state: "-", tp: 0, fn: 0
   };
 
-  const summaryItem = (latestResultsData.summary || []).find(s => s.defense.toLowerCase() === defKey) || {
-    evasions_prevented: "+2,900 blocked", controller_state: "Yellow (Active)"
+  const summaryItem = summaryToUse.find(s => s.defense.toLowerCase() === defKey) || {
+    evasions_prevented: "-", controller_state: "N/A"
   };
 
   // Base Column DOM elements
@@ -701,23 +703,6 @@ function renderMatrixTable(data) {
       const stateClass = (arm.state || "").toLowerCase();
       html += `
         <div style="width: 100%; text-align: center; font-weight: 800; font-size: 11px; margin-top: 4px; color: var(--text-primary);">${escapeHtml(arm.defense).toUpperCase()}</div>
-        
-        <table style="width: 100%; font-size: 10px; margin-top: auto; border-collapse: collapse;">
-          <tbody>
-            <tr>
-              <td style="padding: 2px 0; color: var(--text-secondary);">Precision</td>
-              <td style="padding: 2px 0; text-align: right; font-weight: 700; font-family: var(--font-mono, monospace); color: #3b82f6;">${arm.precision_str}</td>
-            </tr>
-            <tr>
-              <td style="padding: 2px 0; color: var(--text-secondary);">F1 Score</td>
-              <td style="padding: 2px 0; text-align: right; font-weight: 700; font-family: var(--font-mono, monospace); color: #8b5cf6;">${arm.f1_str}</td>
-            </tr>
-            <tr>
-              <td style="padding: 2px 0; color: var(--text-secondary);">Recall</td>
-              <td style="padding: 2px 0; text-align: right; font-weight: 700; font-family: var(--font-mono, monospace); color: #10b981;">${arm.recall_str}</td>
-            </tr>
-          </tbody>
-        </table>
       `;
     } else {
       html += `<div style="text-align:center; padding: 20px 0; color:var(--text-muted); font-size:10px;">No data</div>`;
@@ -808,23 +793,35 @@ function renderConfigSummaryTable(matrix) {
   const currentDef = window.currentSelectedDefense || "afp";
 
   const baseArm = matrix.find(m => m.mode.toLowerCase() === "base" && m.defense.toLowerCase() === currentDef) || { recall: 0, f1: 0, precision: 0 };
-  const baseRecStr = baseArm.recall ? (baseArm.recall * 100).toFixed(2) + "%" : "0.00%";
-  const baseF1Str = baseArm.f1 ? (baseArm.f1 * 100).toFixed(2) + "%" : "0.00%";
-  const basePrecStr = baseArm.precision ? (baseArm.precision * 100).toFixed(2) + "%" : "0.00%";
   
-  const baseRec = baseArm.recall || 0;
-  const baseF1 = baseArm.f1 || 0;
-  const basePrec = baseArm.precision || 0;
+  const getVal = (arm, key) => {
+    if (arm[key] != null) return arm[key];
+    const s = arm[key + "_str"];
+    if (!s) return 0;
+    return parseFloat(s.replace('%', '').replace(' pp', '')) / 100;
+  };
 
+  const baseRec = getVal(baseArm, "recall");
+  const baseF1 = getVal(baseArm, "f1");
+  const basePrec = getVal(baseArm, "precision");
+
+  const baseRecStr = baseArm.recall_str || (baseRec * 100).toFixed(2) + "%";
+  const baseF1Str = baseArm.f1_str || (baseF1 * 100).toFixed(2) + "%";
+  const basePrecStr = baseArm.precision_str || (basePrec * 100).toFixed(2) + "%";
+  
   let html = "";
 
   modes.forEach(mode => {
     const arm = matrix.find(m => m.mode.toUpperCase() === mode.toUpperCase() && m.defense.toLowerCase() === currentDef);
     if (!arm) return;
 
-    const diffRec = ((arm.recall || 0) - baseRec) * 100;
-    const diffF1 = ((arm.f1 || 0) - baseF1) * 100;
-    const diffPrec = ((arm.precision || 0) - basePrec) * 100;
+    const armRec = getVal(arm, "recall");
+    const armF1 = getVal(arm, "f1");
+    const armPrec = getVal(arm, "precision");
+
+    const diffRec = (armRec - baseRec) * 100;
+    const diffF1 = (armF1 - baseF1) * 100;
+    const diffPrec = (armPrec - basePrec) * 100;
 
     const deltaRecClass = diffRec > 0 ? "positive" : (diffRec < 0 ? "negative" : "neutral");
     const deltaF1Class = diffF1 > 0 ? "positive" : (diffF1 < 0 ? "negative" : "neutral");
@@ -836,13 +833,17 @@ function renderConfigSummaryTable(matrix) {
     else if (stUpper.includes("RECOVERY") || stUpper.includes("RED")) stateClass = "red";
     else if (stUpper.includes("BYPASS")) stateClass = "bypassed";
 
+    const armRecStr = arm.recall_str || (armRec * 100).toFixed(2) + "%";
+    const armF1Str = arm.f1_str || (armF1 * 100).toFixed(2) + "%";
+    const armPrecStr = arm.precision_str || (armPrec * 100).toFixed(2) + "%";
+
     html += `
       <tr>
         <td style="font-weight: 700; font-size: 13px;">${mode}</td>
         <td style="text-align: center; font-family: var(--font-mono, monospace); font-size: 11px;">
-           <span style="color: #3b82f6; font-weight: 700;">${arm.precision_str}</span> / 
-           <span style="color: #8b5cf6; font-weight: 700;">${arm.f1_str}</span> / 
-           <span style="color: #10b981; font-weight: 700;">${arm.recall_str}</span>
+           <span style="color: #3b82f6; font-weight: 700;">${armPrecStr}</span> / 
+           <span style="color: #8b5cf6; font-weight: 700;">${armF1Str}</span> / 
+           <span style="color: #10b981; font-weight: 700;">${armRecStr}</span>
         </td>
         <td style="text-align: center; font-family: var(--font-mono, monospace); font-size: 11px;">
            <span style="color: #3b82f6;">${basePrecStr}</span> / 
@@ -862,6 +863,7 @@ function renderConfigSummaryTable(matrix) {
 }
 
 function renderTakeaways(takeaways) {
+  if (!useLiveBenchmark) return;
   const box = document.getElementById("takeaways-box");
   if (!box || !takeaways || takeaways.length === 0) return;
 
