@@ -373,110 +373,7 @@ const REFERENCE_TIMELINES = {
   }
 };
 
-const BASELINE_EVASIONS = {
-  afp: 2900,
-  rs: 3350,
-  fs: 812,
-  none: 0
-};
 
-let latestEvaluationResults = null;
-
-function updateResultsPreview(evaluationResults, defKey) {
-  if (!evaluationResults) return;
-  latestEvaluationResults = evaluationResults;
-
-  const key = (defKey || currentDefenseName || "afp").toLowerCase();
-
-  const baseArm = (evaluationResults.matrix || []).find(m => m.defense.toLowerCase() === key && m.mode.toLowerCase() === "base") || {
-    recall_str: "77.80%", precision_str: "100.00%", f1_str: "87.51%", intensity: "0.00030", evaluated_flows: 50000
-  };
-
-  const raArm = (evaluationResults.matrix || []).find(m => m.defense.toLowerCase() === key && m.mode.toLowerCase() === "recall-aware") || {
-    recall_str: "89.40%", precision_str: "100.00%", f1_str: "94.40%", intensity: "0.00003", state: "STABLE", evaluated_flows: 50000
-  };
-
-  const summaryItem = (evaluationResults.summary || []).find(s => s.defense.toLowerCase() === key) || {
-    evasions_prevented: "+2,900 blocked", controller_state: "STABLE"
-  };
-
-  // Base card updates
-  const baseInt = document.getElementById("dash-base-intensity");
-  if (baseInt) baseInt.textContent = baseArm.intensity || "0.00030";
-
-  // Live Evaluated flows: negate the 50,000 pre-completed evaluations so we track the live report
-  const baseFlows = document.getElementById("dash-base-flows");
-  if (baseFlows) {
-    const rawFlows = baseArm.evaluated_flows != null ? baseArm.evaluated_flows : 50000;
-    const liveFlows = Math.max(0, rawFlows - 50000);
-    baseFlows.textContent = Number(liveFlows).toLocaleString();
-  }
-
-  const baseP = document.getElementById("dash-base-p");
-  if (baseP) baseP.textContent = baseArm.precision_str || "100.0%";
-
-  const baseR = document.getElementById("dash-base-r");
-  if (baseR) baseR.textContent = baseArm.recall_str || "77.8%";
-
-  const baseF1 = document.getElementById("dash-base-f1");
-  if (baseF1) baseF1.textContent = baseArm.f1_str || "87.5%";
-
-  // Recall-Aware card updates
-  const raInt = document.getElementById("dash-ra-intensity");
-  if (raInt) raInt.textContent = raArm.intensity || "0.00003";
-
-  // Live Evasions Blocked: negate pre-completed evaluations so we track live session report
-  const raEv = document.getElementById("dash-ra-evasions");
-  if (raEv) {
-    const baseEv = BASELINE_EVASIONS[key] || 0;
-    const rawEvNum = summaryItem.evasions_prevented_num != null
-      ? summaryItem.evasions_prevented_num
-      : parseInt(String(summaryItem.evasions_prevented || "0").replace(/[^0-9]/g, "")) || 0;
-    const liveEv = Math.max(0, rawEvNum - baseEv);
-    raEv.textContent = liveEv > 0 ? `+${liveEv} blocked` : "0 blocked";
-  }
-
-  // Controller State: Remove colors and display ACTIVE / RECOVERY / STABLE
-  const raState = document.getElementById("dash-ra-state");
-  if (raState) {
-    const rawState = (summaryItem.controller_state || raArm.state || "Stable").toUpperCase();
-    let displayState = "STABLE";
-    let stateClass = "green";
-    if (rawState.includes("ACTIVE") || rawState.includes("YELLOW")) {
-      displayState = "ACTIVE";
-      stateClass = "yellow";
-    } else if (rawState.includes("RECOVERY") || rawState.includes("RED")) {
-      displayState = "RECOVERY";
-      stateClass = "red";
-    } else if (rawState.includes("BYPASS")) {
-      displayState = "BYPASSED";
-      stateClass = "base";
-    } else {
-      displayState = "STABLE";
-      stateClass = "green";
-    }
-    raState.textContent = displayState;
-    raState.className = `ra-status-badge ${stateClass}`;
-  }
-
-  const raP = document.getElementById("dash-ra-p");
-  if (raP) raP.textContent = raArm.precision_str || "100.0%";
-
-  const raR = document.getElementById("dash-ra-r");
-  if (raR) raR.textContent = raArm.recall_str || "89.4%";
-
-  const raF1 = document.getElementById("dash-ra-f1");
-  if (raF1) raF1.textContent = raArm.f1_str || "94.4%";
-
-  // Highlight active mode card
-  const baseCard = document.getElementById("card-mode-base");
-  const raCard = document.getElementById("card-mode-recall-aware");
-  if (baseCard && raCard) {
-    const isRA = (currentDefenseMode !== "Base");
-    raCard.classList.toggle("active", isRA);
-    baseCard.classList.toggle("active", !isRA);
-  }
-}
 
 function updateChart(history, defenseName) {
   if (!recallChart) return;
@@ -542,12 +439,12 @@ function updateAfpPanel(afp) {
   }
   const defName = currentDefenseName;
   const modeName = (afp.mode === "recall-aware") ? "RA" : "Base";
-  const stateName = afp.controller_state || (afp.enabled ? "STABLE" : "Bypassed");
+  const stateName = afp.controller_state || (afp.enabled ? (afp.mode === "recall-aware" ? "STABLE" : "Base") : "Bypassed");
 
   // Header Badge & Top Status Pill
   const headerBadge = document.getElementById("afp-header-badge");
   if (headerBadge) {
-    headerBadge.textContent = afp.enabled ? `${defName} Active` : "IDS Only";
+    headerBadge.textContent = afp.enabled ? `${defName} Active` : "Bypassed";
     headerBadge.className = `badge-status-pill ${afp.enabled ? "green" : "red"}`;
   }
 
@@ -559,19 +456,14 @@ function updateAfpPanel(afp) {
     afpStatusDot.className = `status-dot ${afp.enabled ? "cyan" : "red"}`;
   }
 
-  // Panel Title - Always "Live Statistics" as requested
+  // Panel Title
   const panelTitle = document.getElementById("defense-panel-title");
   if (panelTitle) {
-    panelTitle.textContent = "Live Statistics";
-  }
-
-  // Active Mode Cards in Results Preview Window
-  const baseCard = document.getElementById("card-mode-base");
-  const raCard = document.getElementById("card-mode-recall-aware");
-  if (baseCard && raCard) {
-    const isRA = (afp.mode === "recall-aware");
-    raCard.classList.toggle("active", isRA);
-    baseCard.classList.toggle("active", !isRA);
+    if (!afp.enabled || afp.defense_name === "none") {
+      panelTitle.textContent = "IDS (No Defense)";
+    } else {
+      panelTitle.textContent = `${afp.mode === "recall-aware" ? "Recall-Aware" : "Base"} ${defName}`;
+    }
   }
 
   // Active Buttons in Pill / Segment Groups
@@ -585,31 +477,36 @@ function updateAfpPanel(afp) {
     btn.classList.toggle("active", btn.dataset.mode === (afp.mode || "recall-aware"));
   });
 
-  // Controller State Pill
+  // Controller State Pill: RECOVERY (RR: 0.800), ACTIVE (RR: 0.900), STABLE (RR: 1.000)
   const statePill = document.getElementById("controller-state-pill");
   if (statePill) {
-    const stUpper = stateName.toUpperCase();
-    let text = "STABLE";
-    let stateClass = "green";
-    if (stUpper.includes("ACTIVE") || stUpper.includes("YELLOW")) {
-      text = "ACTIVE";
-      stateClass = "yellow";
-    } else if (stUpper.includes("RECOVERY") || stUpper.includes("RED")) {
-      text = "RECOVERY";
-      stateClass = "red";
-    } else if (stUpper.includes("BYPASS")) {
-      text = "BYPASSED";
-      stateClass = "base";
+    const rawUpper = (stateName || "").toUpperCase();
+    let label = "STABLE";
+    let colorClass = "green";
+
+    if (rawUpper.includes("RECOVERY") || rawUpper.includes("RED")) {
+      label = "RECOVERY";
+      colorClass = "red";
+    } else if (rawUpper.includes("ACTIVE") || rawUpper.includes("YELLOW")) {
+      label = "ACTIVE";
+      colorClass = "yellow";
+    } else if (rawUpper.includes("BYPASS")) {
+      label = "BYPASSED";
+      colorClass = "bypassed";
+    } else if (rawUpper.includes("BASE")) {
+      label = "BASE";
+      colorClass = "base";
     } else {
-      text = "STABLE";
-      stateClass = "green";
+      label = "STABLE";
+      colorClass = "green";
     }
 
+    let text = label;
     if (afp.mode === 'recall-aware' && afp.rolling_recall !== undefined && afp.rolling_recall !== null) {
       text += ` (RR: ${Number(afp.rolling_recall).toFixed(3)})`;
     }
     statePill.textContent = text;
-    statePill.className = `ra-status-badge ${stateClass}`;
+    statePill.className = `ra-status-badge ${colorClass} ${label.toLowerCase()}`;
   }
 
   // Circular Gauge Stroke & Values (Truthful zero and unavailable handling)
@@ -632,14 +529,14 @@ function updateAfpPanel(afp) {
     const gaugeVal = Number(afp.rolling_recall);
     const totalCircumference = 264;
     const offset = totalCircumference * (1.0 - Math.min(1.0, Math.max(0, gaugeVal)));
-
+    
     if (gaugeCircle) gaugeCircle.style.strokeDashoffset = offset;
     if (gaugeText) gaugeText.textContent = gaugeVal.toFixed(3);
-
+    
     if (gaugePill) {
       let healthText = "STABLE";
       let healthClass = "green";
-
+      
       if (gaugeVal < 0.85) {
         healthText = "RECOVERY";
         healthClass = "alert";
@@ -647,11 +544,11 @@ function updateAfpPanel(afp) {
         healthText = "ACTIVE";
         healthClass = "yellow";
       }
-
+      
       gaugePill.textContent = healthText;
       gaugePill.className = `gauge-badge-pill ${healthClass}`;
     }
-
+    
     if (gaugeContext) {
       gaugeContext.textContent = `Last ${afp.window_batch_count} completed attack batches`;
     }
@@ -1073,10 +970,6 @@ function syncDashboard(payload) {
     updateAfpPanel(payload.afp);
   }
 
-  // 2b. Results Preview Window (Live Statistics Comparison)
-  if (payload.evaluation_results) {
-    updateResultsPreview(payload.evaluation_results, payload.afp ? payload.afp.defense_name : currentDefenseName);
-  }
 
   // 3. Threat Map
   if (payload.threat_locations) {
@@ -1239,10 +1132,6 @@ async function handleSetDefense(defName) {
     if (res && res.ok) {
       btns.forEach(b => b.classList.toggle("active", b.dataset.defense === defName));
       currentDefenseName = defName.toUpperCase();
-      // Update Results preview window immediately for selected defense
-      if (latestEvaluationResults) {
-        updateResultsPreview(latestEvaluationResults, defName);
-      }
       // Re-scale and update recall chart immediately for selected defense
       updateChart(null, defName);
     }
@@ -1262,11 +1151,6 @@ async function handleSetMode(modeName) {
     if (res && res.ok) {
       btns.forEach(b => b.classList.toggle("active", b.dataset.mode === modeName));
       currentDefenseMode = (modeName === "recall-aware") ? "Recall-Aware" : "Base";
-      const isRA = (modeName === "recall-aware");
-      const baseCard = document.getElementById("card-mode-base");
-      const raCard = document.getElementById("card-mode-recall-aware");
-      if (baseCard) baseCard.classList.toggle("active", !isRA);
-      if (raCard) raCard.classList.toggle("active", isRA);
     }
   } catch (err) {
     console.error("Error setting mode:", err);

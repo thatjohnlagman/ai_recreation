@@ -365,9 +365,21 @@ function updateComparisonColumns() {
 
   const raStatePill = document.getElementById("ra-state-pill");
   if (raStatePill) {
-    const stateStr = raArm.state || "Yellow";
-    raStatePill.textContent = summaryItem.controller_state || stateStr;
-    raStatePill.className = `state-pill ${stateStr.toLowerCase()}`;
+    const rawUpper = (summaryItem.controller_state || raArm.state || "STABLE").toUpperCase();
+    let text = "STABLE";
+    let colorClass = "green";
+    if (rawUpper.includes("ACTIVE") || rawUpper.includes("YELLOW")) {
+      text = "ACTIVE";
+      colorClass = "yellow";
+    } else if (rawUpper.includes("RECOVERY") || rawUpper.includes("RED")) {
+      text = "RECOVERY";
+      colorClass = "red";
+    } else if (rawUpper.includes("BYPASS")) {
+      text = "BYPASSED";
+      colorClass = "bypassed";
+    }
+    raStatePill.textContent = summaryItem.controller_state || text;
+    raStatePill.className = `ra-status-badge ${colorClass} ${text.toLowerCase()}`;
   }
 
   const raPEl = document.getElementById("ra-p-val");
@@ -668,9 +680,11 @@ function renderSummaryTable(summary) {
     const evClass = evIsPositive ? "positive" : (row.evasions_prevented_num < 0 ? "negative" : "neutral");
 
     let stateClass = "green";
-    if (row.controller_state.includes("Yellow")) stateClass = "yellow";
-    else if (row.controller_state.includes("Red")) stateClass = "red";
-    else if (row.controller_state.includes("Bypassed")) stateClass = "bypassed";
+    const stUpper = (row.controller_state || "").toUpperCase();
+    if (stUpper.includes("ACTIVE") || stUpper.includes("YELLOW")) stateClass = "yellow";
+    else if (stUpper.includes("RECOVERY") || stUpper.includes("RED")) stateClass = "red";
+    else if (stUpper.includes("BYPASS")) stateClass = "bypassed";
+    else stateClass = "green";
 
     const isCurrent = row.defense.toLowerCase() === currentSelectedDefense;
     const rowHighlight = isCurrent ? "background: rgba(59, 130, 246, 0.05);" : "";

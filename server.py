@@ -411,6 +411,7 @@ class SecurityEngine:
             self.batch_id = 0
             self.batch_tp = 0
             self.batch_fn = 0
+            self.controller_state = "STABLE" if self.controller_mode == "recall-aware" else "Base"
             if self.controller_mode == "recall-aware":
                 decision = self.controller.get_intensity(self.batch_id)
                 self.current_intensity = decision.intensity
@@ -510,9 +511,11 @@ class SecurityEngine:
         old_state_dict = {
             "batch_tp": self.batch_tp,
             "batch_fn": self.batch_fn,
-            "batch_size": getattr(self, "batch_size", 50),
+            "batch_size": getattr(self, "batch_size", 5),
             "recall": self.recall,
-            "controller_state": str(self.controller_state) if self.controller_state else "None"
+            "rolling_recall": float(self.controller.current_recall) if self.controller and getattr(self.controller, 'current_recall', None) is not None else None,
+            "controller_state": str(self.controller_state) if self.controller_state else "None",
+            "color": str(self.controller_state) if self.controller_state else "None"
         }
         
         if ground_truth is not None:
@@ -596,11 +599,8 @@ class SecurityEngine:
                 ra_arm["precision"] = round((ra_arm["tp"] / (ra_arm["tp"] + ra_arm["fp"])), 4) if (ra_arm["tp"] + ra_arm["fp"]) > 0 else 0.0
                 ra_arm["f1"] = round((2 * ra_arm["precision"] * ra_arm["recall"] / (ra_arm["precision"] + ra_arm["recall"])), 4) if (ra_arm["precision"] + ra_arm["recall"]) > 0 else 0.0
                 ra_arm["fpr"] = round((ra_arm["fp"] / neg_ra), 4) if neg_ra > 0 else 0.0
-            ra_arm["intensity"] = float(self.current_intensity)
-            ra_arm["intensity_formatted"] = self.format_defense_intensity(def_k, self.current_intensity)
-            ra_arm["state"] = self.controller_state
 
-            # Batch-level Controller Update (Atomically advances when batch completes)
+            # Batch-level Controller Update (Atomically advances when batch completes 5 attacks)
             if self.active_defense_name != "none" and self.controller is not None:
                 if self.controller_mode == "recall-aware":
                     # Evaluate when batch accumulates batch_size attack decisions
@@ -619,6 +619,10 @@ class SecurityEngine:
                         except Exception as e:
                             print(f"[Engine] Controller update error: {e}")
 
+            ra_arm["intensity"] = float(self.current_intensity)
+            ra_arm["intensity_formatted"] = self.format_defense_intensity(def_k, self.current_intensity)
+            ra_arm["state"] = self.controller_state
+
         # Update timeline history
         now_str = datetime.now().strftime("%H:%M:%S")
         self.history_labels.append(now_str)
@@ -635,9 +639,11 @@ class SecurityEngine:
         new_state_dict = {
             "batch_tp": self.batch_tp,
             "batch_fn": self.batch_fn,
-            "batch_size": getattr(self, "batch_size", 50),
+            "batch_size": getattr(self, "batch_size", 5),
             "recall": self.recall,
-            "controller_state": str(self.controller_state) if self.controller_state else "None"
+            "rolling_recall": float(self.controller.current_recall) if self.controller and getattr(self.controller, 'current_recall', None) is not None else None,
+            "controller_state": str(self.controller_state) if self.controller_state else "None",
+            "color": str(self.controller_state) if self.controller_state else "None"
         }
         return triggered, old_state_dict, new_state_dict
 
@@ -1309,8 +1315,8 @@ async def protected_server_handler(req: ServerRequestModel):
             "confidence_type": conf_type,
             "next_intensity": float(engine.current_intensity),
             "controller_rolling_recall": float(engine.controller.current_recall) if engine.controller and getattr(engine.controller, 'current_recall', None) is not None else None,
-            "controller_state_before": str(old_state.get('color', 'Base')) if old_state else "Base",
-            "controller_state_after": str(new_state.get('color', 'Base')) if new_state else "Base",
+            "controller_state_before": str(old_state.get('controller_state', old_state.get('color', 'Base'))) if old_state else "Base",
+            "controller_state_after": str(new_state.get('controller_state', new_state.get('color', 'Base'))) if new_state else "Base",
             "controller_batch_id": engine.batch_id
         })
 

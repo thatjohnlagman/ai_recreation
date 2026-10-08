@@ -123,19 +123,22 @@
       background: currentColor;
     }
 
-    .ra-status-badge.green {
+    .ra-status-badge.green,
+    .ra-status-badge.stable {
       background: rgba(16, 185, 129, 0.18);
       color: #10b981;
       border: 1px solid rgba(16, 185, 129, 0.4);
     }
 
-    .ra-status-badge.yellow {
+    .ra-status-badge.yellow,
+    .ra-status-badge.active {
       background: rgba(245, 158, 11, 0.18);
       color: #f59e0b;
       border: 1px solid rgba(245, 158, 11, 0.4);
     }
 
-    .ra-status-badge.red {
+    .ra-status-badge.red,
+    .ra-status-badge.recovery {
       background: rgba(239, 68, 68, 0.18);
       color: #ef4444;
       border: 1px solid rgba(239, 68, 68, 0.4);
@@ -482,140 +485,115 @@
         <!-- Right Insights Column -->
         <aside class="insights-column">
 
-          <!-- Card 1: Live Statistics Panel -->
+          <!-- Card 1: Adaptive Perturbation Defense Control Panel -->
           <div class="panel-card afp-control-card">
             <div class="panel-header-inline">
               <div class="header-inline-left">
                 <svg class="gear-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <circle cx="12" cy="12" r="3" />
-                  <path
-                    d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                  <circle cx="12" cy="12" r="3"/>
+                  <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
                 </svg>
-                <h2 class="panel-title" id="defense-panel-title">Live Statistics</h2>
+                <h2 class="panel-title" id="defense-panel-title">Defense Panel</h2>
               </div>
-              <span class="badge-status-pill green" id="afp-header-badge">AFP Active</span>
+              <span class="badge-status-pill green" id="afp-header-badge">Active</span>
             </div>
-
+            
             <!-- Operator Authorization Notification (Shown only on real 401 error) -->
-            <div id="operator-auth-alert-banner"
-              style="display:none; margin: 8px 0; padding: 8px 12px; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 8px; color: #f87171; font-size: 11px; line-height: 1.4;">
-              <strong>Operator Session Required:</strong> Please reopen dashboard via
-              <code>python launch_dashboard.py</code> to control defense settings.
+            <div id="operator-auth-alert-banner" style="display:none; margin: 8px 0; padding: 8px 12px; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 8px; color: #f87171; font-size: 11px; line-height: 1.4;">
+              <strong>Operator Session Required:</strong> Please reopen dashboard via <code>python launch_dashboard.py</code> to control defense settings.
             </div>
 
-            <!-- Defense Controls Container -->
-            <div class="defense-controls-container" style="margin-bottom: 12px;">
-              <!-- Defense Selector Row with Reset -->
-              <div class="control-row" style="display: flex; justify-content: space-between; align-items: center;">
-                <div style="display: flex; align-items: center; gap: 8px;">
-                  <span class="control-label" style="font-weight: 700; font-size: 11px;">DEFENSE:</span>
-                  <div class="segmented-control" id="defense-selector-group">
-                    <button type="button" class="segment-btn active" data-defense="afp"
-                      onclick="handleSetDefense('afp')">AFP</button>
-                    <button type="button" class="segment-btn" data-defense="rs"
-                      onclick="handleSetDefense('rs')">RS</button>
-                    <button type="button" class="segment-btn" data-defense="fs"
-                      onclick="handleSetDefense('fs')">FS</button>
-                    <button type="button" class="segment-btn" data-defense="none"
-                      onclick="handleSetDefense('none')">None</button>
-                  </div>
+            <!-- Defense & Mode Controls Container -->
+            <div class="defense-controls-container">
+              <!-- Defense Selector Row -->
+              <div class="control-row">
+                <span class="control-label">Defense:</span>
+                <div class="segmented-control" id="defense-selector-group">
+                  <button type="button" class="segment-btn active" data-defense="afp" onclick="handleSetDefense('afp')">AFP</button>
+                  <button type="button" class="segment-btn" data-defense="rs" onclick="handleSetDefense('rs')">RS</button>
+                  <button type="button" class="segment-btn" data-defense="fs" onclick="handleSetDefense('fs')">FS</button>
+                  <button type="button" class="segment-btn" data-defense="none" onclick="handleSetDefense('none')">None</button>
                 </div>
-                <button type="button" class="segment-btn" id="reset-metrics-btn" onclick="handleReset()"
-                  style="font-size: 11px; padding: 4px 10px;"
-                  title="Reset baseline counters and controller state">Reset</button>
+              </div>
+
+              <!-- Mode Selector Row -->
+              <div class="control-row">
+                <span class="control-label">Mode:</span>
+                <div class="mode-state-wrapper">
+                  <div class="segmented-control" id="mode-selector-group">
+                    <button type="button" class="segment-btn active" data-mode="recall-aware" onclick="handleSetMode('recall-aware')">Recall-Aware</button>
+                    <button type="button" class="segment-btn" data-mode="base" onclick="handleSetMode('base')">Base</button>
+                  </div>
+                  <span class="ra-status-badge green" id="controller-state-pill" title="Recall-Aware Controller State">STABLE</span>
+                  <button type="button" class="segment-btn" id="reset-metrics-btn" onclick="handleReset()" style="margin-left: 8px; font-size: 11px; padding: 4px 10px;" title="Reset baseline counters and controller state">Reset</button>
+                </div>
               </div>
             </div>
 
-            <!-- Live Trackers: Donut Gauge + Intensity Bar -->
             <div class="afp-metrics-row">
-
-              <!-- Attack Recall Tracker: Circular Donut Gauge -->
+              
+              <!-- Circular Donut Gauge -->
               <div class="gauge-wrapper">
                 <div class="circular-gauge">
                   <svg viewBox="0 0 100 100" class="gauge-svg">
-                    <circle class="gauge-bg" cx="50" cy="50" r="42" />
-                    <circle class="gauge-val" id="gauge-circle-bar" cx="50" cy="50" r="42" />
+                    <circle class="gauge-bg" cx="50" cy="50" r="42"/>
+                    <circle class="gauge-val" id="gauge-circle-bar" cx="50" cy="50" r="42"/>
                   </svg>
                   <div class="gauge-inner-text">
                     <span class="gauge-number" id="gauge-recall-val">—</span>
-                    <span class="gauge-sub"
-                      style="font-size: 0.7rem; text-align: center; line-height: 1.1;">Controller<br>Rolling
-                      Recall</span>
+                    <span class="gauge-sub" style="font-size: 0.7rem; text-align: center; line-height: 1.1;">Controller<br>Rolling Recall</span>
                   </div>
                 </div>
                 <div class="gauge-badge-pill" id="gauge-health-pill">Awaiting Data</div>
-                <div class="gauge-window-context" id="gauge-window-context"
-                  style="font-size: 0.75rem; color: var(--text-secondary); text-align: center; margin-top: 5px;"></div>
+                <div class="gauge-window-context" id="gauge-window-context" style="font-size: 0.75rem; color: var(--text-secondary); text-align: center; margin-top: 5px;"></div>
               </div>
 
-              <!-- Intensity (Symbol) Tracker -->
-              <div class="afp-controls-details" style="flex: 1; min-width: 0;">
+              <!-- Intensity & Bounds Details -->
+              <div class="afp-controls-details">
                 <div class="afp-intensity-box">
                   <div class="intensity-label-row">
-                    <span class="param-label" id="afp-param-name">AFP Intensity (ε)</span>
-                    <span class="param-value font-mono" id="afp-intensity-val">0.0003</span>
+                    <span class="param-label" id="afp-param-name">AFP Intensity</span>
+                    <span class="param-value" id="afp-intensity-val">0.0003</span>
                   </div>
                   <div class="intensity-bar-container">
                     <div class="intensity-bar-fill" id="afp-bar-fill" style="width: 100%;"></div>
                   </div>
                   <div class="intensity-range-labels">
-                    <span id="bar-min-label">0.0000</span>
+                    <span id="bar-min-label">0.0</span>
                     <span id="bar-max-label">0.0003</span>
                   </div>
                 </div>
-              </div>
 
-            </div>
-
-            <!-- Small Window: Results Tab Comparison Output -->
-            <div class="results-preview-window" style="margin-top: 14px;">
-              <!-- Base Mode Card -->
-              <div class="mini-mode-card" id="card-mode-base" onclick="handleSetMode('base')" title="Activate Base Mode">
-                <div class="mini-card-header">
-                  <div class="mini-card-title-left">
-                    <span class="status-dot gray"></span>
-                    <span class="mini-mode-name">Base</span>
+                <div class="bounds-and-thresholds-grid">
+                  <div class="sub-card">
+                    <span class="sub-card-title">Intensity Bounds</span>
+                    <div class="sub-card-row">
+                      <span class="sub-label">Min</span>
+                      <span class="sub-val" id="afp-min-bound-val">0.0000</span>
+                    </div>
+                    <div class="sub-card-row">
+                      <span class="sub-label">Max</span>
+                      <span class="sub-val" id="afp-max-bound-val">0.0003</span>
+                    </div>
                   </div>
-                  <span class="mini-mode-tag base">Static</span>
+
+                  <div class="sub-card">
+                    <span class="sub-card-title">Current Thresholds</span>
+                    <div class="sub-card-row">
+                      <span class="dot-icon orange"></span>
+                      <span class="sub-label">Warning</span>
+                      <span class="sub-val">0.85</span>
+                    </div>
+                    <div class="sub-card-row">
+                      <span class="dot-icon red"></span>
+                      <span class="sub-label">Critical</span>
+                      <span class="sub-val">0.95</span>
+                    </div>
+                  </div>
                 </div>
-                <div class="mini-stat-row">
-                  <span class="mini-stat-label">Static Int.</span>
-                  <span class="mini-stat-val font-mono" id="dash-base-intensity">0.00030</span>
-                </div>
-                <div class="mini-stat-row">
-                  <span class="mini-stat-label">Evaluated</span>
-                  <span class="mini-stat-val font-mono" id="dash-base-flows">0</span>
-                </div>
-                <div class="mini-prf-row">
-                  <span class="mini-prf-item"><strong class="blue">P</strong> <span id="dash-base-p" class="font-mono">100.0%</span></span>
-                  <span class="mini-prf-item"><strong class="green">R</strong> <span id="dash-base-r" class="font-mono">77.8%</span></span>
-                  <span class="mini-prf-item"><strong class="purple">F1</strong> <span id="dash-base-f1" class="font-mono">87.5%</span></span>
-                </div>
+
               </div>
 
-              <!-- Recall-Aware Mode Card -->
-              <div class="mini-mode-card active" id="card-mode-recall-aware" onclick="handleSetMode('recall-aware')" title="Activate Recall-Aware Mode">
-                <div class="mini-card-header">
-                  <div class="mini-card-title-left">
-                    <span class="status-dot cyan"></span>
-                    <span class="mini-mode-name">Recall-Aware</span>
-                  </div>
-                  <span class="ra-status-badge green" id="dash-ra-state">STABLE</span>
-                </div>
-                <div class="mini-stat-row">
-                  <span class="mini-stat-label">Dynamic Int.</span>
-                  <span class="mini-stat-val font-mono" id="dash-ra-intensity" style="color: #3b82f6;">0.00003</span>
-                </div>
-                <div class="mini-stat-row">
-                  <span class="mini-stat-label">Evasions Blocked</span>
-                  <span class="mini-stat-val font-mono" id="dash-ra-evasions" style="color: #10b981;">0 blocked</span>
-                </div>
-                <div class="mini-prf-row">
-                  <span class="mini-prf-item"><strong class="blue">P</strong> <span id="dash-ra-p" class="font-mono">100.0%</span></span>
-                  <span class="mini-prf-item"><strong class="green">R</strong> <span id="dash-ra-r" class="font-mono">89.4%</span></span>
-                  <span class="mini-prf-item"><strong class="purple">F1</strong> <span id="dash-ra-f1" class="font-mono">94.4%</span></span>
-                </div>
-              </div>
             </div>
 
           </div>
@@ -682,7 +660,7 @@
   <script>if (typeof Chart === 'undefined') document.write('<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"><\\/script>');</script>
   <!-- Export Modal and App JS -->
   <script src="/static/export-modal.js"></script>
-  <script src="/static/app.js?v=12.0"></script>
+  <script src="/static/app.js?v=14.0"></script>
 </body>
 
 </html>

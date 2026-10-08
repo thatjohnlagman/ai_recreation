@@ -1096,15 +1096,25 @@ body {
   border-radius: 10px;
 }
 
-.gauge-badge-pill.green {
+.gauge-badge-pill.green,
+.gauge-badge-pill.stable {
   background: rgba(16, 185, 129, 0.2);
-  color: var(--color-green);
+  color: var(--color-green, #10b981);
   border: 1px solid rgba(16, 185, 129, 0.35);
 }
 
-.gauge-badge-pill.alert {
+.gauge-badge-pill.yellow,
+.gauge-badge-pill.active {
+  background: rgba(245, 158, 11, 0.2);
+  color: var(--color-yellow, #f59e0b);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+}
+
+.gauge-badge-pill.alert,
+.gauge-badge-pill.red,
+.gauge-badge-pill.recovery {
   background: rgba(239, 68, 68, 0.2);
-  color: var(--color-red);
+  color: var(--color-red, #ef4444);
   border: 1px solid rgba(239, 68, 68, 0.35);
 }
 
@@ -1490,43 +1500,78 @@ body {
   box-shadow: 0 1px 4px rgba(59, 130, 246, 0.4);
 }
 
-.controller-state-pill {
-  font-size: 9.5px;
+.controller-state-pill,
+.state-pill,
+.ra-status-badge {
+  font-size: 10px;
   font-weight: 700;
-  padding: 2px 7px;
-  border-radius: 10px;
+  padding: 3px 8px;
+  border-radius: 12px;
   text-transform: uppercase;
-  letter-spacing: 0.3px;
+  letter-spacing: 0.4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
 }
 
-.controller-state-pill.green {
-  background: rgba(16, 185, 129, 0.15);
+.controller-state-pill::before,
+.ra-status-badge::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.controller-state-pill.green,
+.controller-state-pill.stable,
+.state-pill.green,
+.state-pill.stable,
+.ra-status-badge.green,
+.ra-status-badge.stable {
+  background: rgba(16, 185, 129, 0.18);
   color: #10b981;
-  border: 1px solid rgba(16, 185, 129, 0.35);
+  border: 1px solid rgba(16, 185, 129, 0.4);
 }
 
-.controller-state-pill.yellow {
-  background: rgba(245, 158, 11, 0.15);
+.controller-state-pill.yellow,
+.controller-state-pill.active,
+.state-pill.yellow,
+.state-pill.active,
+.ra-status-badge.yellow,
+.ra-status-badge.active {
+  background: rgba(245, 158, 11, 0.18);
   color: #f59e0b;
-  border: 1px solid rgba(245, 158, 11, 0.35);
+  border: 1px solid rgba(245, 158, 11, 0.4);
 }
 
-.controller-state-pill.red {
-  background: rgba(239, 68, 68, 0.15);
+.controller-state-pill.red,
+.controller-state-pill.recovery,
+.state-pill.red,
+.state-pill.recovery,
+.ra-status-badge.red,
+.ra-status-badge.recovery {
+  background: rgba(239, 68, 68, 0.18);
   color: #ef4444;
-  border: 1px solid rgba(239, 68, 68, 0.35);
+  border: 1px solid rgba(239, 68, 68, 0.4);
 }
 
-.controller-state-pill.base {
-  background: rgba(100, 116, 139, 0.15);
+.controller-state-pill.base,
+.state-pill.base,
+.ra-status-badge.base {
+  background: rgba(100, 116, 139, 0.18);
   color: #94a3b8;
-  border: 1px solid rgba(100, 116, 139, 0.35);
+  border: 1px solid rgba(100, 116, 139, 0.4);
 }
 
-.controller-state-pill.bypassed {
+.controller-state-pill.bypassed,
+.state-pill.bypassed,
+.ra-status-badge.bypassed {
   background: rgba(239, 68, 68, 0.12);
   color: #f87171;
-  border: 1px solid rgba(239, 68, 68, 0.25);
+  border: 1px solid rgba(239, 68, 68, 0.3);
 }
 
 /* Modal Styles */

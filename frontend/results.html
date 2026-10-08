@@ -279,31 +279,42 @@
       white-space: nowrap;
     }
 
-    .ra-status-badge.green {
+    .ra-status-badge.green,
+    .ra-status-badge.stable,
+    .state-pill.green,
+    .state-pill.stable {
       background: rgba(16, 185, 129, 0.15);
       color: #10b981;
       border: 1px solid rgba(16, 185, 129, 0.35);
     }
 
-    .ra-status-badge.yellow {
+    .ra-status-badge.yellow,
+    .ra-status-badge.active,
+    .state-pill.yellow,
+    .state-pill.active {
       background: rgba(245, 158, 11, 0.15);
       color: #f59e0b;
       border: 1px solid rgba(245, 158, 11, 0.35);
     }
 
-    .ra-status-badge.red {
+    .ra-status-badge.red,
+    .ra-status-badge.recovery,
+    .state-pill.red,
+    .state-pill.recovery {
       background: rgba(239, 68, 68, 0.15);
       color: #ef4444;
       border: 1px solid rgba(239, 68, 68, 0.35);
     }
 
-    .ra-status-badge.base {
+    .ra-status-badge.base,
+    .state-pill.base {
       background: rgba(100, 116, 139, 0.15);
       color: #94a3b8;
       border: 1px solid rgba(100, 116, 139, 0.35);
     }
 
-    .ra-status-badge.bypassed {
+    .ra-status-badge.bypassed,
+    .state-pill.bypassed {
       background: rgba(148, 163, 184, 0.15);
       color: #94a3b8;
       border: 1px solid rgba(148, 163, 184, 0.3);
@@ -839,7 +850,7 @@
     </div>
   </div>
 
-  <script src="/static/results.js?v=3.0"></script>
+  <script src="/static/results.js?v=4.0"></script>
 </body>
 
 </html>
