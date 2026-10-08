@@ -1,0 +1,3 @@
+Source-to-Output Value Traceability Report
+All generated CSVs and figures trace directly to Phase 11A/11B tables via deterministic code.
+See tests/test_phase11c_results.py for explicit traceability assertions.

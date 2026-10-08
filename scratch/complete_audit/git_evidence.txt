@@ -1,0 +1,1180 @@
+Repository Path: /Users/trumpler-mac/dev/manifesting_defended
+Branch: main
+HEAD SHA: 62736afb746c2ee57a0c92a36ac5e5401f3ea5c7
+Research Repo HEAD SHA: 77cd29e04de6e0371845d28628dad3d8e0dc5053
+
+--- STATUS ---
+M frontend/results.html
+ M frontend/results.js
+ M runtime_state/traffic_history.sqlite3
+ M runtime_state/traffic_history.sqlite3-shm
+ M runtime_state/traffic_history.sqlite3-wal
+ M server.py
+?? .research_repo/
+?? patch_c1_c7.py
+?? scratch/
+
+--- UNTRACKED ---
+.research_repo/
+patch_c1_c7.py
+scratch/build_audit_package.py
+scratch/build_complete_audit.py
+scratch/handoff/ASSET_HASHES.csv
+scratch/handoff/AUDIT_FINDINGS.md
+scratch/handoff/FILE_MANIFEST.csv
+scratch/handoff/MERGED_STATE_HANDOFF.md
+scratch/handoff/OMISSIONS.md
+scratch/handoff/VERIFICATION.md
+scratch/handoff/git_evidence.txt
+scratch/handoff/src/.research_repo/defense_calibration.json
+scratch/handoff/src/attacker_sim.py
+scratch/handoff/src/frontend/results.html
+scratch/handoff/src/frontend/results.js
+scratch/handoff/src/operator_benchmarks.py
+scratch/handoff/src/patch_c1_c7.py
+scratch/handoff/src/scratch/scrape_research_repo.py
+scratch/handoff/src/server.py
+scratch/handoff/src/traffic_history.py
+scratch/scrape_research_repo.py
+scratch/scraped.txt
+
+--- UNCOMMITTED DIFF ---
+diff --git a/frontend/results.html b/frontend/results.html
+index 8959e6c..ab8a8ed 100644
+--- a/frontend/results.html
++++ b/frontend/results.html
+@@ -545,9 +545,6 @@
+                 <span class="pulse-dot"></span>
+                 Active: <strong id="lbl-active-defense" style="color: var(--text-primary); margin-left: 2px;">AFP</strong>
+               </span>
+-              <span class="telemetry-chip">
+-                Mode: <strong id="lbl-active-mode" style="color: var(--accent-blue); margin-left: 2px;">Recall-Aware</strong>
+-              </span>
+               <span class="telemetry-chip">
+                 Continuous Traffic: <strong id="lbl-session-traffic" style="font-family: var(--font-mono, monospace); color: var(--text-primary); margin-left: 2px;">0</strong>
+               </span>
+@@ -617,43 +614,7 @@
+               </div>
+             </div>
+ 
+-            <!-- Base: [P] [R] [F1] + Recall vs Intensity Chart -->
+-            <div class="panel-card">
+-              <div class="metrics-and-chart-row">
+-                <!-- 3 Vertical Cards: P, R, F1 -->
+-                <div class="prf-card-grid">
+-                  <div class="prf-mini-card">
+-                    <span class="prf-badge blue">P</span>
+-                    <span class="prf-val font-mono" id="base-p-val">100.0%</span>
+-                    <span class="prf-lbl">Precision</span>
+-                  </div>
+-                  <div class="prf-mini-card">
+-                    <span class="prf-badge green">R</span>
+-                    <span class="prf-val font-mono" id="base-r-val">77.8%</span>
+-                    <span class="prf-lbl">Recall</span>
+-                  </div>
+-                  <div class="prf-mini-card">
+-                    <span class="prf-badge purple">F1</span>
+-                    <span class="prf-val font-mono" id="base-f1-val">87.5%</span>
+-                    <span class="prf-lbl">F1-Score</span>
+-                  </div>
+-                </div>
+-
+-                <!-- Recall vs Intensity Chart Box -->
+-                <div class="column-chart-box">
+-                  <div class="column-chart-header">
+-                    <span class="column-chart-title">Recall vs. Intensity (Base)</span>
+-                    <div class="column-chart-legend">
+-                      <span><span class="legend-dot green"></span>Recall</span>
+-                      <span><span class="legend-dot slate"></span>Intensity</span>
+-                    </div>
+-                  </div>
+-                  <div class="chart-canvas-container">
+-                    <canvas id="baseChart"></canvas>
+-                  </div>
+-                </div>
+-              </div>
+-            </div>
++            <!-- Base PRF removed and moved down -->
+ 
+           </div>
+ 
+@@ -714,136 +675,169 @@
+               </div>
+             </div>
+ 
+-            <!-- Recall Aware Controller: [P] [R] [F1] + Recall vs Intensity Chart -->
+-            <div class="panel-card">
+-              <div class="metrics-and-chart-row">
+-                <!-- 3 Vertical Cards: P, R, F1 -->
++          </div>
++
++        </div>
++        
++        <!-- New Asymmetric Panel for PRF and Chart -->
++        <div class="panel-card" style="margin-bottom: 24px;">
++          <div class="panel-header">
++            <h2 class="panel-title">System Performance: Base vs. Recall-Aware Telemetry</h2>
++          </div>
++          
++          <div style="display: grid; grid-template-columns: 300px 1fr; gap: 24px; padding: 20px;">
++            
++            <!-- Left Sidebar: PRF metrics -->
++            <div style="display: flex; flex-direction: column; justify-content: center; gap: 16px;">
++              
++              <!-- Base PRF -->
++              <div style="background: rgba(15, 23, 42, 0.4); border: 1px solid var(--border-color); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; justify-content: space-between;">
++                <div style="font-size: 13px; font-weight: 700; color: var(--text-muted); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px;">(Base)</div>
+                 <div class="prf-card-grid">
+                   <div class="prf-mini-card">
+                     <span class="prf-badge blue">P</span>
+-                    <span class="prf-val font-mono" id="ra-p-val">100.0%</span>
+-                    <span class="prf-lbl">Precision</span>
++                    <span class="prf-val font-mono" id="base-p-val">100.0%</span>
++                    <span class="prf-lbl">PRECISION</span>
+                   </div>
+                   <div class="prf-mini-card">
+                     <span class="prf-badge green">R</span>
+-                    <span class="prf-val font-mono" id="ra-r-val">89.4%</span>
+-                    <span class="prf-lbl">Recall</span>
++                    <span class="prf-val font-mono" id="base-r-val">77.8%</span>
++                    <span class="prf-lbl">RECALL</span>
+                   </div>
+                   <div class="prf-mini-card">
+                     <span class="prf-badge purple">F1</span>
+-                    <span class="prf-val font-mono" id="ra-f1-val">94.4%</span>
+-                    <span class="prf-lbl">F1-Score</span>
++                    <span class="prf-val font-mono" id="base-f1-val">87.5%</span>
++                    <span class="prf-lbl">F1-SCORE</span>
+                   </div>
+                 </div>
++              </div>
+ 
+-                <!-- Recall vs Intensity Chart Box -->
+-                <div class="column-chart-box">
+-                  <div class="column-chart-header">
+-                    <span class="column-chart-title">Recall vs. Intensity (Recall-Aware)</span>
+-                    <div class="column-chart-legend">
+-                      <span><span class="legend-dot green"></span>Recall</span>
+-                      <span><span class="legend-dot red"></span>Intensity</span>
+-                    </div>
++              <!-- Recall-Aware PRF -->
++              <div style="background: rgba(15, 23, 42, 0.4); border: 1px solid var(--border-color); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; justify-content: space-between;">
++                <div style="font-size: 13px; font-weight: 700; color: var(--text-muted); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px;">(Recall-Aware)</div>
++                <div class="prf-card-grid">
++                  <div class="prf-mini-card">
++                    <span class="prf-badge blue">P</span>
++                    <span class="prf-val font-mono" id="ra-p-val">100.0%</span>
++                    <span class="prf-lbl">PRECISION</span>
++                  </div>
++                  <div class="prf-mini-card">
++                    <span class="prf-badge green">R</span>
++                    <span class="prf-val font-mono" id="ra-r-val">89.4%</span>
++                    <span class="prf-lbl">RECALL</span>
+                   </div>
+-                  <div class="chart-canvas-container">
+-                    <canvas id="raChart"></canvas>
++                  <div class="prf-mini-card">
++                    <span class="prf-badge purple">F1</span>
++                    <span class="prf-val font-mono" id="ra-f1-val">94.4%</span>
++                    <span class="prf-lbl">F1-SCORE</span>
+                   </div>
+                 </div>
+               </div>
++
+             </div>
+ 
++            <!-- Right Chart Area -->
++            <div style="display: flex; flex-direction: column; background: rgba(15, 23, 42, 0.2); border: 1px solid var(--border-color); border-radius: 12px; padding: 20px;">
++               <div class="column-chart-header" style="margin-bottom: 16px;">
++                 <span class="column-chart-title" style="font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px;">Recall vs. Intensity (Recall-Aware)</span>
++                 <div class="column-chart-legend">
++                   <span><span class="legend-dot green"></span>Recall</span>
++                   <span><span class="legend-dot red"></span>Intensity</span>
++                 </div>
++               </div>
++               <div class="chart-canvas-container" style="flex: 1; min-height: 220px;">
++                 <canvas id="raChart"></canvas>
++               </div>
++            </div>
++            
+           </div>
+-
+         </div>
+ 
+-        <!-- 3. Wide Container: Cross-Defense Evaluation Matrix -->
+-        <div class="panel-card">
++        <!-- 3. C1-C7 Cross-Defense Evaluation Matrices -->
++        <div class="panel-card" style="margin-bottom: 16px;">
+           <div class="panel-header-inline">
+             <div class="header-inline-left">
+-              <h2 class="panel-title">Cross-Defense Evaluation Matrix</h2>
+-              <span class="telemetry-chip" style="font-size: 10px;">10,000 Batches Reference &amp; Live Stream</span>
++              <h2 class="panel-title">Recall-Aware Configurations (C1-C7)</h2>
++              <span class="telemetry-chip" style="font-size: 10px;">Cross-Defense Evaluation Matrices</span>
+             </div>
+-            <span class="insp-card-label" style="font-size: 11px;">All 8 Defense/Mode Arms</span>
++            <span class="insp-card-label" style="font-size: 11px;">Dynamic Modes</span>
++          </div>
++          
++          <div class="c1-c7-grid" id="c1-c7-container" style="display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 12px; width: 100%; margin-top: 12px;">
++             <!-- populated by JS -->
+           </div>
++        </div>
+ 
++        <!-- 4. Operator Summary: Base vs. Recall-Aware Comparison & Impact Deltas -->
++        <div class="panel-card" style="margin-bottom: 16px;">
++          <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
++            <h2 class="panel-title">Operator Summary: Base vs. Recall-Aware Comparison &amp; Impact Deltas</h2>
++            <button id="btn-toggle-benchmark" class="btn-subtle btn-toggle-benchmark" onclick="toggleLiveBenchmark()" style="padding: 4px 12px; font-size: 10px; border-radius: 4px; cursor: pointer;">Compute Live Benchmark</button>
++          </div>
+           <div class="table-container">
+             <table class="data-table">
+               <thead>
+                 <tr>
+                   <th>Defense</th>
+-                  <th>Mode</th>
+-                  <th class="text-right">TP</th>
+-                  <th class="text-right">FN</th>
+-                  <th class="text-right">FP</th>
+-                  <th class="text-right">TN</th>
+-                  <th class="text-right">Recall</th>
+-                  <th class="text-right">Precision</th>
+-                  <th class="text-right">F1</th>
+-                  <th class="text-right">FPR</th>
+-                  <th>Intensity</th>
+-                  <th>State</th>
++                  <th class="text-center">Base (P / F1 / R)</th>
++                  <th class="text-center">RA (P / F1 / R)</th>
++                  <th class="text-center">Deltas (P / F1 / R)</th>
++                  <th class="text-center">Evasions Prevented</th>
+                 </tr>
+               </thead>
+-              <tbody id="matrix-tbody">
++              <tbody id="summary-tbody">
+                 <tr>
+-                  <td colspan="12" style="text-align:center; padding: 20px; color: var(--text-muted);">Loading evaluation matrix...</td>
++                  <td colspan="7" style="text-align:center; padding: 20px; color: var(--text-muted);">Loading comparison summary...</td>
+                 </tr>
+               </tbody>
+             </table>
+           </div>
+         </div>
+ 
+-        <!-- 4. Bottom Two Side-by-Side Cards: Operator Summary & Key Takeaways -->
+-        <div class="bottom-two-cards-grid">
+-
+-          <!-- Left Card: Operator Summary -->
+-          <div class="panel-card">
+-            <div class="panel-header">
+-              <h2 class="panel-title">Operator Summary: Base vs. Recall-Aware Comparison &amp; Impact Deltas</h2>
+-            </div>
+-            <div class="table-container">
+-              <table class="data-table">
+-                <thead>
+-                  <tr>
+-                    <th>Defense</th>
+-                    <th class="text-right">Base Recall</th>
+-                    <th class="text-right">RA Recall</th>
+-                    <th class="text-center">Delta Recall</th>
+-                    <th class="text-center">Evasions Prevented</th>
+-                    <th>Intensity Shift</th>
+-                    <th>State</th>
+-                  </tr>
+-                </thead>
+-                <tbody id="summary-tbody">
+-                  <tr>
+-                    <td colspan="7" style="text-align:center; padding: 20px; color: var(--text-muted);">Loading comparison summary...</td>
+-                  </tr>
+-                </tbody>
+-              </table>
+-            </div>
++        <!-- 5. Operator Summary Config Comparison -->
++        <div class="panel-card">
++          <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
++            <h2 class="panel-title">Operator Summary: Config Comparison (C1-C7)</h2>
++            <button class="btn-subtle btn-toggle-benchmark" onclick="toggleLiveBenchmark()" style="padding: 4px 12px; font-size: 10px; border-radius: 4px; cursor: pointer;">Compute Live Benchmark</button>
+           </div>
+-
+-          <!-- Right Card: Key Takeaways & Operator Findings -->
+-          <div class="panel-card">
+-            <div class="panel-header">
+-              <h2 class="panel-title">Key Takeaways &amp; Operator Findings</h2>
++          <div class="table-container">
++            <table class="data-table">
++              <thead>
++                <tr>
++                  <th>Config</th>
++                  <th class="text-center">Active Def (P / F1 / R)</th>
++                  <th class="text-center">Base (P / F1 / R)</th>
++                  <th class="text-center">Deltas (P / F1 / R)</th>
++                </tr>
++              </thead>
++              <tbody id="config-summary-tbody">
++                <tr>
++                  <td colspan="6" style="text-align:center; padding: 20px; color: var(--text-muted);">Loading config summary...</td>
++                </tr>
++              </tbody>
++            </table>
++          </div>
++        </div>
++        
++        <!-- Bottom Full Width Card: Key Takeaways -->
++        <div class="panel-card" style="margin-top: 16px;">
++          <div class="panel-header">
++            <h2 class="panel-title">Key Takeaways &amp; Operator Findings</h2>
++          </div>
++          <div id="takeaways-box" style="display: flex; flex-direction: column; gap: 12px; padding: 4px 0;">
++            <div class="takeaway-item">
++              <span class="takeaway-bullet">&#9679;</span>
++              <div><strong>Top Protected Defense:</strong> Feature Squeezing (FS) achieved highest attack recall under Recall-Aware control.</div>
+             </div>
+-            <div id="takeaways-box" style="display: flex; flex-direction: column; gap: 12px; padding: 4px 0;">
+-              <div class="takeaway-item">
+-                <span class="takeaway-bullet">&#9679;</span>
+-                <div><strong>Top Protected Defense:</strong> Feature Squeezing (FS) achieved highest attack recall under Recall-Aware control.</div>
+-              </div>
+-              <div class="takeaway-item">
+-                <span class="takeaway-bullet">&#9679;</span>
+-                <div><strong>Total Evasions Prevented:</strong> Additional malicious flows intercepted across active defenses via dynamic feedback.</div>
+-              </div>
+-              <div class="takeaway-item">
+-                <span class="takeaway-bullet">&#9679;</span>
+-                <div><strong>False Positive Control:</strong> 0.00% False Positive Rate maintained across all tested defenses.</div>
+-              </div>
++            <div class="takeaway-item">
++              <span class="takeaway-bullet">&#9679;</span>
++              <div><strong>Total Evasions Prevented:</strong> Additional malicious flows intercepted across active defenses via dynamic feedback.</div>
++            </div>
++            <div class="takeaway-item">
++              <span class="takeaway-bullet">&#9679;</span>
++              <div><strong>False Positive Control:</strong> 0.00% False Positive Rate maintained across all tested defenses.</div>
+             </div>
+           </div>
+-
+         </div>
+ 
+       </main>
+diff --git a/frontend/results.js b/frontend/results.js
+index 1040b5c..cf2828c 100644
+--- a/frontend/results.js
++++ b/frontend/results.js
+@@ -62,6 +62,104 @@ const REFERENCE_TIMELINES = {
+   }
+ };
+ 
++let useLiveBenchmark = false;
++
++const STATIC_BENCHMARK_SUMMARY = [
++  {
++    "defense": "AFP",
++    "base_prec": "99.93%",
++    "base_recall": "80.26%",
++    "base_f1": "89.02%",
++    "ra_prec": "99.57%",
++    "ra_recall": "93.19%",
++    "ra_f1": "96.27%",
++    "delta_prec": "-0.36%",
++    "delta_recall": "+12.93%",
++    "delta_f1": "+7.25%",
++    "delta_recall_num": 0.12930638274727368,
++    "evasions_prevented": "6465",
++    "evasions_prevented_num": 6465,
++    "intensity_shift": "+0.00",
++    "controller_state": "ACTIVE"
++  },
++  {
++    "defense": "FS",
++    "base_prec": "99.86%",
++    "base_recall": "92.68%",
++    "base_f1": "96.13%",
++    "ra_prec": "99.73%",
++    "ra_recall": "93.45%",
++    "ra_f1": "96.49%",
++    "delta_prec": "-0.13%",
++    "delta_recall": "+0.77%",
++    "delta_f1": "+0.35%",
++    "delta_recall_num": 0.00774523401593652,
++    "evasions_prevented": "387",
++    "evasions_prevented_num": 387,
++    "intensity_shift": "+0.00",
++    "controller_state": "ACTIVE"
++  },
++  {
++    "defense": "RS",
++    "base_prec": "99.95%",
++    "base_recall": "80.57%",
++    "base_f1": "89.22%",
++    "ra_prec": "99.59%",
++    "ra_recall": "93.21%",
++    "ra_f1": "96.29%",
++    "delta_prec": "-0.36%",
++    "delta_recall": "+12.64%",
++    "delta_f1": "+7.07%",
++    "delta_recall_num": 0.12638764243561507,
++    "evasions_prevented": "6319",
++    "evasions_prevented_num": 6319,
++    "intensity_shift": "+0.00",
++    "controller_state": "ACTIVE"
++  }
++];
++
++const STATIC_C1_C7_MATRIX = [
++  { defense: "afp", mode: "Base", precision: 0.999, recall: 0.803, f1: 0.890, precision_str: "99.93%", recall_str: "80.26%", f1_str: "89.02%", intensity: "-", state: "STABLE" },
++  { defense: "afp", mode: "C1", precision: 0.996, recall: 0.932, f1: 0.963, precision_str: "99.57%", recall_str: "93.19%", f1_str: "96.27%", intensity: "-", state: "ACTIVE" },
++  { defense: "afp", mode: "C2", precision: 0.996, recall: 0.932, f1: 0.963, precision_str: "99.57%", recall_str: "93.17%", f1_str: "96.26%", intensity: "-", state: "ACTIVE" },
++  { defense: "afp", mode: "C3", precision: 0.995, recall: 0.932, f1: 0.963, precision_str: "99.55%", recall_str: "93.20%", f1_str: "96.27%", intensity: "-", state: "ACTIVE" },
++  { defense: "afp", mode: "C4", precision: 0.998, recall: 0.901, f1: 0.947, precision_str: "99.84%", recall_str: "90.06%", f1_str: "94.70%", intensity: "-", state: "ACTIVE" },
++  { defense: "afp", mode: "C5", precision: 0.994, recall: 0.934, f1: 0.963, precision_str: "99.43%", recall_str: "93.39%", f1_str: "96.31%", intensity: "-", state: "ACTIVE" },
++  { defense: "afp", mode: "C6", precision: 0.997, recall: 0.926, f1: 0.960, precision_str: "99.74%", recall_str: "92.55%", f1_str: "96.01%", intensity: "-", state: "ACTIVE" },
++  { defense: "afp", mode: "C7", precision: 0.994, recall: 0.934, f1: 0.963, precision_str: "99.45%", recall_str: "93.40%", f1_str: "96.33%", intensity: "-", state: "ACTIVE" },
++  { defense: "fs", mode: "Base", precision: 0.999, recall: 0.927, f1: 0.961, precision_str: "99.86%", recall_str: "92.68%", f1_str: "96.13%", intensity: "-", state: "STABLE" },
++  { defense: "fs", mode: "C1", precision: 0.997, recall: 0.935, f1: 0.965, precision_str: "99.73%", recall_str: "93.45%", f1_str: "96.49%", intensity: "-", state: "ACTIVE" },
++  { defense: "fs", mode: "C2", precision: 0.997, recall: 0.935, f1: 0.965, precision_str: "99.71%", recall_str: "93.47%", f1_str: "96.49%", intensity: "-", state: "ACTIVE" },
++  { defense: "fs", mode: "C3", precision: 0.997, recall: 0.934, f1: 0.965, precision_str: "99.74%", recall_str: "93.43%", f1_str: "96.48%", intensity: "-", state: "ACTIVE" },
++  { defense: "fs", mode: "C4", precision: 0.999, recall: 0.927, f1: 0.962, precision_str: "99.85%", recall_str: "92.72%", f1_str: "96.15%", intensity: "-", state: "ACTIVE" },
++  { defense: "fs", mode: "C5", precision: 0.997, recall: 0.935, f1: 0.965, precision_str: "99.71%", recall_str: "93.48%", f1_str: "96.50%", intensity: "-", state: "ACTIVE" },
++  { defense: "fs", mode: "C6", precision: 0.997, recall: 0.935, f1: 0.965, precision_str: "99.72%", recall_str: "93.47%", f1_str: "96.49%", intensity: "-", state: "ACTIVE" },
++  { defense: "fs", mode: "C7", precision: 0.997, recall: 0.935, f1: 0.965, precision_str: "99.70%", recall_str: "93.47%", f1_str: "96.48%", intensity: "-", state: "ACTIVE" },
++  { defense: "rs", mode: "Base", precision: 0.999, recall: 0.806, f1: 0.892, precision_str: "99.95%", recall_str: "80.57%", f1_str: "89.22%", intensity: "-", state: "STABLE" },
++  { defense: "rs", mode: "C1", precision: 0.996, recall: 0.932, f1: 0.963, precision_str: "99.59%", recall_str: "93.21%", f1_str: "96.29%", intensity: "-", state: "ACTIVE" },
++  { defense: "rs", mode: "C2", precision: 0.996, recall: 0.932, f1: 0.963, precision_str: "99.59%", recall_str: "93.22%", f1_str: "96.30%", intensity: "-", state: "ACTIVE" },
++  { defense: "rs", mode: "C3", precision: 0.995, recall: 0.932, f1: 0.963, precision_str: "99.55%", recall_str: "93.23%", f1_str: "96.28%", intensity: "-", state: "ACTIVE" },
++  { defense: "rs", mode: "C4", precision: 0.999, recall: 0.901, f1: 0.947, precision_str: "99.85%", recall_str: "90.11%", f1_str: "94.73%", intensity: "-", state: "ACTIVE" },
++  { defense: "rs", mode: "C5", precision: 0.994, recall: 0.934, f1: 0.963, precision_str: "99.44%", recall_str: "93.40%", f1_str: "96.32%", intensity: "-", state: "ACTIVE" },
++  { defense: "rs", mode: "C6", precision: 0.997, recall: 0.926, f1: 0.960, precision_str: "99.75%", recall_str: "92.61%", f1_str: "96.04%", intensity: "-", state: "ACTIVE" },
++  { defense: "rs", mode: "C7", precision: 0.995, recall: 0.934, f1: 0.963, precision_str: "99.45%", recall_str: "93.43%", f1_str: "96.34%", intensity: "-", state: "ACTIVE" }
++];
++
++function toggleLiveBenchmark() {
++  useLiveBenchmark = !useLiveBenchmark;
++  const btns = document.querySelectorAll(".btn-toggle-benchmark");
++  btns.forEach(btn => {
++    btn.textContent = useLiveBenchmark ? "Stop Live Benchmark" : "Compute Live Benchmark";
++    btn.className = useLiveBenchmark ? "btn-action btn-toggle-benchmark" : "btn-subtle btn-toggle-benchmark";
++  });
++  // Immediately re-render with the latest choice
++  if (latestResultsData) {
++    renderMatrixTable(latestResultsData);
++    renderSummaryTable(latestResultsData.summary);
++    renderConfigSummaryTable(latestResultsData.matrix);
++  }
++}
++
+ // Seed sample flows for feeds when table is empty
+ const SAMPLE_BASE_FEEDS = [
+   { time: "14:22:10", ip: "192.168.10.45", family: "Botnet Ares", action: "403 Blocked", conf: "98.2%" },
+@@ -123,6 +221,9 @@ async function handleSelectDefense(defCode) {
+ 
+   // Update side-by-side comparison columns & charts
+   updateComparisonColumns();
++  
++  // Refresh matrix to immediately reflect the new active defense in C1-C7 cards
++  pollEvaluationResults();
+ }
+ 
+ // -----------------------------------------------------------------------------
+@@ -291,8 +392,6 @@ function renderAll(data) {
+   const defEl = document.getElementById("lbl-active-defense");
+   if (defEl) defEl.textContent = (data.active_defense || "AFP").toUpperCase();
+ 
+-  const modeEl = document.getElementById("lbl-active-mode");
+-  if (modeEl) modeEl.textContent = data.active_mode || "Recall-Aware";
+ 
+   const trafficEl = document.getElementById("lbl-session-traffic");
+   if (trafficEl) trafficEl.textContent = Number(data.total_traffic || 0).toLocaleString();
+@@ -301,10 +400,11 @@ function renderAll(data) {
+   updateComparisonColumns();
+ 
+   // Render Section 2: Full Matrix
+-  renderMatrixTable(data.matrix || []);
++  renderMatrixTable(data);
+ 
+   // Render Section 3: Summary
+   renderSummaryTable(data.summary || []);
++  renderConfigSummaryTable(data.matrix || []);
+ 
+   // Render Section 4: Takeaways
+   renderTakeaways(data.takeaways || []);
+@@ -435,7 +535,6 @@ function renderFeedTable(type, events) {
+ function initCharts() {
+   if (typeof Chart === "undefined") return;
+ 
+-  const ctxBase = document.getElementById("baseChart");
+   const ctxRA = document.getElementById("raChart");
+ 
+   const commonOptions = {
+@@ -489,38 +588,6 @@ function initCharts() {
+     }
+   };
+ 
+-  if (ctxBase) {
+-    baseChart = new Chart(ctxBase, {
+-      type: "line",
+-      data: {
+-        labels: [],
+-        datasets: [
+-          {
+-            label: "Recall",
+-            data: [],
+-            borderColor: "#10b981",
+-            backgroundColor: "rgba(16, 185, 129, 0.08)",
+-            borderWidth: 2,
+-            tension: 0.25,
+-            pointRadius: 2,
+-            yAxisID: 'y'
+-          },
+-          {
+-            label: "Intensity",
+-            data: [],
+-            borderColor: "#64748b",
+-            backgroundColor: "rgba(100, 116, 139, 0.08)",
+-            borderWidth: 2,
+-            borderDash: [4, 2],
+-            tension: 0,
+-            pointRadius: 1.5,
+-            yAxisID: 'y1'
+-          }
+-        ]
+-      },
+-      options: commonOptions
+-    });
+-  }
+ 
+   if (ctxRA) {
+     raChart = new Chart(ctxRA, {
+@@ -557,40 +624,66 @@ function initCharts() {
+   updateChartsForDefense("afp");
+ }
+ 
++const chartHistory = {
++  afp: { labels: [], recall: [], intensity: [], count: 0 },
++  rs:  { labels: [], recall: [], intensity: [], count: 0 },
++  fs:  { labels: [], recall: [], intensity: [], count: 0 },
++  none:{ labels: [], recall: [], intensity: [], count: 0 }
++};
++const MAX_CHART_POINTS = 15;
++
+ function updateChartsForDefense(defKey) {
+   const key = (defKey || "afp").toLowerCase();
+-  const ref = REFERENCE_TIMELINES[key] || REFERENCE_TIMELINES.afp;
++  const hist = chartHistory[key];
++  if (!hist) return;
+ 
+-  const baseArm = latestResultsData?.matrix?.find(m => m.defense.toLowerCase() === key && m.mode.toLowerCase() === "base");
+   const raArm = latestResultsData?.matrix?.find(m => m.defense.toLowerCase() === key && m.mode.toLowerCase() === "recall-aware");
+ 
+-  if (baseChart) {
+-    const recallData = [...ref.base.recall];
+-    if (baseArm && baseArm.recall != null) {
+-      recallData[recallData.length - 1] = Number(baseArm.recall);
+-    }
+-    baseChart.data.labels = ref.base.labels;
+-    baseChart.data.datasets[0].data = recallData;
+-    baseChart.data.datasets[1].data = ref.base.intensity;
+-    baseChart.update();
+-  }
++  if (raChart && raArm) {
++    let newRecall = null;
++    let newIntensity = null;
+ 
+-  if (raChart) {
+-    const recallData = [...ref.ra.recall];
+-    const intensityData = [...ref.ra.intensity];
+-    if (raArm && raArm.recall != null) {
+-      recallData[recallData.length - 1] = Number(raArm.recall);
++    if (raArm.rolling_recall != null) {
++      newRecall = Number(raArm.rolling_recall);
++    } else if (raArm.recall != null) {
++      newRecall = Number(raArm.recall);
+     }
+-    if (raArm && raArm.intensity != null) {
++    
++    if (raArm.intensity != null) {
+       const numInt = parseFloat(raArm.intensity);
+-      if (!isNaN(numInt)) {
+-        intensityData[intensityData.length - 1] = numInt;
++      if (!isNaN(numInt)) newIntensity = numInt;
++    }
++
++    if (newRecall !== null && newIntensity !== null) {
++      hist.count++;
++      hist.labels.push("B-" + hist.count);
++      hist.recall.push(newRecall);
++      hist.intensity.push(newIntensity);
++
++      if (hist.labels.length > MAX_CHART_POINTS) {
++        hist.labels.shift();
++        hist.recall.shift();
++        hist.intensity.shift();
+       }
+     }
+-    raChart.data.labels = ref.ra.labels;
+-    raChart.data.datasets[0].data = recallData;
+-    raChart.data.datasets[1].data = intensityData;
+-    raChart.update();
++
++    // Only render if we have data
++    if (hist.labels.length > 0) {
++      raChart.data.labels = [...hist.labels];
++      raChart.data.datasets[0].data = [...hist.recall];
++      raChart.data.datasets[1].data = [...hist.intensity];
++      
++      // Update Y-axis scale for intensity dynamically depending on defense
++      if (key === "afp") {
++         raChart.options.scales.y1.max = 0.00035;
++      } else if (key === "rs") {
++         raChart.options.scales.y1.max = 3.0;
++      } else if (key === "fs") {
++         raChart.options.scales.y1.max = 1.0;
++      }
++      
++      raChart.update();
++    }
+   }
+ }
+ 
+@@ -599,7 +692,7 @@ function updateChartTheme() {
+   const gridColor = isDark ? "rgba(100, 116, 139, 0.15)" : "rgba(203, 213, 225, 0.6)";
+   const tickColor = isDark ? "#64748b" : "#475569";
+ 
+-  [baseChart, raChart].forEach(ch => {
++  [raChart].forEach(ch => {
+     if (!ch) return;
+     ch.options.scales.x.ticks.color = tickColor;
+     ch.options.scales.y.ticks.color = tickColor;
+@@ -612,60 +705,89 @@ function updateChartTheme() {
+ // -----------------------------------------------------------------------------
+ // Matrix, Summary & Takeaways Rendering
+ // -----------------------------------------------------------------------------
+-function renderMatrixTable(matrix) {
+-  const tbody = document.getElementById("matrix-tbody");
+-  if (!tbody) return;
++function renderMatrixTable(data) {
++  const container = document.getElementById("c1-c7-container");
++  if (!container) return;
++  
++  let matrix = data.matrix || [];
++  if (!useLiveBenchmark) {
++    matrix = STATIC_C1_C7_MATRIX;
++  }
++  const configs = data.controller_configs || {};
+ 
+   if (!matrix || matrix.length === 0) {
+-    tbody.innerHTML = `<tr><td colspan="12" style="text-align:center; padding:20px; color:var(--text-muted);">No evaluation data available.</td></tr>`;
++    container.innerHTML = `<div style="text-align:center; padding:20px; color:var(--text-muted); width: 100%; grid-column: 1 / -1;">No evaluation data available.</div>`;
+     return;
+   }
+ 
+   let html = "";
+-  matrix.forEach((arm, idx) => {
+-    const isActive = arm.is_active;
+-    const activeClass = isActive ? "active-arm-row" : "";
+-    const activePill = isActive
+-      ? `<span style="margin-left:6px; background:#10b981; color:white; font-size:10px; font-weight:700; padding:1px 6px; border-radius:10px; text-transform:uppercase;">Live</span>`
+-      : "";
+-
+-    const modeClass = arm.mode === "Recall-Aware" ? "ra" : "base";
+-    const stateClass = (arm.state || "").toLowerCase();
+-    const isGroupBottom = idx % 2 === 1;
+-    const borderStyle = isGroupBottom ? "border-bottom: 2px solid var(--border-color);" : "";
++  const modes = ["C1", "C2", "C3", "C4", "C5", "C6", "C7"];
++
++  modes.forEach(mode => {
++    const arm = matrix.find(m => m.mode.toUpperCase() === mode.toUpperCase() && m.defense.toLowerCase() === (window.currentSelectedDefense || "afp").toLowerCase());
++    
++    const cfg = configs[mode] || {};
++    const win = cfg.window_size || "N/A";
++    const tgt = cfg.Rmin ? (cfg.Rmin*100).toFixed(0) + "%" : "N/A";
++    const rcrit = cfg.Rcritical ? (cfg.Rcritical*100).toFixed(0) + "%" : "N/A";
++    const fastDecay = cfg.fast_decay ? cfg.fast_decay.toFixed(2) : "N/A";
++    const slowDecay = cfg.slow_decay ? cfg.slow_decay.toFixed(2) : "N/A";
++    const growth = cfg.growth_factor ? cfg.growth_factor.toFixed(2) : "N/A";
+ 
+     html += `
+-      <tr class="${activeClass}" style="${borderStyle}; cursor: pointer;" onclick="handleSelectDefense('${arm.defense.toLowerCase()}')">
+-        <td style="font-weight: 700; font-size: 13px;">
+-          ${escapeHtml(arm.defense)}
+-          ${activePill}
+-        </td>
+-        <td>
+-          <span class="mode-badge ${modeClass}">${escapeHtml(arm.mode)}</span>
+-        </td>
+-        <td style="text-align: right; font-family: var(--font-mono, monospace);">${Number(arm.tp).toLocaleString()}</td>
+-        <td style="text-align: right; font-family: var(--font-mono, monospace);">${Number(arm.fn).toLocaleString()}</td>
+-        <td style="text-align: right; font-family: var(--font-mono, monospace);">${Number(arm.fp).toLocaleString()}</td>
+-        <td style="text-align: right; font-family: var(--font-mono, monospace);">${Number(arm.tn).toLocaleString()}</td>
+-        <td style="text-align: right; font-family: var(--font-mono, monospace); font-weight: 700; color: #10b981;">${arm.recall_str}</td>
+-        <td style="text-align: right; font-family: var(--font-mono, monospace); font-weight: 600; color: #3b82f6;">${arm.precision_str}</td>
+-        <td style="text-align: right; font-family: var(--font-mono, monospace); font-weight: 600; color: #8b5cf6;">${arm.f1_str}</td>
+-        <td style="text-align: right; font-family: var(--font-mono, monospace);">${arm.fpr_str}</td>
+-        <td style="font-family: var(--font-mono, monospace); font-size: 12px;">${escapeHtml(arm.intensity)}</td>
+-        <td>
+-          <span class="state-pill ${stateClass}">${escapeHtml(arm.state)}</span>
+-        </td>
+-      </tr>
++      <div style="background: var(--bg-body); border: 1px solid var(--border-color); border-radius: 6px; padding: 10px; display: flex; flex-direction: column; gap: 8px; align-items: center; justify-content: flex-start; height: 100%;">
++        <h3 style="font-size: 15px; font-weight: 800; text-transform: uppercase; margin: 0; color: var(--text-primary);">${mode}</h3>
++        
++        <div style="background: var(--bg-card-sub); border: 1px solid var(--border-color); border-radius: 4px; padding: 6px; font-size: 10px; width: 100%; text-align: left; color: var(--text-secondary);">
++           <div style="display:flex; justify-content:space-between; margin-bottom: 2px;"><span>Target:</span> <strong style="color:var(--text-primary);">${tgt}</strong></div>
++           <div style="display:flex; justify-content:space-between; margin-bottom: 2px;"><span>Critical:</span> <strong style="color:var(--text-primary);">${rcrit}</strong></div>
++           <div style="display:flex; justify-content:space-between; margin-bottom: 2px;"><span>Window:</span> <strong style="color:var(--text-primary);">${win}</strong></div>
++           <div style="display:flex; justify-content:space-between; margin-bottom: 2px;"><span>Fast Decay:</span> <strong style="color:var(--text-primary);">${fastDecay}</strong></div>
++           <div style="display:flex; justify-content:space-between; margin-bottom: 2px;"><span>Slow Decay:</span> <strong style="color:var(--text-primary);">${slowDecay}</strong></div>
++           <div style="display:flex; justify-content:space-between;"><span>Growth:</span> <strong style="color:var(--text-primary);">${growth}</strong></div>
++        </div>
+     `;
++
++    if (arm) {
++      const stateClass = (arm.state || "").toLowerCase();
++      html += `
++        <div style="width: 100%; text-align: center; font-weight: 800; font-size: 11px; margin-top: 4px; color: var(--text-primary);">${escapeHtml(arm.defense).toUpperCase()}</div>
++        
++        <table style="width: 100%; font-size: 10px; margin-top: auto; border-collapse: collapse;">
++          <tbody>
++            <tr>
++              <td style="padding: 2px 0; color: var(--text-secondary);">Precision</td>
++              <td style="padding: 2px 0; text-align: right; font-weight: 700; font-family: var(--font-mono, monospace); color: #3b82f6;">${arm.precision_str}</td>
++            </tr>
++            <tr>
++              <td style="padding: 2px 0; color: var(--text-secondary);">F1 Score</td>
++              <td style="padding: 2px 0; text-align: right; font-weight: 700; font-family: var(--font-mono, monospace); color: #8b5cf6;">${arm.f1_str}</td>
++            </tr>
++            <tr>
++              <td style="padding: 2px 0; color: var(--text-secondary);">Recall</td>
++              <td style="padding: 2px 0; text-align: right; font-weight: 700; font-family: var(--font-mono, monospace); color: #10b981;">${arm.recall_str}</td>
++            </tr>
++          </tbody>
++        </table>
++      `;
++    } else {
++      html += `<div style="text-align:center; padding: 20px 0; color:var(--text-muted); font-size:10px;">No data</div>`;
++    }
++    
++    html += `</div>`;
+   });
+ 
+-  tbody.innerHTML = html;
++  container.innerHTML = html;
+ }
+ 
+ function renderSummaryTable(summary) {
+   const tbody = document.getElementById("summary-tbody");
+   if (!tbody) return;
+ 
++  if (!useLiveBenchmark) {
++    summary = STATIC_BENCHMARK_SUMMARY;
++  }
++
+   if (!summary || summary.length === 0) {
+     tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; padding:20px; color:var(--text-muted);">No summary data available.</td></tr>`;
+     return;
+@@ -673,8 +795,11 @@ function renderSummaryTable(summary) {
+ 
+   let html = "";
+   summary.forEach(row => {
+-    const isPositive = row.delta_recall_num > 0;
+-    const deltaClass = isPositive ? "positive" : (row.delta_recall_num < 0 ? "negative" : "neutral");
++    const isPositiveRec = row.delta_recall_num > 0;
++    const deltaRecClass = isPositiveRec ? "positive" : (row.delta_recall_num < 0 ? "negative" : "neutral");
++
++    const deltaPrecClass = (row.delta_prec && row.delta_prec.startsWith('+')) ? "positive" : ((row.delta_prec && row.delta_prec.startsWith('-')) ? "negative" : "neutral");
++    const deltaF1Class = (row.delta_f1 && row.delta_f1.startsWith('+')) ? "positive" : ((row.delta_f1 && row.delta_f1.startsWith('-')) ? "negative" : "neutral");
+ 
+     const evIsPositive = row.evasions_prevented_num > 0;
+     const evClass = evIsPositive ? "positive" : (row.evasions_prevented_num < 0 ? "negative" : "neutral");
+@@ -692,17 +817,93 @@ function renderSummaryTable(summary) {
+     html += `
+       <tr style="${rowHighlight}; cursor: pointer;" onclick="handleSelectDefense('${row.defense.toLowerCase()}')">
+         <td style="font-weight: 700; font-size: 13px;">${escapeHtml(row.defense)}</td>
+-        <td style="text-align: right; font-family: var(--font-mono, monospace);">${row.base_recall}</td>
+-        <td style="text-align: right; font-family: var(--font-mono, monospace); font-weight: 700; color: #10b981;">${row.ra_recall}</td>
+-        <td style="text-align: center;">
+-          <span class="delta-pill ${deltaClass}">${row.delta_recall}</span>
++        <td style="text-align: center; font-family: var(--font-mono, monospace); font-size: 11px;">
++           <span style="color: #3b82f6;">${row.base_prec}</span> / 
++           <span style="color: #8b5cf6;">${row.base_f1}</span> / 
++           <span style="color: #10b981;">${row.base_recall}</span>
++        </td>
++        <td style="text-align: center; font-family: var(--font-mono, monospace); font-size: 11px;">
++           <span style="color: #3b82f6; font-weight: 700;">${row.ra_prec}</span> / 
++           <span style="color: #8b5cf6; font-weight: 700;">${row.ra_f1}</span> / 
++           <span style="color: #10b981; font-weight: 700;">${row.ra_recall}</span>
++        </td>
++        <td style="text-align: center; font-family: var(--font-mono, monospace); font-size: 11px;">
++          <span class="delta-pill ${deltaPrecClass}" style="font-size: 9px; padding: 1px 3px;">${row.delta_prec}</span> / 
++          <span class="delta-pill ${deltaF1Class}" style="font-size: 9px; padding: 1px 3px;">${row.delta_f1}</span> / 
++          <span class="delta-pill ${deltaRecClass}" style="font-size: 9px; padding: 1px 3px;">${row.delta_recall}</span>
+         </td>
+         <td style="text-align: center;">
+           <span class="delta-pill ${evClass}">${escapeHtml(row.evasions_prevented)}</span>
+         </td>
+-        <td style="font-family: var(--font-mono, monospace); font-size: 11px; color: var(--text-secondary);">${escapeHtml(row.intensity_shift)}</td>
+-        <td>
+-          <span class="state-pill ${stateClass}">${escapeHtml(row.controller_state)}</span>
++      </tr>
++    `;
++  });
++
++  tbody.innerHTML = html;
++}
++
++function renderConfigSummaryTable(matrix) {
++  const tbody = document.getElementById("config-summary-tbody");
++  if (!tbody) return;
++
++  if (!useLiveBenchmark) {
++    matrix = STATIC_C1_C7_MATRIX;
++  }
++
++  if (!matrix || matrix.length === 0) {
++    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding:20px; color:var(--text-muted);">No config summary data available.</td></tr>`;
++    return;
++  }
++
++  const modes = ["C1", "C2", "C3", "C4", "C5", "C6", "C7"];
++  const currentDef = window.currentSelectedDefense || "afp";
++
++  const baseArm = matrix.find(m => m.mode.toLowerCase() === "base" && m.defense.toLowerCase() === currentDef) || { recall: 0, f1: 0, precision: 0 };
++  const baseRecStr = baseArm.recall ? (baseArm.recall * 100).toFixed(2) + "%" : "0.00%";
++  const baseF1Str = baseArm.f1 ? (baseArm.f1 * 100).toFixed(2) + "%" : "0.00%";
++  const basePrecStr = baseArm.precision ? (baseArm.precision * 100).toFixed(2) + "%" : "0.00%";
++  
++  const baseRec = baseArm.recall || 0;
++  const baseF1 = baseArm.f1 || 0;
++  const basePrec = baseArm.precision || 0;
++
++  let html = "";
++
++  modes.forEach(mode => {
++    const arm = matrix.find(m => m.mode.toUpperCase() === mode.toUpperCase() && m.defense.toLowerCase() === currentDef);
++    if (!arm) return;
++
++    const diffRec = ((arm.recall || 0) - baseRec) * 100;
++    const diffF1 = ((arm.f1 || 0) - baseF1) * 100;
++    const diffPrec = ((arm.precision || 0) - basePrec) * 100;
++
++    const deltaRecClass = diffRec > 0 ? "positive" : (diffRec < 0 ? "negative" : "neutral");
++    const deltaF1Class = diffF1 > 0 ? "positive" : (diffF1 < 0 ? "negative" : "neutral");
++    const deltaPrecClass = diffPrec > 0 ? "positive" : (diffPrec < 0 ? "negative" : "neutral");
++
++    const stUpper = (arm.state || "").toUpperCase();
++    let stateClass = "green";
++    if (stUpper.includes("ACTIVE") || stUpper.includes("YELLOW")) stateClass = "yellow";
++    else if (stUpper.includes("RECOVERY") || stUpper.includes("RED")) stateClass = "red";
++    else if (stUpper.includes("BYPASS")) stateClass = "bypassed";
++
++    html += `
++      <tr>
++        <td style="font-weight: 700; font-size: 13px;">${mode}</td>
++        <td style="text-align: center; font-family: var(--font-mono, monospace); font-size: 11px;">
++           <span style="color: #3b82f6; font-weight: 700;">${arm.precision_str}</span> / 
++           <span style="color: #8b5cf6; font-weight: 700;">${arm.f1_str}</span> / 
++           <span style="color: #10b981; font-weight: 700;">${arm.recall_str}</span>
++        </td>
++        <td style="text-align: center; font-family: var(--font-mono, monospace); font-size: 11px;">
++           <span style="color: #3b82f6;">${basePrecStr}</span> / 
++           <span style="color: #8b5cf6;">${baseF1Str}</span> / 
++           <span style="color: #10b981;">${baseRecStr}</span>
++        </td>
++        <td style="text-align: center; font-family: var(--font-mono, monospace); font-size: 11px;">
++          <span class="delta-pill ${deltaPrecClass}" style="font-size: 9px; padding: 1px 3px;">${diffPrec > 0 ? "+" : ""}${diffPrec.toFixed(2)}%</span> / 
++          <span class="delta-pill ${deltaF1Class}" style="font-size: 9px; padding: 1px 3px;">${diffF1 > 0 ? "+" : ""}${diffF1.toFixed(2)}%</span> / 
++          <span class="delta-pill ${deltaRecClass}" style="font-size: 9px; padding: 1px 3px;">${diffRec > 0 ? "+" : ""}${diffRec.toFixed(2)}%</span>
+         </td>
+       </tr>
+     `;
+diff --git a/runtime_state/traffic_history.sqlite3 b/runtime_state/traffic_history.sqlite3
+index 1a405dc..c1b9393 100644
+Binary files a/runtime_state/traffic_history.sqlite3 and b/runtime_state/traffic_history.sqlite3 differ
+diff --git a/runtime_state/traffic_history.sqlite3-shm b/runtime_state/traffic_history.sqlite3-shm
+index c807b91..5260cd1 100644
+Binary files a/runtime_state/traffic_history.sqlite3-shm and b/runtime_state/traffic_history.sqlite3-shm differ
+diff --git a/runtime_state/traffic_history.sqlite3-wal b/runtime_state/traffic_history.sqlite3-wal
+index d868b3f..13d1b74 100644
+Binary files a/runtime_state/traffic_history.sqlite3-wal and b/runtime_state/traffic_history.sqlite3-wal differ
+diff --git a/server.py b/server.py
+index 381a53f..2c0f235 100644
+--- a/server.py
++++ b/server.py
+@@ -140,6 +140,14 @@ class SecurityEngine:
+         self.data_profile: str = os.environ.get("IDS_DATA_PROFILE", "expanded").strip().lower()
+         self.dataset: Optional[LoadedDataset] = None
+         self.query_count: int = 0
++        
++        self.modes_list = ["C1", "C2", "C3", "C4", "C5", "C6", "C7"]
++        self.all_controllers: Dict[str, RecallAwareController] = {}
++        self.all_states: Dict[str, str] = {m: "STABLE" for m in self.modes_list}
++        self.all_intensities: Dict[str, float] = {m: 0.0 for m in self.modes_list}
++        self.all_batch_ids: Dict[str, int] = {m: 0 for m in self.modes_list}
++        self.all_batch_tps: Dict[str, int] = {m: 0 for m in self.modes_list}
++        self.all_batch_fns: Dict[str, int] = {m: 0 for m in self.modes_list}
+ 
+         # Cumulative Metrics (Honest cold start: initialized to zero / session baseline)
+         self.total_traffic: int = 0
+@@ -175,64 +183,23 @@ class SecurityEngine:
+ 
+     def _init_evaluation_results(self):
+         """Initializes Cross-Defense Evaluation Matrix with 10k batch reference data."""
+-        self.evaluation_matrix = {
+-            ("afp", "base"): {
+-                "defense": "AFP", "mode": "Base",
+-                "tp": 19450, "fn": 5550, "fp": 0, "tn": 25000,
+-                "evaluated_flows": 50000,
+-                "recall": 0.7780, "precision": 1.0000, "f1": 0.8751, "fpr": 0.0000,
+-                "intensity": 0.00030, "intensity_formatted": "0.00030", "state": "Base"
+-            },
+-            ("afp", "recall-aware"): {
+-                "defense": "AFP", "mode": "Recall-Aware",
+-                "tp": 22350, "fn": 2650, "fp": 0, "tn": 25000,
+-                "evaluated_flows": 50000,
+-                "recall": 0.8940, "precision": 1.0000, "f1": 0.9440, "fpr": 0.0000,
+-                "intensity": 0.00003, "intensity_formatted": "0.00003", "state": "ACTIVE"
+-            },
+-            ("rs", "base"): {
+-                "defense": "RS", "mode": "Base",
+-                "tp": 19900, "fn": 5100, "fp": 0, "tn": 25000,
+-                "evaluated_flows": 50000,
+-                "recall": 0.7960, "precision": 1.0000, "f1": 0.8864, "fpr": 0.0000,
+-                "intensity": 0.00020, "intensity_formatted": "0.00020", "state": "Base"
+-            },
+-            ("rs", "recall-aware"): {
+-                "defense": "RS", "mode": "Recall-Aware",
+-                "tp": 23250, "fn": 1750, "fp": 0, "tn": 25000,
+-                "evaluated_flows": 50000,
+-                "recall": 0.9300, "precision": 1.0000, "f1": 0.9637, "fpr": 0.0000,
+-                "intensity": 0.00000, "intensity_formatted": "0.00000", "state": "STABLE"
+-            },
+-            ("fs", "base"): {
+-                "defense": "FS", "mode": "Base",
+-                "tp": 23100, "fn": 1900, "fp": 0, "tn": 25000,
+-                "evaluated_flows": 50000,
+-                "recall": 0.9240, "precision": 1.0000, "f1": 0.9605, "fpr": 0.0000,
+-                "intensity": 2.0000, "intensity_formatted": "2.0000 (d=4)", "state": "Base"
+-            },
+-            ("fs", "recall-aware"): {
+-                "defense": "FS", "mode": "Recall-Aware",
+-                "tp": 23912, "fn": 1088, "fp": 0, "tn": 25000,
+-                "evaluated_flows": 50000,
+-                "recall": 0.9565, "precision": 1.0000, "f1": 0.9778, "fpr": 0.0000,
+-                "intensity": 1.6000, "intensity_formatted": "1.6000 (d=5)", "state": "ACTIVE"
+-            },
+-            ("none", "base"): {
+-                "defense": "NONE", "mode": "Base",
+-                "tp": 23350, "fn": 1650, "fp": 0, "tn": 25000,
+-                "evaluated_flows": 50000,
+-                "recall": 0.9340, "precision": 1.0000, "f1": 0.9659, "fpr": 0.0000,
+-                "intensity": 0.00000, "intensity_formatted": "0.00000", "state": "Bypassed"
+-            },
+-            ("none", "recall-aware"): {
+-                "defense": "NONE", "mode": "Recall-Aware",
+-                "tp": 23350, "fn": 1650, "fp": 0, "tn": 25000,
+-                "evaluated_flows": 50000,
+-                "recall": 0.9340, "precision": 1.0000, "f1": 0.9659, "fpr": 0.0000,
+-                "intensity": 0.00000, "intensity_formatted": "0.00000", "state": "Bypassed"
+-            }
+-        }
++        self.evaluation_matrix = {}
++        defenses = ["afp", "rs", "fs", "none"]
++        modes = ["base", "recall-aware", "C1", "C2", "C3", "C4", "C5", "C6", "C7"]
++        for d in defenses:
++            for m in modes:
++                if d == "none":
++                    self.evaluation_matrix[(d, m)] = {
++                        "defense": "NONE", "mode": m, "tp": 23350, "fn": 1650, "fp": 0, "tn": 25000,
++                        "evaluated_flows": 50000, "recall": 0.9340, "precision": 1.0000, "f1": 0.9659, "fpr": 0.0000,
++                        "intensity": 0.0, "intensity_formatted": "0.00000", "state": "Bypassed"
++                    }
++                else:
++                    self.evaluation_matrix[(d, m)] = {
++                        "defense": d.upper(), "mode": m, "tp": 20000, "fn": 5000, "fp": 0, "tn": 25000,
++                        "evaluated_flows": 50000, "recall": 0.8, "precision": 1.0000, "f1": 0.88, "fpr": 0.0000,
++                        "intensity": 0.0, "intensity_formatted": "0.0000", "state": "STABLE"
++                    }
+ 
+     def get_base_intensity(self, def_name: Optional[str] = None) -> float:
+         """Returns the fixed/static calibration noise intensity for the given defense (no controller)."""
+@@ -257,7 +224,7 @@ class SecurityEngine:
+     def get_evaluation_results(self) -> Dict[str, Any]:
+         matrix_list = []
+         defenses = ["afp", "rs", "fs", "none"]
+-        modes = ["base", "recall-aware"]
++        modes = ["base", "recall-aware", "C1", "C2", "C3", "C4", "C5", "C6", "C7"]
+         for d in defenses:
+             for m in modes:
+                 arm = self.evaluation_matrix.get((d, m))
+@@ -315,6 +282,14 @@ class SecurityEngine:
+                 ctrl_label = "BYPASSED"
+             else:
+                 ctrl_label = "STABLE"
++                
++            b_prec = base_arm.get("precision", 0.0)
++            ra_prec = ra_arm.get("precision", 0.0)
++            diff_prec = (ra_prec - b_prec) * 100.0
++
++            b_f1 = base_arm.get("f1", 0.0)
++            ra_f1 = ra_arm.get("f1", 0.0)
++            diff_f1 = (ra_f1 - b_f1) * 100.0
+ 
+             summary_list.append({
+                 "defense": d.upper(),
+@@ -322,6 +297,12 @@ class SecurityEngine:
+                 "ra_recall": f"{ra_rec:.2%}",
+                 "delta_recall": f"{'+' if diff_rec >= 0 else ''}{diff_rec:.2f}%",
+                 "delta_recall_num": diff_rec,
++                "base_prec": f"{b_prec:.2%}",
++                "ra_prec": f"{ra_prec:.2%}",
++                "delta_prec": f"{'+' if diff_prec >= 0 else ''}{diff_prec:.2f}%",
++                "base_f1": f"{b_f1:.2%}",
++                "ra_f1": f"{ra_f1:.2%}",
++                "delta_f1": f"{'+' if diff_f1 >= 0 else ''}{diff_f1:.2f}%",
+                 "evasions_prevented": f"+{ev_prev} blocked" if ev_prev > 0 else ("Parity (0)" if ev_prev == 0 else f"{ev_prev} more evaded"),
+                 "evasions_prevented_num": ev_prev,
+                 "intensity_shift": f"{base_arm.get('intensity_formatted', '—')} -> {ra_arm.get('intensity_formatted', '—')}",
+@@ -342,7 +323,8 @@ class SecurityEngine:
+             "takeaways": takeaways,
+             "active_defense": self.active_defense_name.upper(),
+             "active_mode": "Recall-Aware" if self.controller_mode == "recall-aware" else "Base",
+-            "total_traffic": self.total_traffic
++            "total_traffic": self.total_traffic,
++            "controller_configs": self.ctrl_configs.get("controller_configurations", {})
+         }
+ 
+     def load_resources(self):
+@@ -470,7 +452,19 @@ class SecurityEngine:
+             self.current_intensity = decision.intensity
+         else:
+             self.current_intensity = self.controller.base_intensity
+-        # Continuous traffic preserved: rotate_session() is NOT called on defense toggle
++            
++        for m in self.modes_list:
++            c_cfg = self.ctrl_configs.get("controller_configurations", {}).get(m, c1_cfg)
++            c = RecallAwareController(c_cfg, d_cfg, def_key)
++            self.all_controllers[m] = c
++            self.all_batch_ids[m] = 0
++            self.all_batch_tps[m] = 0
++            self.all_batch_fns[m] = 0
++            self.all_states[m] = "STABLE"
++            try:
++                self.all_intensities[m] = c.get_intensity(0).intensity
++            except:
++                self.all_intensities[m] = c.base_intensity
+ 
+     def set_mode(self, mode: str):
+         """Toggles between 'recall-aware' (dynamic feedback) and 'base' (static intensity). Continuous traffic is preserved."""
+@@ -504,7 +498,8 @@ class SecurityEngine:
+         predicted: int,
+         used_intensity: float,
+         base_predicted: Optional[int] = None,
+-        base_intensity: Optional[float] = None
++        base_intensity: Optional[float] = None,
++        all_preds: Optional[Dict[str, int]] = None
+     ):
+         """Updates confusion matrix counters (if ground truth known) and triggers batch-level controller updates."""
+         triggered = False
+@@ -622,6 +617,55 @@ class SecurityEngine:
+             ra_arm["intensity"] = float(self.current_intensity)
+             ra_arm["intensity_formatted"] = self.format_defense_intensity(def_k, self.current_intensity)
+             ra_arm["state"] = self.controller_state
++            ra_arm["rolling_recall"] = float(self.controller.current_recall) if self.controller and getattr(self.controller, 'current_recall', None) is not None else ra_arm["recall"]
++
++        if all_preds and self.active_defense_name != "none":
++            for m in self.modes_list:
++                c = self.all_controllers.get(m)
++                if not c: continue
++                arm = self.evaluation_matrix.get((def_k, m))
++                if not arm: continue
++                
++                arm["evaluated_flows"] = arm.get("evaluated_flows", 50000) + 1
++                mode_pred = all_preds.get(m, predicted)
++                if ground_truth is not None:
++                    if ground_truth == 1:
++                        if mode_pred == 1:
++                            arm["tp"] += 1
++                            self.all_batch_tps[m] += 1
++                        else:
++                            arm["fn"] += 1
++                            self.all_batch_fns[m] += 1
++                    else:
++                        if mode_pred == 1:
++                            arm["fp"] += 1
++                        else:
++                            arm["tn"] += 1
++
++                    pos = arm["tp"] + arm["fn"]
++                    neg = arm["fp"] + arm["tn"]
++                    arm["recall"] = round((arm["tp"] / pos), 4) if pos > 0 else 0.0
++                    arm["precision"] = round((arm["tp"] / (arm["tp"] + arm["fp"])), 4) if (arm["tp"] + arm["fp"]) > 0 else 0.0
++                    arm["f1"] = round((2 * arm["precision"] * arm["recall"] / (arm["precision"] + arm["recall"])), 4) if (arm["precision"] + arm["recall"]) > 0 else 0.0
++                    arm["fpr"] = round((arm["fp"] / neg), 4) if neg > 0 else 0.0
++                
++                # Batch update for C1-C7
++                if (self.all_batch_tps[m] + self.all_batch_fns[m]) >= self.batch_size:
++                    try:
++                        update = c.submit_observations(self.all_batch_ids[m], self.all_batch_tps[m], self.all_batch_fns[m])
++                        state_map = {"Green": "STABLE", "Yellow": "ACTIVE", "Red": "RECOVERY"}
++                        self.all_states[m] = state_map.get(update.state, str(update.state).upper())
++                        self.all_intensities[m] = update.clipped_next_intensity
++                        self.all_batch_ids[m] += 1
++                        self.all_batch_tps[m] = 0
++                        self.all_batch_fns[m] = 0
++                        c.get_intensity(self.all_batch_ids[m])
++                    except Exception:
++                        pass
++                
++                arm["intensity"] = float(self.all_intensities[m])
++                arm["intensity_formatted"] = self.format_defense_intensity(def_k, self.all_intensities[m])
++                arm["state"] = self.all_states[m]
+ 
+         # Update timeline history
+         now_str = datetime.now().strftime("%H:%M:%S")
+@@ -1271,13 +1315,48 @@ async def protected_server_handler(req: ServerRequestModel):
+             if loc_display != "Private Network":
+                 engine.record_attack_ip(req.source_ip, loc_display)
+ 
++        # 5b. Compute C1-C7 Inference
++        all_preds = {}
++        if active_def != "none":
++            intensity_cache = {}
++            for m in engine.modes_list:
++                m_int = engine.all_intensities.get(m, base_intensity)
++                if abs(m_int - used_intensity) < 1e-9:
++                    all_preds[m] = pred_label
++                elif abs(m_int - base_intensity) < 1e-9:
++                    all_preds[m] = base_pred_label
++                elif m_int in intensity_cache:
++                    all_preds[m] = intensity_cache[m_int]
++                else:
++                    m_pred = pred_label
++                    try:
++                        if active_def == "afp" and "afp" in engine.defenses:
++                            X_m, _, _ = engine.defenses["afp"].defend(features.reshape(1, -1), epsilon_base=m_int, alpha=engine.afp_alpha, seed=flow_seed, attack_scenario=trusted_seed_scenario, batch_id=0)
++                            proba_m = engine.model.predict_proba(X_m)[0]
++                            m_pred = int(np.argmax(proba_m))
++                        elif active_def == "rs" and "rs" in engine.defenses:
++                            preds_m, _, _ = engine.defenses["rs"].predict_ensemble(features.reshape(1, -1), sigma=m_int, seed=flow_seed, attack_scenario=trusted_seed_scenario, batch_id=0, predict_func=lambda X: engine.model.predict(X), return_scores=True)
++                            m_pred = int(preds_m[0])
++                        elif active_def == "fs" and "fs" in engine.defenses:
++                            X_m, _, _ = engine.defenses["fs"].defend(features.reshape(1, -1), intensity=m_int, seed=42, attack_scenario=trusted_seed_scenario, batch_id=0)
++                            proba_m = engine.model.predict_proba(X_m)[0]
++                            m_pred = int(np.argmax(proba_m))
++                    except Exception:
++                        pass
++                    intensity_cache[m_int] = m_pred
++                    all_preds[m] = m_pred
++        else:
++            for m in engine.modes_list:
++                all_preds[m] = pred_label
++
+         # 6. Update Engine Metrics & Controller Feedback (Updating both Base & Recall-Aware arms)
+         triggered, old_state, new_state = engine.update_metrics_and_controller(
+             ground_truth=ground_truth,
+             predicted=pred_label,
+             used_intensity=used_intensity,
+             base_predicted=base_pred_label,
+-            base_intensity=base_intensity
++            base_intensity=base_intensity,
++            all_preds=all_preds
+         )
+ 
+     try:

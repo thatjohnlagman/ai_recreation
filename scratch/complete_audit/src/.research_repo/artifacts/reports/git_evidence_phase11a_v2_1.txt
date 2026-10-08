@@ -1,0 +1,11 @@
+=== GIT TRACKED STATUS ===
+CLEAN (0 modifications)
+
+=== GIT UNTRACKED ARTIFACTS ===
+artifacts/reports/git_evidence_phase11a_v2_1.txt
+
+=== RECENT COMMITS ===
+c4a2d77 Phase 11A v2.1 correction
+75d5ef9 Phase 11A v2: Fix expected row count for controller traces
+aaf2953 Phase 11A v2: Revert to thesis-mandated batch-level primary inference
+

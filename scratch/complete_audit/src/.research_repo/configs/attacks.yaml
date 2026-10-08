@@ -1,0 +1,80 @@
+# attacks.yaml
+# Black-box attack scenario configurations
+# All attacks operate on evaluation data only.
+# Attack samples are cached as Parquet and reused across all defenses.
+# No target RF internals are accessed during attack generation.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Silent Probing (Approved study definition from Thesis Chapter 3)
+# Primary condition: evaluation batches submitted sequentially in original form.
+# NOT a Springer random-walk/side-channel reproduction.
+# ─────────────────────────────────────────────────────────────────────────────
+silent_probing:
+  label: "Silent Probing"
+  code_name: "SilentProbingScenario"
+  description: >
+    Evaluation samples are submitted in batches to simulate gradual probing.
+    Original records are used unmodified. Batch order is preserved identically
+    for base and controller-augmented configurations.
+    This is the study-defined controlled silent-probing simulation,
+    NOT an exact reproduction of the Springer random-walk pipeline.
+  modifies_samples: false
+  cache_path: "artifacts/attacks/silent_probing/"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Surrogate Transferability (Thesis Chapter 3 — Decision Tree surrogate)
+# ─────────────────────────────────────────────────────────────────────────────
+surrogate_transfer:
+  label: "Surrogate Transferability"
+  code_name: "SurrogateTransferAttack"
+  description: >
+    A Decision Tree surrogate approximates the frozen RF's hard-label decisions
+    using a disjoint query/crafting subset. Adversarial samples are crafted
+    against the surrogate (tree-path/leaf targeting) and transferred to the RF
+    without further target-guided refinement.
+  surrogate_model: "DecisionTree"
+  surrogate_max_depth: null     # Unconstrained — approximates RF faithfully
+  surrogate_seed: 42
+  query_subset_fraction: 0.20   # Fraction of eval data used for surrogate training
+  attack_sample_source: "attack_class_only"
+  max_feature_modifications: null  # Minimum needed to reach benign leaf
+  clip_to_training_bounds: true
+  preserve_protected_features: true
+  cache_path: "artifacts/attacks/surrogate_transfer/"
+  fidelity_report_path: "artifacts/attacks/surrogate_fidelity.json"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Decision-Boundary Attack (Thesis Chapter 3 pseudocode)
+# Hard-label only — no RF probabilities, internals, or gradients accessed.
+# ─────────────────────────────────────────────────────────────────────────────
+boundary_attack:
+  label: "Decision-Boundary Attack"
+  code_name: "DecisionBoundaryAttack"
+  description: >
+    Attack samples are moved toward benign reference samples in feature space.
+    A binary search along the attack-to-benign interpolation line identifies
+    the boundary crossing. Only RF hard-label binary predictions are queried.
+  search_procedure: "binary_search_interpolation"
+  max_queries_per_sample: 50    # Fixed query budget
+  binary_search_steps: 10       # Steps within binary search
+  n_attack_samples: 200         # Subset of attack samples to process
+  benign_reference_pool: "disjoint_crafting_subset"
+  attack_sample_source: "attack_class_only"
+  clip_to_training_bounds: true
+  preserve_protected_features: true
+  seed: 42
+  cache_path: "artifacts/attacks/boundary_attack/"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared attack settings
+# ─────────────────────────────────────────────────────────────────────────────
+shared:
+  # Disjoint crafting/query pool (not used as final measurement batches)
+  # Taken from the evaluation partition, BEFORE batch construction
+  crafting_pool_fraction: 0.20
+  crafting_pool_seed: 42
+  # Validation gates
+  report_evasion_rate: true
+  report_perturbation_magnitude: true
+  report_constraint_violations: true
+  report_idsmetrics_before_defense: true

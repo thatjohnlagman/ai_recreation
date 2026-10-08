@@ -1,0 +1,342 @@
+FROZEN ARTIFACTS AND CACHES HASHES
+--------------------------------------------------
+File: artifacts/models/frozen_rf.joblib
+Expected: 9608672c5d5e38a9272c560679cdd2291399de0e0917c8c9dff373bfd200f51d
+Actual:   9608672c5d5e38a9272c560679cdd2291399de0e0917c8c9dff373bfd200f51d
+Status:   MATCH
+
+File: data/manifests/evaluation_roles.csv
+Expected: cbf650879aa1369fa26b803777f30d4b0add9e7aff2c05d399ba7f42563f7b45
+Actual:   cbf650879aa1369fa26b803777f30d4b0add9e7aff2c05d399ba7f42563f7b45
+Status:   MATCH
+
+File: data/manifests/evaluation_batches.csv
+Expected: 4084017e5593732e455763416f7fc38254fc9dab2466eca289b66e68dc0ff79a
+Actual:   4084017e5593732e455763416f7fc38254fc9dab2466eca289b66e68dc0ff79a
+Status:   MATCH
+
+File: configs/experiment.yaml
+Expected: a1c5a389b1bc3c66311c7a96a7ccc3ee54af86506e64b38be7f26ad3c3d84c70
+Actual:   a1c5a389b1bc3c66311c7a96a7ccc3ee54af86506e64b38be7f26ad3c3d84c70
+Status:   MATCH
+
+File: configs/attacks.yaml
+Expected: fbd596219990125d8a75da0b1d0e35bdd82c1429052407115ab2ab4f4f91cd2b
+Actual:   fbd596219990125d8a75da0b1d0e35bdd82c1429052407115ab2ab4f4f91cd2b
+Status:   MATCH
+
+File: configs/defenses.yaml
+Expected: 43c21344140233d8ba90d78eff345741ef825a68ee8232c9cf32220309f5a7ff
+Actual:   43c21344140233d8ba90d78eff345741ef825a68ee8232c9cf32220309f5a7ff
+Status:   MATCH
+
+File: configs/controllers.yaml
+Expected: 9c81c9696ab740a1b56ae0152f84fbb8be983484fd284cf0ac7edbd6b4a1eb91
+Actual:   9c81c9696ab740a1b56ae0152f84fbb8be983484fd284cf0ac7edbd6b4a1eb91
+Status:   MATCH
+
+File: artifacts/reports/cache_inventory_v2.json
+Expected: 274f6a132cc4459c3adf8a70949cb7ed5d20f95b779b48040e47ec3ea2ede6ae
+Actual:   274f6a132cc4459c3adf8a70949cb7ed5d20f95b779b48040e47ec3ea2ede6ae
+Status:   MATCH
+
+File: artifacts/caches/SilentProbing_42/X_attacked.parquet
+Expected: 72180cc19198ee0ceba8eefdc643c77db400c807add46bfc037bdcdfd76dbf8f
+Actual:   72180cc19198ee0ceba8eefdc643c77db400c807add46bfc037bdcdfd76dbf8f
+Status:   MATCH
+
+File: artifacts/caches/SilentProbing_42/status.parquet
+Expected: 7dce23831ec9bd46880a25c84cd973a16b13be9484bc9906e12f20167019bef6
+Actual:   7dce23831ec9bd46880a25c84cd973a16b13be9484bc9906e12f20167019bef6
+Status:   MATCH
+
+File: artifacts/caches/SilentProbing_42/manifest.json
+Expected: 3142249d6690d219018f2978f3794fcb9f81f1de12cc5e7ba63c81482ba3d588
+Actual:   3142249d6690d219018f2978f3794fcb9f81f1de12cc5e7ba63c81482ba3d588
+Status:   MATCH
+
+File: artifacts/caches/SilentProbing_42/completion.json
+Expected: 9404185caf4be948a7e58b2c87dca88a4444095fad83c8c2a3720a3cd7c2d4eb
+Actual:   9404185caf4be948a7e58b2c87dca88a4444095fad83c8c2a3720a3cd7c2d4eb
+Status:   MATCH
+
+File: artifacts/caches/SilentProbing_43/X_attacked.parquet
+Expected: 72180cc19198ee0ceba8eefdc643c77db400c807add46bfc037bdcdfd76dbf8f
+Actual:   72180cc19198ee0ceba8eefdc643c77db400c807add46bfc037bdcdfd76dbf8f
+Status:   MATCH
+
+File: artifacts/caches/SilentProbing_43/status.parquet
+Expected: 7dce23831ec9bd46880a25c84cd973a16b13be9484bc9906e12f20167019bef6
+Actual:   7dce23831ec9bd46880a25c84cd973a16b13be9484bc9906e12f20167019bef6
+Status:   MATCH
+
+File: artifacts/caches/SilentProbing_43/manifest.json
+Expected: 3a583c3087b88cf520801a300102246942ee9735c97c9fdbb9dc75e90d4573c6
+Actual:   3a583c3087b88cf520801a300102246942ee9735c97c9fdbb9dc75e90d4573c6
+Status:   MATCH
+
+File: artifacts/caches/SilentProbing_43/completion.json
+Expected: da2bd8d5a00c29b3a1ca6f2221b9aaa9ed6c61a76464b99b436a34eacaa7a60c
+Actual:   da2bd8d5a00c29b3a1ca6f2221b9aaa9ed6c61a76464b99b436a34eacaa7a60c
+Status:   MATCH
+
+File: artifacts/caches/SilentProbing_44/X_attacked.parquet
+Expected: 72180cc19198ee0ceba8eefdc643c77db400c807add46bfc037bdcdfd76dbf8f
+Actual:   72180cc19198ee0ceba8eefdc643c77db400c807add46bfc037bdcdfd76dbf8f
+Status:   MATCH
+
+File: artifacts/caches/SilentProbing_44/status.parquet
+Expected: 7dce23831ec9bd46880a25c84cd973a16b13be9484bc9906e12f20167019bef6
+Actual:   7dce23831ec9bd46880a25c84cd973a16b13be9484bc9906e12f20167019bef6
+Status:   MATCH
+
+File: artifacts/caches/SilentProbing_44/manifest.json
+Expected: 9f7f18354921a71d6a6a28a24e3af03a9b62b894fc84aac010ba25d6872680e0
+Actual:   9f7f18354921a71d6a6a28a24e3af03a9b62b894fc84aac010ba25d6872680e0
+Status:   MATCH
+
+File: artifacts/caches/SilentProbing_44/completion.json
+Expected: fecbea46382033d1aa598116dde76fbdc3196463b959ed018350bada2995bf76
+Actual:   fecbea46382033d1aa598116dde76fbdc3196463b959ed018350bada2995bf76
+Status:   MATCH
+
+File: artifacts/caches/SilentProbing_45/X_attacked.parquet
+Expected: 72180cc19198ee0ceba8eefdc643c77db400c807add46bfc037bdcdfd76dbf8f
+Actual:   72180cc19198ee0ceba8eefdc643c77db400c807add46bfc037bdcdfd76dbf8f
+Status:   MATCH
+
+File: artifacts/caches/SilentProbing_45/status.parquet
+Expected: 7dce23831ec9bd46880a25c84cd973a16b13be9484bc9906e12f20167019bef6
+Actual:   7dce23831ec9bd46880a25c84cd973a16b13be9484bc9906e12f20167019bef6
+Status:   MATCH
+
+File: artifacts/caches/SilentProbing_45/manifest.json
+Expected: 7aae84fdbd06e90c7e30011d7e88c358eee8f5f28028c83d446b61cd7b00b6da
+Actual:   7aae84fdbd06e90c7e30011d7e88c358eee8f5f28028c83d446b61cd7b00b6da
+Status:   MATCH
+
+File: artifacts/caches/SilentProbing_45/completion.json
+Expected: d2a01c86f82a19bed4daa596f98d04e2888f6029acbe040d7e14cdb1f1d41055
+Actual:   d2a01c86f82a19bed4daa596f98d04e2888f6029acbe040d7e14cdb1f1d41055
+Status:   MATCH
+
+File: artifacts/caches/SilentProbing_46/X_attacked.parquet
+Expected: 72180cc19198ee0ceba8eefdc643c77db400c807add46bfc037bdcdfd76dbf8f
+Actual:   72180cc19198ee0ceba8eefdc643c77db400c807add46bfc037bdcdfd76dbf8f
+Status:   MATCH
+
+File: artifacts/caches/SilentProbing_46/status.parquet
+Expected: 7dce23831ec9bd46880a25c84cd973a16b13be9484bc9906e12f20167019bef6
+Actual:   7dce23831ec9bd46880a25c84cd973a16b13be9484bc9906e12f20167019bef6
+Status:   MATCH
+
+File: artifacts/caches/SilentProbing_46/manifest.json
+Expected: 37a2a65bd06dc36f17d90f01708e3d63036716870345da5d4fa3e8faae12eb0f
+Actual:   37a2a65bd06dc36f17d90f01708e3d63036716870345da5d4fa3e8faae12eb0f
+Status:   MATCH
+
+File: artifacts/caches/SilentProbing_46/completion.json
+Expected: b16216d120e2c53de962af4189ab81e9750b04d194deb210fee02ac7d6009b40
+Actual:   b16216d120e2c53de962af4189ab81e9750b04d194deb210fee02ac7d6009b40
+Status:   MATCH
+
+File: artifacts/caches/SurrogateTransfer_42/X_attacked.parquet
+Expected: e0840247e33f028ab641309c254fe3afe6021d1e1756cf7d86ab6ab512deec07
+Actual:   e0840247e33f028ab641309c254fe3afe6021d1e1756cf7d86ab6ab512deec07
+Status:   MATCH
+
+File: artifacts/caches/SurrogateTransfer_42/status.parquet
+Expected: af2525dcc9607ed80657c67b31698247184eb781aa9662381e0400959456540a
+Actual:   af2525dcc9607ed80657c67b31698247184eb781aa9662381e0400959456540a
+Status:   MATCH
+
+File: artifacts/caches/SurrogateTransfer_42/manifest.json
+Expected: cf53762f4663244d13c9cc8d9c6f783c8f2a1277ec7409e3c3ed96789390e05c
+Actual:   cf53762f4663244d13c9cc8d9c6f783c8f2a1277ec7409e3c3ed96789390e05c
+Status:   MATCH
+
+File: artifacts/caches/SurrogateTransfer_42/completion.json
+Expected: 1ccc76faeb112e045e7a9851cc2da429413b1693ad8a179ba69edf685955d9f5
+Actual:   1ccc76faeb112e045e7a9851cc2da429413b1693ad8a179ba69edf685955d9f5
+Status:   MATCH
+
+File: artifacts/caches/SurrogateTransfer_43/X_attacked.parquet
+Expected: 4ceca2691f5a993ab334937d4e6f55b219fe8fcaac2220f35dbc80e84b74d4c0
+Actual:   4ceca2691f5a993ab334937d4e6f55b219fe8fcaac2220f35dbc80e84b74d4c0
+Status:   MATCH
+
+File: artifacts/caches/SurrogateTransfer_43/status.parquet
+Expected: b09afba8b46c57a68e555d219ed888380bf8b03f8af1c6e7bd681f7868b28d17
+Actual:   b09afba8b46c57a68e555d219ed888380bf8b03f8af1c6e7bd681f7868b28d17
+Status:   MATCH
+
+File: artifacts/caches/SurrogateTransfer_43/manifest.json
+Expected: 12a9e7f1e38f22ccd7b5ae8a35ba5db5a5ac6d717fff246de91c3bdd48d49b4f
+Actual:   12a9e7f1e38f22ccd7b5ae8a35ba5db5a5ac6d717fff246de91c3bdd48d49b4f
+Status:   MATCH
+
+File: artifacts/caches/SurrogateTransfer_43/completion.json
+Expected: f7ef6a38314ce1edf537dd5c05b457c79d087768825d17d9dd23e112b9ad6fc8
+Actual:   f7ef6a38314ce1edf537dd5c05b457c79d087768825d17d9dd23e112b9ad6fc8
+Status:   MATCH
+
+File: artifacts/caches/SurrogateTransfer_44/X_attacked.parquet
+Expected: aa1bf56152b56ef5b0b4d35c32259f0055c71373e90ff9050bc335c7de570387
+Actual:   aa1bf56152b56ef5b0b4d35c32259f0055c71373e90ff9050bc335c7de570387
+Status:   MATCH
+
+File: artifacts/caches/SurrogateTransfer_44/status.parquet
+Expected: bde19c4a343af3cace74b65c2092ab0f95b8cd0a9a48a5fa253d2f194b043bb5
+Actual:   bde19c4a343af3cace74b65c2092ab0f95b8cd0a9a48a5fa253d2f194b043bb5
+Status:   MATCH
+
+File: artifacts/caches/SurrogateTransfer_44/manifest.json
+Expected: a4484c8fdecd06ce6b2340123e95608c4ea0cc75c6363d0df4d30e3967cebbdc
+Actual:   a4484c8fdecd06ce6b2340123e95608c4ea0cc75c6363d0df4d30e3967cebbdc
+Status:   MATCH
+
+File: artifacts/caches/SurrogateTransfer_44/completion.json
+Expected: be5c1fdf6e420e3d6af6a2b5bcfacedca818f2c422ca79d6d9b670cd47d94170
+Actual:   be5c1fdf6e420e3d6af6a2b5bcfacedca818f2c422ca79d6d9b670cd47d94170
+Status:   MATCH
+
+File: artifacts/caches/SurrogateTransfer_45/X_attacked.parquet
+Expected: 7ddab391caa7c783c3c13809370749f12b3275780505a3759e685f34c3db820c
+Actual:   7ddab391caa7c783c3c13809370749f12b3275780505a3759e685f34c3db820c
+Status:   MATCH
+
+File: artifacts/caches/SurrogateTransfer_45/status.parquet
+Expected: 5f98334aae185ac4768f628135c04784c48c4a48801727b3db373babe7ab6a38
+Actual:   5f98334aae185ac4768f628135c04784c48c4a48801727b3db373babe7ab6a38
+Status:   MATCH
+
+File: artifacts/caches/SurrogateTransfer_45/manifest.json
+Expected: 18d2f0d1215968e3daad74f7e4d90b3ff020db2305e6b5fab44b34f27b0ddb0f
+Actual:   18d2f0d1215968e3daad74f7e4d90b3ff020db2305e6b5fab44b34f27b0ddb0f
+Status:   MATCH
+
+File: artifacts/caches/SurrogateTransfer_45/completion.json
+Expected: 3d6c2d70133379ef1cb6ee1f710c88fd9baaab91a38438fec0a60d903347c33e
+Actual:   3d6c2d70133379ef1cb6ee1f710c88fd9baaab91a38438fec0a60d903347c33e
+Status:   MATCH
+
+File: artifacts/caches/SurrogateTransfer_46/X_attacked.parquet
+Expected: fda11ff7bba6c36a000c211746c5335202dfe6b2d9b383b62da6ebd9be6dccac
+Actual:   fda11ff7bba6c36a000c211746c5335202dfe6b2d9b383b62da6ebd9be6dccac
+Status:   MATCH
+
+File: artifacts/caches/SurrogateTransfer_46/status.parquet
+Expected: 06f7f39882365ff2a14b8cf1ecf76bad61e70433b708578f18f39b524547345f
+Actual:   06f7f39882365ff2a14b8cf1ecf76bad61e70433b708578f18f39b524547345f
+Status:   MATCH
+
+File: artifacts/caches/SurrogateTransfer_46/manifest.json
+Expected: fba14aeffc42e7dc5040e56a4bcf671a9d372a6347931d3a5850ba862d07be9f
+Actual:   fba14aeffc42e7dc5040e56a4bcf671a9d372a6347931d3a5850ba862d07be9f
+Status:   MATCH
+
+File: artifacts/caches/SurrogateTransfer_46/completion.json
+Expected: 2ced08cf6162228c38cb7148484ef5131f08892ce8aa06c8fb33c113628e6501
+Actual:   2ced08cf6162228c38cb7148484ef5131f08892ce8aa06c8fb33c113628e6501
+Status:   MATCH
+
+File: artifacts/caches/DecisionBoundary_42/X_attacked.parquet
+Expected: a1545b22e6e2b2cb3810e2be3f914cde158122911c82444e3aae9ce63aafb1ff
+Actual:   a1545b22e6e2b2cb3810e2be3f914cde158122911c82444e3aae9ce63aafb1ff
+Status:   MATCH
+
+File: artifacts/caches/DecisionBoundary_42/status.parquet
+Expected: 0b7c137c25d08e3a2d061fd96abe3840818742cd8159e6befd361528d7d20db3
+Actual:   0b7c137c25d08e3a2d061fd96abe3840818742cd8159e6befd361528d7d20db3
+Status:   MATCH
+
+File: artifacts/caches/DecisionBoundary_42/manifest.json
+Expected: 4e443a3c39663bd745598935654105def62187a02f5c6ed2388a3dfa1966d7de
+Actual:   4e443a3c39663bd745598935654105def62187a02f5c6ed2388a3dfa1966d7de
+Status:   MATCH
+
+File: artifacts/caches/DecisionBoundary_42/completion.json
+Expected: 239cf0c996b13f2f04220bc29b36901ffe92d5f98195ed37d18688d9578dbe98
+Actual:   239cf0c996b13f2f04220bc29b36901ffe92d5f98195ed37d18688d9578dbe98
+Status:   MATCH
+
+File: artifacts/caches/DecisionBoundary_43/X_attacked.parquet
+Expected: 9f32d3378ab151f236e63a0a3ec8eb7ab5c799ff84531c4e213af57ece3ccac7
+Actual:   9f32d3378ab151f236e63a0a3ec8eb7ab5c799ff84531c4e213af57ece3ccac7
+Status:   MATCH
+
+File: artifacts/caches/DecisionBoundary_43/status.parquet
+Expected: 789dab7e561fc306e2e7de658d2efcbcb737dd4b459898258f1c99d43f40b88a
+Actual:   789dab7e561fc306e2e7de658d2efcbcb737dd4b459898258f1c99d43f40b88a
+Status:   MATCH
+
+File: artifacts/caches/DecisionBoundary_43/manifest.json
+Expected: 6d2152e01e00e326d09d76c192e3cd520c5a8701be62bd60371ce64e8b73a40f
+Actual:   6d2152e01e00e326d09d76c192e3cd520c5a8701be62bd60371ce64e8b73a40f
+Status:   MATCH
+
+File: artifacts/caches/DecisionBoundary_43/completion.json
+Expected: 6e8db2a27fad404ddd41305a022389428a3fe105e3dcbdfc7b25f61bdb9c4b1b
+Actual:   6e8db2a27fad404ddd41305a022389428a3fe105e3dcbdfc7b25f61bdb9c4b1b
+Status:   MATCH
+
+File: artifacts/caches/DecisionBoundary_44/X_attacked.parquet
+Expected: ae2ebdb40f1a5f577ee3f4977ff6ba61ce4820fcc5666c9c456a36763ee82703
+Actual:   ae2ebdb40f1a5f577ee3f4977ff6ba61ce4820fcc5666c9c456a36763ee82703
+Status:   MATCH
+
+File: artifacts/caches/DecisionBoundary_44/status.parquet
+Expected: e608805c188441006095bb1fc499ef1accbb908db1a866edd65012a4b6610ae0
+Actual:   e608805c188441006095bb1fc499ef1accbb908db1a866edd65012a4b6610ae0
+Status:   MATCH
+
+File: artifacts/caches/DecisionBoundary_44/manifest.json
+Expected: c956218fe069fb4eaf469dbf0924b74a6c7ad6cdb06517adf201d57aa85c4437
+Actual:   c956218fe069fb4eaf469dbf0924b74a6c7ad6cdb06517adf201d57aa85c4437
+Status:   MATCH
+
+File: artifacts/caches/DecisionBoundary_44/completion.json
+Expected: 440005db4ba4931c743e78a7eb64b364fe397cce997f18f5135fd43aa114c915
+Actual:   440005db4ba4931c743e78a7eb64b364fe397cce997f18f5135fd43aa114c915
+Status:   MATCH
+
+File: artifacts/caches/DecisionBoundary_45/X_attacked.parquet
+Expected: cd9b46dc6c701411f6560794ac0ffcd4b4a888d72e5d9a257d6750c805e6888b
+Actual:   cd9b46dc6c701411f6560794ac0ffcd4b4a888d72e5d9a257d6750c805e6888b
+Status:   MATCH
+
+File: artifacts/caches/DecisionBoundary_45/status.parquet
+Expected: e4043be1041102b53c6891c2224e21d3d409b088d301edb809a0e124038ba97f
+Actual:   e4043be1041102b53c6891c2224e21d3d409b088d301edb809a0e124038ba97f
+Status:   MATCH
+
+File: artifacts/caches/DecisionBoundary_45/manifest.json
+Expected: 8b1ece8746841db8bc2dff6da2b56c25446fbcfbf8207b05095bcde7e93e9b5a
+Actual:   8b1ece8746841db8bc2dff6da2b56c25446fbcfbf8207b05095bcde7e93e9b5a
+Status:   MATCH
+
+File: artifacts/caches/DecisionBoundary_45/completion.json
+Expected: 11fb6c1a4549cac82d6a5bb76f576c6671689e270ee507af9de39420470eef82
+Actual:   11fb6c1a4549cac82d6a5bb76f576c6671689e270ee507af9de39420470eef82
+Status:   MATCH
+
+File: artifacts/caches/DecisionBoundary_46/X_attacked.parquet
+Expected: b11d4a527b2f892298783fabbc7ca741e1781ab04ea50318b9a162cc38f5e1ff
+Actual:   b11d4a527b2f892298783fabbc7ca741e1781ab04ea50318b9a162cc38f5e1ff
+Status:   MATCH
+
+File: artifacts/caches/DecisionBoundary_46/status.parquet
+Expected: c5cbb45311b1c936cfde00296ad701ca57a1755c7dc51f0a0a37314ccd9fd500
+Actual:   c5cbb45311b1c936cfde00296ad701ca57a1755c7dc51f0a0a37314ccd9fd500
+Status:   MATCH
+
+File: artifacts/caches/DecisionBoundary_46/manifest.json
+Expected: 34f5db141616bcf5bd50c05db0e0285e78e4499647e0b4f66dab6d99e3c738c6
+Actual:   34f5db141616bcf5bd50c05db0e0285e78e4499647e0b4f66dab6d99e3c738c6
+Status:   MATCH
+
+File: artifacts/caches/DecisionBoundary_46/completion.json
+Expected: 6aac5561532892cf5de4b04c418997513b0eab48f046261cc61fb4166cb7e931
+Actual:   6aac5561532892cf5de4b04c418997513b0eab48f046261cc61fb4166cb7e931
+Status:   MATCH
+

@@ -1,0 +1,11 @@
+=== GIT TRACKED STATUS ===
+CLEAN (0 modifications)
+
+=== GIT UNTRACKED ARTIFACTS ===
+artifacts/reports/git_evidence_phase11a_v2_2_2.txt
+
+=== RECENT COMMITS ===
+60c0cfa Phase 11A v2.2.2 repairs: synthetic tests, pooling fixes, immutability check
+d5f8b18 Phase 11A v2.2.1 bundle
+29d3db8 Phase 11A v2.2 tables and bundle
+

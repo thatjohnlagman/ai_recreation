@@ -1,0 +1,37 @@
+Phase 11A Analysis Tables Structural Summary
+=============================================
+
+Table: primary_run_level.csv
+Schema: run_id, seed, attack_scenario, defense_mechanism, controller_config, TP, FP, TN, FN, accuracy, precision, recall, f1_score, balanced_accuracy
+Row Count: 90 (Expected: 90)
+SHA-256: 0a41950efcca9650deb239af7752f02436a7cc93b6a7bfe176426694708e4b38
+
+Table: primary_batch_level.csv
+Schema: run_id, seed, attack_scenario, defense_mechanism, controller_config, batch_id, TP, FP, TN, FN, accuracy, precision, recall, f1_score, balanced_accuracy
+Row Count: 12960 (Expected: 12960)
+SHA-256: 912b884bfd6e56040dc73fc31abc4505752eddf7c9d29ce81742c5dcd68b2a36
+
+Table: primary_paired_run_differences.csv
+Schema: seed, attack_scenario, defense_mechanism, diff_accuracy, diff_precision, diff_recall, diff_f1_score, diff_balanced_accuracy, base_run_id, c1_run_id
+Row Count: 45 (Expected: 45)
+SHA-256: fba990676caac48f5e318a1a8794280cff53586ef0be77ea690bc44e19e8dad3
+
+Table: primary_paired_batch_differences.csv
+Schema: seed, attack_scenario, defense_mechanism, batch_id, diff_accuracy, diff_precision, diff_recall, diff_f1_score, diff_balanced_accuracy, base_run_id, c1_run_id
+Row Count: 6480 (Expected: 6480)
+SHA-256: 75bc4710a0e52df26e42cf2a12cd9b4d1da4411361e6868675afa8f0edd1893b
+
+Table: sensitivity_run_level.csv
+Schema: run_id, seed, attack_scenario, defense_mechanism, controller_config, TP, FP, TN, FN, accuracy, precision, recall, f1_score, balanced_accuracy
+Row Count: 189 (Expected: 189)
+SHA-256: 3202c270f03a76a260f736a7eb97fb66c7625418fd4ef326c7b1fb230aeabd73
+
+Table: sensitivity_batch_level.csv
+Schema: run_id, seed, attack_scenario, defense_mechanism, controller_config, batch_id, TP, FP, TN, FN, accuracy, precision, recall, f1_score, balanced_accuracy
+Row Count: 27216 (Expected: 27216)
+SHA-256: 95e3b59f4bf570a341dc869ac7955ee78eb33e618161ef4dd98ab058601d9a07
+
+Table: controller_trace_summary.csv
+Schema: run_id, batch_id, controller_config, intensity, state, rolling_recall, multiplier, clipping_indicator, zero_denominator_indicator
+Row Count: 36288 (Expected: 36288)
+SHA-256: 2ce085e71861df3764d50e7a994afaa304fc50c43050e7eee76c9a0dac39216a

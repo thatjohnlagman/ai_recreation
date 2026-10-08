@@ -1,0 +1,4 @@
+UI Component,Source Artifact,Aggregation,Configuration
+Config Comparison (C1-C7),.research_repo/artifacts/evaluation_runs/*/run_summary.json,Simple Average (Python Scraper),Static injection to STATIC_C1_C7_MATRIX
+Line Charts (Base vs RA),None (Math.random() in JS),Mock Data Generation,N/A
+Live Benchmark Tables,attacker_sim.py -> server.py,Cumulative Counters (tp/tn/fp/fn),server.py defaults

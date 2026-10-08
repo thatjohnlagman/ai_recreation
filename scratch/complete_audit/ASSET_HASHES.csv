@@ -1,0 +1,7 @@
+Relative Path,Size Bytes,SHA256,Role,Required
+./runtime_package/demo_data/metadata_demo.parquet,4394,593479e0275fc715d7534ee8d9a67805a47cd0c9ec9ed7d2d53b02beaff0a5db,Omitted Asset,False
+./runtime_package/demo_data/X_demo.parquet,47911,a39f6ed3de09ae11dae5c271df515abb440a839567e2f8fa5394764e1e6dbada,Omitted Asset,False
+./runtime_package/model/training_bounds.parquet,3552,9554f1b0287c88b5ef7b8de19d193184f2d76eec2b4d96f1fa525818cffb275b,Omitted Asset,False
+./runtime_package/model/afp_benign_profile.parquet,3576,352062117c553546596affc2b9cfc2ff6253805c22057811beacbca464d182cf,Omitted Asset,False
+./runtime_package/model/frozen_rf.joblib,55251670,9608672c5d5e38a9272c560679cdd2291399de0e0917c8c9dff373bfd200f51d,Omitted Asset,False
+./runtime_package/model/standard_scaler.joblib,2487,8999376cdf97c2047d9eb1a9ed245fb645bcb3af46b0c2e7cc07e3124a037fc2,Omitted Asset,False

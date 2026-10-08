@@ -1,0 +1,666 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Recall-Aware IDS Defense Platform</title>
+
+  <!-- Fonts: System UI font stack with offline monospace fallback -->
+
+  <!-- Leaflet CSS: Local vendor with CDN fallback -->
+  <link rel="stylesheet" href="/static/vendor/leaflet.css"
+    onerror="this.onerror=null;this.href='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';" />
+
+  <!-- Custom Styles -->
+  <link rel="stylesheet" href="/static/style.css?v=6.0">
+  <style>
+    /* Direct resilient segmented control styling */
+    .defense-controls-container {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin: 12px 0 16px 0;
+      padding: 10px 12px;
+      background: rgba(15, 23, 42, 0.55);
+      border: 1px solid rgba(51, 65, 85, 0.45);
+      border-radius: 10px;
+    }
+
+    [data-theme="light"] .defense-controls-container {
+      background: rgba(241, 245, 249, 0.85);
+      border-color: rgba(203, 213, 225, 0.85);
+    }
+
+    .control-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .control-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted, #94a3b8);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      min-width: 55px;
+    }
+
+    .mode-state-wrapper {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .segmented-control {
+      display: inline-flex;
+      background: rgba(11, 19, 38, 0.8);
+      border: 1px solid rgba(30, 42, 71, 0.9);
+      border-radius: 8px;
+      padding: 2px;
+      gap: 2px;
+    }
+
+    [data-theme="light"] .segmented-control {
+      background: #ffffff;
+      border-color: #cbd5e1;
+    }
+
+    .segment-btn {
+      background: transparent !important;
+      border: none !important;
+      color: #94a3b8 !important;
+      font-family: inherit;
+      font-size: 11px !important;
+      font-weight: 600 !important;
+      padding: 5px 12px !important;
+      border-radius: 6px !important;
+      cursor: pointer !important;
+      transition: all 0.18s ease !important;
+      outline: none !important;
+    }
+
+    [data-theme="light"] .segment-btn {
+      color: #64748b !important;
+    }
+
+    .segment-btn:hover {
+      color: #f1f5f9 !important;
+      background: rgba(59, 130, 246, 0.15) !important;
+    }
+
+    [data-theme="light"] .segment-btn:hover {
+      color: #0f172a !important;
+      background: rgba(59, 130, 246, 0.1) !important;
+    }
+
+    .segment-btn.active {
+      background: #2563eb !important;
+      color: #ffffff !important;
+      box-shadow: 0 1px 5px rgba(37, 99, 235, 0.45) !important;
+    }
+
+    .ra-status-badge {
+      font-size: 10px;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .ra-status-badge::before {
+      content: "";
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .ra-status-badge.green,
+    .ra-status-badge.stable {
+      background: rgba(16, 185, 129, 0.18);
+      color: #10b981;
+      border: 1px solid rgba(16, 185, 129, 0.4);
+    }
+
+    .ra-status-badge.yellow,
+    .ra-status-badge.active {
+      background: rgba(245, 158, 11, 0.18);
+      color: #f59e0b;
+      border: 1px solid rgba(245, 158, 11, 0.4);
+    }
+
+    .ra-status-badge.red,
+    .ra-status-badge.recovery {
+      background: rgba(239, 68, 68, 0.18);
+      color: #ef4444;
+      border: 1px solid rgba(239, 68, 68, 0.4);
+    }
+
+    .ra-status-badge.base {
+      background: rgba(100, 116, 139, 0.18);
+      color: #94a3b8;
+      border: 1px solid rgba(100, 116, 139, 0.4);
+    }
+
+    .ra-status-badge.bypassed {
+      background: rgba(239, 68, 68, 0.12);
+      color: #f87171;
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+  </style>
+  <script src="/static/utils.js"></script>
+</head>
+
+<body>
+  <div class="app-container">
+
+    <!-- Top Header -->
+    <header class="app-header">
+      <div class="header-left">
+
+        <div class="header-title-group">
+          <h1 class="header-title">Recall-Aware IDS Defense Platform</h1>
+          <p class="header-subtitle">Enhanced Detection with Adaptive Perturbation Defense</p>
+        </div>
+      </div>
+
+      <div class="header-right">
+        <!-- IDS Status Badge -->
+        <div class="header-status-pill">
+          <span class="status-dot green"></span>
+          <span class="header-status-label">IDS</span>
+          <span class="status-val green">Active</span>
+        </div>
+
+        <!-- AFP Defense Toggle Badge -->
+        <div class="header-status-pill clickable" id="toggle-afp-btn" title="Click to toggle AFP defense state">
+          <span class="status-dot cyan" id="afp-status-dot"></span>
+          <span class="header-status-label">AFP Defense</span>
+          <span class="status-val cyan" id="afp-status-text">Active</span>
+        </div>
+
+
+
+        <div class="system-status-indicator">
+          <span class="status-pulse-dot"></span>
+          <span class="status-text">System Online</span>
+        </div>
+
+
+
+        <!-- Theme Toggle Button (Icon Only) -->
+        <button class="theme-toggle-btn icon-only" id="theme-toggle-btn" aria-label="Toggle Light and Dark Mode"
+          title="Toggle Light / Dark Mode">
+          <span class="theme-icon sun">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="5" />
+              <line x1="12" y1="1" x2="12" y2="3" />
+              <line x1="12" y1="21" x2="12" y2="23" />
+              <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
+              <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+              <line x1="1" y1="12" x2="3" y2="12" />
+              <line x1="21" y1="12" x2="23" y2="12" />
+              <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
+              <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+            </svg>
+          </span>
+          <span class="theme-icon moon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+            </svg>
+          </span>
+        </button>
+
+        <div class="header-datetime" id="live-datetime">Sep 18, 2026 00:50:53 UTC+8</div>
+      </div>
+    </header>
+
+    <!-- Main Navigation Bar -->
+    <nav class="main-nav-bar"
+      style="display: flex; gap: 30px; padding: 12px 24px; background: var(--bg-card); border-bottom: 1px solid var(--border-color); box-shadow: 0 1px 3px rgba(0,0,0,0.05); position: sticky; top: 60px; z-index: 999;">
+      <a href="/"
+        style="color: var(--text-primary); text-decoration: none; font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px; border-bottom: 2px solid var(--accent-blue); padding-bottom: 4px;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
+          <polyline points="9 22 9 12 15 12 15 22"></polyline>
+        </svg>
+        Dashboard
+      </a>
+      <a href="/explorer"
+        style="color: var(--text-muted); text-decoration: none; font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px; padding-bottom: 4px; transition: color 0.2s;"
+        onmouseover="this.style.color='var(--text-primary)'" onmouseout="this.style.color='var(--text-muted)'">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="8"></circle>
+          <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+        </svg>
+        Traffic Explorer
+      </a>
+      <a href="/sessions"
+        style="color: var(--text-muted); text-decoration: none; font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px; padding-bottom: 4px; transition: color 0.2s;"
+        onmouseover="this.style.color='var(--text-primary)'" onmouseout="this.style.color='var(--text-muted)'">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+          <polyline points="14 2 14 8 20 8"></polyline>
+          <line x1="16" y1="13" x2="8" y2="13"></line>
+          <line x1="16" y1="17" x2="8" y2="17"></line>
+          <polyline points="10 9 9 9 8 9"></polyline>
+        </svg>
+        Sessions &amp; Reports
+      </a>
+      <a href="/results"
+        style="color: var(--text-muted); text-decoration: none; font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px; padding-bottom: 4px; transition: color 0.2s;"
+        onmouseover="this.style.color='var(--text-primary)'" onmouseout="this.style.color='var(--text-muted)'">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M18 20V10M12 20V4M6 20v-6"></path>
+        </svg>
+        Results
+      </a>
+    </nav>
+
+    <!-- Main Workspace Layout (Full Width) -->
+    <div class="workspace-body full-width">
+
+      <!-- Center & Right Dashboard Content -->
+      <main class="dashboard-content">
+
+        <!-- Center Primary Column -->
+        <div class="primary-column">
+
+          <!-- Top 4 KPI Cards -->
+          <section class="kpi-grid">
+
+            <!-- KPI 1: Total Traffic -->
+            <div class="kpi-card">
+              <div class="kpi-icon-wrapper blue">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                </svg>
+              </div>
+              <div class="kpi-data">
+                <span class="kpi-label">Total Traffic</span>
+                <span class="kpi-value" id="kpi-total-traffic">0</span>
+                <span class="kpi-delta">
+                  <span class="delta-muted">Session Baseline</span>
+                </span>
+              </div>
+            </div>
+
+            <!-- KPI 2: Detected Attacks -->
+            <div class="kpi-card">
+              <div class="kpi-icon-wrapper red">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                  <line x1="12" y1="9" x2="12" y2="13" />
+                  <line x1="12" y1="17" x2="12.01" y2="17" />
+                </svg>
+              </div>
+              <div class="kpi-data">
+                <span class="kpi-label">Detected Attacks</span>
+                <span class="kpi-value" id="kpi-detected-attacks">0</span>
+                <span class="kpi-delta">
+                  <span class="delta-muted">Session Baseline</span>
+                </span>
+              </div>
+            </div>
+
+            <!-- KPI 3: Session Recall -->
+            <div class="kpi-card">
+              <div class="kpi-icon-wrapper teal">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="22" y1="12" x2="18" y2="12" />
+                  <line x1="6" y1="12" x2="2" y2="12" />
+                  <line x1="12" y1="6" x2="12" y2="2" />
+                  <line x1="12" y1="22" x2="12" y2="18" />
+                </svg>
+              </div>
+              <div class="kpi-data">
+                <span class="kpi-label">Session Recall</span>
+                <span class="kpi-value" id="kpi-recall">—</span>
+                <span class="kpi-delta">
+                  <span class="delta-muted">Session Baseline</span>
+                </span>
+              </div>
+            </div>
+
+            <!-- KPI 4: Derived Metrics -->
+            <div class="kpi-card">
+              <div class="kpi-icon-wrapper coral">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+                </svg>
+              </div>
+              <div class="kpi-data">
+                <span class="kpi-label">P / R / F1</span>
+                <span class="kpi-value" id="kpi-prf" style="font-size: 16px;">— / — / —</span>
+                <span class="kpi-delta">
+                  <span class="delta-muted">Derived from current session</span>
+                </span>
+              </div>
+            </div>
+
+          </section>
+
+          <!-- Middle Section: Threat Locations Map + Top Threat IPs -->
+          <section class="middle-grid">
+
+            <!-- Map Card -->
+            <div class="panel-card map-panel">
+              <div class="panel-header">
+                <span class="header-bullet-dot red"></span>
+                <h2 class="panel-title">Threat Locations</h2>
+              </div>
+              <div class="map-wrapper">
+                <div id="threat-map"></div>
+              </div>
+              <div class="map-meta-footer"
+                style="padding: 6px 12px; font-size: 11px; color: var(--text-muted); display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--border-color); background: rgba(15, 23, 42, 0.4);">
+                <span id="map-status-text">No geolocated detections yet</span>
+                <span class="map-attr">Approximate GeoIP of submitted demo source IPs · <a href="https://db-ip.com"
+                    target="_blank" rel="noopener" style="color: #3b82f6; text-decoration: underline;">IP Geolocation by
+                    DB-IP</a></span>
+              </div>
+            </div>
+
+            <!-- Top Threat IPs Card -->
+            <div class="panel-card top-threats-panel">
+              <div class="panel-header">
+                <h2 class="panel-title">Top Threat IPs</h2>
+              </div>
+              <div class="table-container">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>IP Address</th>
+                      <th>Location</th>
+                      <th class="text-right">Attacks</th>
+                    </tr>
+                  </thead>
+                  <tbody id="top-threats-tbody">
+                    <tr>
+                      <td colspan="3" class="text-center" style="color: var(--text-muted); padding: 14px;">No threat
+                        locations in session</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="panel-footer">
+                <a href="#threats" class="link-action">View all threats &rarr;</a>
+              </div>
+            </div>
+
+          </section>
+
+          <!-- Bottom Section: Recent Detection Feed -->
+          <section class="feed-section">
+            <div class="panel-card feed-panel">
+              <div class="panel-header">
+                <h2 class="panel-title">Recent Detection Feed</h2>
+              </div>
+              <div class="table-container">
+                <table class="data-table feed-table">
+                  <thead>
+                    <tr>
+                      <th>Timestamp</th>
+                      <th>Source IP</th>
+                      <th>Destination IP</th>
+                      <th>Confidence</th>
+                      <th>IDS Classification</th>
+                    </tr>
+                  </thead>
+                  <tbody id="recent-feed-tbody">
+                    <tr>
+                      <td colspan="5" class="text-center" style="color: var(--text-muted); padding: 14px;">No traffic
+                        flows recorded in session</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <!-- Selected Attack & Flow Forensics Inspector (Fills empty space) -->
+              <div class="flow-inspector-panel" id="flow-inspector-panel">
+                <div class="inspector-header">
+                  <div class="inspector-title-wrap">
+                    <svg class="inspector-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                      <line x1="12" y1="8" x2="12" y2="12" />
+                      <line x1="12" y1="16" x2="12.01" y2="16" />
+                    </svg>
+                    <span class="inspector-title">Selected Flow Forensics:</span>
+                    <span class="inspector-target-id" id="insp-flow-title">Awaiting flow telemetry</span>
+                  </div>
+                  <div class="inspector-header-right">
+                    <span class="inspector-time" id="insp-time">—</span>
+                    <span class="badge-status" id="insp-verdict-badge">Idle</span>
+                  </div>
+                </div>
+
+                <div class="inspector-grid">
+                  <!-- Card 1: Source Origin -->
+                  <div class="inspector-card">
+                    <div class="insp-card-label">Source Origin (Demo IP)</div>
+                    <div class="insp-card-value font-mono" id="insp-source-ip">—</div>
+                    <div class="insp-card-sub" id="insp-location">—</div>
+                  </div>
+
+                  <!-- Card 2: Target Endpoint -->
+                  <div class="inspector-card">
+                    <div class="insp-card-label">Target Endpoint</div>
+                    <div class="insp-card-value font-mono" id="insp-dest-ip">—</div>
+                    <div class="insp-card-sub" id="insp-protocol">Demonstration Destination</div>
+                  </div>
+
+                  <!-- Card 3: IDS Classification & Confidence -->
+                  <div class="inspector-card">
+                    <div class="insp-card-label">IDS Classification &amp; Confidence</div>
+                    <div class="insp-card-value" id="insp-ids-classification">—</div>
+                    <div class="insp-card-sub" id="insp-confidence-val">—</div>
+                    <div class="insp-confidence-bar">
+                      <div class="insp-confidence-fill" id="insp-confidence-fill" style="width: 0%;"></div>
+                    </div>
+                  </div>
+
+                  <!-- Card 4: Defense & Action -->
+                  <div class="inspector-card">
+                    <div class="insp-card-label">Defense &amp; Action</div>
+                    <div class="insp-card-value" id="insp-defense-name">—</div>
+                    <div class="insp-card-sub font-mono" id="insp-defense-intensity">—</div>
+                    <div class="insp-card-sub" id="insp-action-name" style="margin-top: 2px; font-weight: 600;">—</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+        </div>
+
+        <!-- Right Insights Column -->
+        <aside class="insights-column">
+
+          <!-- Card 1: Adaptive Perturbation Defense Control Panel -->
+          <div class="panel-card afp-control-card">
+            <div class="panel-header-inline">
+              <div class="header-inline-left">
+                <svg class="gear-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="3"/>
+                  <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                </svg>
+                <h2 class="panel-title" id="defense-panel-title">Defense Panel</h2>
+              </div>
+              <span class="badge-status-pill green" id="afp-header-badge">Active</span>
+            </div>
+            
+            <!-- Operator Authorization Notification (Shown only on real 401 error) -->
+            <div id="operator-auth-alert-banner" style="display:none; margin: 8px 0; padding: 8px 12px; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 8px; color: #f87171; font-size: 11px; line-height: 1.4;">
+              <strong>Operator Session Required:</strong> Please reopen dashboard via <code>python launch_dashboard.py</code> to control defense settings.
+            </div>
+
+            <!-- Defense & Mode Controls Container -->
+            <div class="defense-controls-container">
+              <!-- Defense Selector Row -->
+              <div class="control-row">
+                <span class="control-label">Defense:</span>
+                <div class="segmented-control" id="defense-selector-group">
+                  <button type="button" class="segment-btn active" data-defense="afp" onclick="handleSetDefense('afp')">AFP</button>
+                  <button type="button" class="segment-btn" data-defense="rs" onclick="handleSetDefense('rs')">RS</button>
+                  <button type="button" class="segment-btn" data-defense="fs" onclick="handleSetDefense('fs')">FS</button>
+                  <button type="button" class="segment-btn" data-defense="none" onclick="handleSetDefense('none')">None</button>
+                </div>
+              </div>
+
+              <!-- Mode Selector Row -->
+              <div class="control-row">
+                <span class="control-label">Mode:</span>
+                <div class="mode-state-wrapper">
+                  <div class="segmented-control" id="mode-selector-group">
+                    <button type="button" class="segment-btn active" data-mode="recall-aware" onclick="handleSetMode('recall-aware')">Recall-Aware</button>
+                    <button type="button" class="segment-btn" data-mode="base" onclick="handleSetMode('base')">Base</button>
+                  </div>
+                  <span class="ra-status-badge green" id="controller-state-pill" title="Recall-Aware Controller State">STABLE</span>
+                  <button type="button" class="segment-btn" id="reset-metrics-btn" onclick="handleReset()" style="margin-left: 8px; font-size: 11px; padding: 4px 10px;" title="Reset baseline counters and controller state">Reset</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="afp-metrics-row">
+              
+              <!-- Circular Donut Gauge -->
+              <div class="gauge-wrapper">
+                <div class="circular-gauge">
+                  <svg viewBox="0 0 100 100" class="gauge-svg">
+                    <circle class="gauge-bg" cx="50" cy="50" r="42"/>
+                    <circle class="gauge-val" id="gauge-circle-bar" cx="50" cy="50" r="42"/>
+                  </svg>
+                  <div class="gauge-inner-text">
+                    <span class="gauge-number" id="gauge-recall-val">—</span>
+                    <span class="gauge-sub" style="font-size: 0.7rem; text-align: center; line-height: 1.1;">Controller<br>Rolling Recall</span>
+                  </div>
+                </div>
+                <div class="gauge-badge-pill" id="gauge-health-pill">Awaiting Data</div>
+                <div class="gauge-window-context" id="gauge-window-context" style="font-size: 0.75rem; color: var(--text-secondary); text-align: center; margin-top: 5px;"></div>
+              </div>
+
+              <!-- Intensity & Bounds Details -->
+              <div class="afp-controls-details">
+                <div class="afp-intensity-box">
+                  <div class="intensity-label-row">
+                    <span class="param-label" id="afp-param-name">AFP Intensity</span>
+                    <span class="param-value" id="afp-intensity-val">0.0003</span>
+                  </div>
+                  <div class="intensity-bar-container">
+                    <div class="intensity-bar-fill" id="afp-bar-fill" style="width: 100%;"></div>
+                  </div>
+                  <div class="intensity-range-labels">
+                    <span id="bar-min-label">0.0</span>
+                    <span id="bar-max-label">0.0003</span>
+                  </div>
+                </div>
+
+                <div class="bounds-and-thresholds-grid">
+                  <div class="sub-card">
+                    <span class="sub-card-title">Intensity Bounds</span>
+                    <div class="sub-card-row">
+                      <span class="sub-label">Min</span>
+                      <span class="sub-val" id="afp-min-bound-val">0.0000</span>
+                    </div>
+                    <div class="sub-card-row">
+                      <span class="sub-label">Max</span>
+                      <span class="sub-val" id="afp-max-bound-val">0.0003</span>
+                    </div>
+                  </div>
+
+                  <div class="sub-card">
+                    <span class="sub-card-title">Current Thresholds</span>
+                    <div class="sub-card-row">
+                      <span class="dot-icon orange"></span>
+                      <span class="sub-label">Warning</span>
+                      <span class="sub-val">0.85</span>
+                    </div>
+                    <div class="sub-card-row">
+                      <span class="dot-icon red"></span>
+                      <span class="sub-label">Critical</span>
+                      <span class="sub-val">0.95</span>
+                    </div>
+                  </div>
+                </div>
+
+              </div>
+
+            </div>
+
+          </div>
+
+          <!-- Card 2: Recall vs. Intensity Chart -->
+          <div class="panel-card chart-card">
+            <div class="panel-header-inline">
+              <h2 class="panel-title">Recall vs. Intensity</h2>
+              <div class="chart-legend">
+                <div class="legend-item">
+                  <span class="legend-line green"></span>
+                  <span>Recall</span>
+                </div>
+                <div class="legend-item">
+                  <span class="legend-line blue"></span>
+                  <span>Intensity</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="chart-canvas-container">
+              <canvas id="recallChart"></canvas>
+            </div>
+          </div>
+
+          <!-- Card 3: Recent Attacks -->
+          <div class="panel-card attacks-card">
+            <div class="panel-header-inline">
+              <h2 class="panel-title">Recent Attacks</h2>
+              <a href="#attacks" class="link-action">View all &rarr;</a>
+            </div>
+            <div class="table-container">
+              <table class="data-table attacks-table">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Source IP</th>
+                    <th>Location</th>
+                    <th>IDS Classification</th>
+                  </tr>
+                </thead>
+                <tbody id="recent-attacks-tbody">
+                  <tr>
+                    <td colspan="4" class="text-center" style="color: var(--text-muted); padding: 14px;">No attack flows
+                      recorded in session</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+        </aside>
+
+      </main>
+
+    </div>
+
+  </div>
+
+  <!-- Leaflet JS & Chart.js: Local vendor scripts with CDN fallbacks -->
+  <script src="/static/vendor/leaflet.js"></script>
+  <script>if (typeof L === 'undefined') document.write('<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"><\\/script>');</script>
+  <script src="/static/vendor/chart.umd.min.js"></script>
+  <script>if (typeof Chart === 'undefined') document.write('<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"><\\/script>');</script>
+  <!-- Export Modal and App JS -->
+  <script src="/static/export-modal.js"></script>
+  <script src="/static/app.js?v=14.0"></script>
+</body>
+
+</html>
