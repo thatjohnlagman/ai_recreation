@@ -2,12 +2,11 @@
 """
 scripts/benchmark_evaluation_pilot.py
 
-Phase 10D Training-Derived Evaluation Runtime & Storage Benchmark.
+Training-Derived Evaluation Runtime & Storage Benchmark.
 
 Uses ONLY the training partition (X_train.parquet, metadata_train.parquet, 5,000 samples).
-Zero evaluation records or official caches are modified or accessed.
-Measures per-batch execution times for AFP, FS, and RS defenses on this Apple Silicon M4 system,
-and produces the official Phase 10D runtime and storage estimates.
+Measures per-batch execution times for AFP, FS, and RS defenses,
+and produces runtime and storage estimates.
 """
 import time
 import json
@@ -71,7 +70,7 @@ AUTHORITATIVE_TIMINGS = {
 def main():
     args = parse_args()
     print("=" * 78)
-    print("PHASE 10D TRAINING-DERIVED RUNTIME & STORAGE BENCHMARK")
+    print("TRAINING-DERIVED RUNTIME & STORAGE BENCHMARK")
     print("=" * 78)
 
     # 1. Load training partition

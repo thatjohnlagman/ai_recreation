@@ -1,5 +1,5 @@
 """
-Concrete defense/model adapters for Phase 10 experiment runner.
+Concrete defense and model adapters for the evaluation runner.
 
 Each adapter wraps:
   - a constructed defense object

@@ -1,8 +1,7 @@
 """
-Attack cache building and loading for Phase 10 experiments.
+Attack cache building and loading for evaluation experiments.
 
 AttackCacheBuilder:
-  Production-capable builder, tested with synthetic / training-derived data during Phase 10A.
   Supports all three attack scenarios with canonical semantics.
 
 ConcreteAttackCacheProvider:
@@ -235,9 +234,6 @@ class AttackCacheBuilder:
       - SurrogateTransfer: surrogate DT construction + candidate generation.
       - DecisionBoundary: deterministic selection of exactly n_boundary_targets eligible
         measurement targets, max_queries per target.
-
-    Must be tested exclusively with synthetic or training-derived data during Phase 10A.
-    Must NOT be invoked on official evaluation data.
     """
 
     SCENARIO_SILENT_PROBING = "SilentProbing"
@@ -645,7 +641,7 @@ class ConcreteAttackCacheProvider:
     """
     Loads both cache artifacts (X_attacked.parquet and status.parquet) and validates:
       - manifest + file hashes
-      - 72,000 rows (or N during Phase 10A synthetic testing)
+      - 72,000 rows
       - 78 finite float32 columns in X_attacked
       - eval_position alignment vs resolved_batches
       - strict bool status columns (no silent int→bool cast)
@@ -765,7 +761,7 @@ class ConcreteAttackCacheProvider:
             "NOT_APPLICABLE", "SUCCESS", "NOT_ATTEMPTED",
             "INELIGIBLE_TRUE_BENIGN", "INELIGIBLE_FALSE_NEGATIVE",
             "NO_FEASIBLE_CANDIDATE", "TARGET_REJECTION",
-            # Authoritative Phase 7 status codes:
+            # Standard attack status codes:
             "BUDGET_EXHAUSTION", "INSUFFICIENT_BUDGET_FOR_FULL_SEARCH",
             "PROJECTION_FAILED_BEFORE_TRANSFER", "PROJECTION_FAILED_DURING_SEARCH"
         }

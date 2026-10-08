@@ -1,6 +1,6 @@
 """
 scripts/preprocess_dataset.py
-Phase 4 — Preprocessing the 300k working sample.
+Data preprocessing, cleaning, scaling, and train-eval splitting.
 
 Reads: data/interim/working_sample.parquet
 Produces:
@@ -102,7 +102,7 @@ def preprocess() -> None:
     set_global_seeds(SAMPLE_SEED)
 
     print("=" * 70)
-    print("PHASE 4 — Preprocessing Working Sample")
+    print("Preprocessing Working Sample & Train/Eval Splitting")
     print("=" * 70)
 
     ws_path = INTERIM_DIR / "working_sample.parquet"
@@ -276,7 +276,7 @@ def preprocess() -> None:
     peak_ram = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1048576 if sys.platform == "darwin" else 1024)  # MB
     elapsed = time.time() - t0
     
-    report = f"""# Phase 4 Preprocessing Report
+    report = f"""# Preprocessing & Dataset Split Report
     
 **Input File:** {ws_path.name} (SHA-256: {ws_hash})
 **Input Rows:** {len(df):,}
@@ -314,7 +314,7 @@ _Generated automatically by scripts/preprocess_dataset.py_
     with open(REPORTS_DIR / "preprocessing_report.md", "w") as f:
         f.write(report)
 
-    print(f"\n✓ Phase 4 complete in {elapsed:.1f}s")
+    print(f"\n✓ Preprocessing complete in {elapsed:.1f}s")
     print(f"  Peak RAM: {peak_ram:.1f} MB")
     print("\n  Next: python scripts/train_model.py")
 

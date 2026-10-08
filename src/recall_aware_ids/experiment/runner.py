@@ -1,5 +1,5 @@
 """
-ExperimentRunner for Phase 10.
+ExperimentRunner for IDS evaluation under adversarial scenarios.
 
 Execution order per batch:
   1. get_intensity(t)         — before any label access

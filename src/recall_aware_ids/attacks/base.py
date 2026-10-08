@@ -14,8 +14,8 @@ class AttackResult:
 
 class BaseAttack:
     """
-    Abstract base class for all Phase 7 attacks.
-    Enforces protected features and training bounds clipping.
+    Abstract base class for black-box adversarial attack scenarios.
+    Enforces protected feature preservation and training bounds clipping.
     """
     def __init__(self, feature_names, modifiable_mask, training_bounds):
         if len(feature_names) != 78:

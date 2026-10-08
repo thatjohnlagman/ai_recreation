@@ -1,6 +1,6 @@
 """
 scripts/recompute_learning_curve.py
-Re-runs the Phase 5 learning curve subsets to extract detailed metrics (TP, TN, FP, FN, specificities)
+Re-runs the learning curve subsets to extract detailed metrics (TP, TN, FP, FN, specificities)
 without overwriting the official 100% frozen model.
 Updates the learning_curve.md and learning_curve.png.
 """
@@ -40,7 +40,7 @@ def plot_learning_curve(sizes, metrics, out_path):
     plt.plot(sizes, f1, marker='d', label="F1-Score")
     plt.plot(sizes, prauc, marker='x', label="PR-AUC")
     
-    plt.title("Random Forest OOB Performance by Training Set Size (Phase 5)")
+    plt.title("Random Forest OOB Performance by Training Set Size")
     plt.xlabel("Number of Training Records")
     plt.ylabel("Score")
     plt.ylim([0.8, 1.0])
@@ -130,7 +130,7 @@ def run():
     total_time = time.time() - total_t0
     
     # Generate Markdown Report
-    report_md = f"""# Phase 5 Learning Curve Report
+    report_md = f"""# Learning Curve Report
 
 ## Frozen Configuration
 * `n_estimators`: {rf_cfg['n_estimators']}

@@ -1,7 +1,6 @@
 """
 scripts/construct_evaluation_batches.py
-Phase 6: Immutable Evaluation Role & Batch Construction
-Validation-and-Provenance Repair
+Deterministic Evaluation Roles & Matched Batch Construction
 """
 
 import sys
@@ -158,7 +157,7 @@ def construct_batches(y_eval, batch_size=500, batch_seed=42):
 
 def run():
     print("="*60)
-    print("Phase 6: Evaluation Roles and Batch Construction (Validation Mode)")
+    print("Evaluation Roles and Batch Construction")
     print("="*60)
     
     cfg_dir = _resolve_config_dir()

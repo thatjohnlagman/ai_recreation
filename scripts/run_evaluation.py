@@ -2,10 +2,10 @@
 """
 scripts/run_evaluation.py
 
-Phase 10D v2 Official Evaluation Orchestration Entry Point.
+Official Evaluation Orchestration Entry Point.
 
-This script acts as the official execution and validation orchestrator for Phase 10
-evaluation matrix runs. It strictly enforces:
+This script acts as the official execution and validation orchestrator for
+evaluation matrix runs. It enforces:
   1. Safe-by-default execution: running without --execute performs non-mutating preflight only.
   2. Preflight separation: preflight does not open evaluation Parquets (X_eval.parquet,
      metadata_eval.parquet) or perform model inference; preflight reads and validates
@@ -419,7 +419,7 @@ def check_git_cleanliness(
     enforce_git: bool = True,
 ) -> Dict[str, Any]:
     """
-    Enforces the strict Phase 10B Git cleanliness policy:
+    Enforces the strict Git cleanliness policy:
       - Freeze tag is an ancestor of HEAD.
       - Frozen src/ has zero diff relative to phase10-protocol-freeze.
       - Rejects any staged or unstaged tracked modification.
@@ -1325,7 +1325,7 @@ def run_preflight(
       8. Unsuppressed available storage check.
     """
     print("=" * 78)
-    print("PHASE 10D v2 NON-MUTATING PREFLIGHT VERIFICATION")
+    print("EVALUATION PREFLIGHT VERIFICATION")
     print("=" * 78)
 
     preflight_report: Dict[str, Any] = {"timestamp": datetime.datetime.utcnow().isoformat() + "Z"}
@@ -1586,7 +1586,7 @@ def execute_single_run(
 # ---------------------------------------------------------------------------
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Phase 10D v2 Official Evaluation Orchestrator (Safe by Default).",
+        description="Official Evaluation Orchestrator.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(

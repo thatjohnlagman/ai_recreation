@@ -13,8 +13,8 @@ if __name__ == "__main__":
     import subprocess
     res = subprocess.run([sys.executable, "-m", "pytest", "tests/test_experiment_runner.py", "-v"], cwd=ROOT, env=env)
     
-    # We should also run all Phase 7-9 tests to ensure no regressions
-    print("Running legacy phase 7-9 tests...")
+    # Run unit tests for controller, defenses, and attacks
+    print("Running controller, defense, and attack unit tests...")
     res_legacy = subprocess.run([sys.executable, "-m", "pytest", "tests/test_controller.py", "tests/test_defenses.py", "tests/test_attacks.py", "-v"], cwd=ROOT, env=env)
     
     if res.returncode != 0 or res_legacy.returncode != 0:

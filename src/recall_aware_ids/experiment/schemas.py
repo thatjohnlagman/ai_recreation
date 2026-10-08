@@ -1,5 +1,5 @@
 """
-Frozen dataclasses for all Phase 10 experiment records.
+Frozen dataclasses for all experiment records.
 Every dataclass carries __post_init__ validation — malformed objects are rejected at construction time.
 """
 from __future__ import annotations

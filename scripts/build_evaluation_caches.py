@@ -2,10 +2,9 @@
 """
 scripts/build_evaluation_caches.py
 
-Phase 10B Attack-Cache Orchestration Entry Point (v2).
+Attack-Cache Orchestration and Generation Entry Point.
 
-This script acts as the thin orchestration layer over AttackCacheBuilder for Phase 10
-evaluation attack caches. It strictly enforces:
+This script acts as the orchestration layer over AttackCacheBuilder for evaluation attack caches. It enforces:
   1. Safe-by-default execution: running without --execute performs non-mutating preflight only.
   2. Preflight separation: preflight never accesses evaluation features (X_eval.parquet) or labels.
   3. Strengthened freeze verification: byte-for-byte and SHA-256 comparison of every frozen
@@ -723,7 +722,7 @@ def verify_reproducible_execution_state(
 
     Rejects execution if:
       - Any tracked file is modified or dirty (all non-empty porcelain status codes other than '??').
-      - Any required Phase 10B source, test, configuration, or documentation file is untracked.
+      - Any required source, test, configuration, or documentation file is untracked.
       - src/ has any diff relative to phase10-protocol-freeze.
       - Any frozen config or protocol file differs by a single byte from freeze tag.
       - Any protected hash mismatches.
@@ -1013,7 +1012,7 @@ def run_preflight(
 def print_preflight_report(results: Dict[str, Any]) -> None:
     """Prints a clean, formatted preflight summary table to stdout."""
     print("=" * 78)
-    print("PHASE 10B ATTACK-CACHE ORCHESTRATION PREFLIGHT REPORT")
+    print("ATTACK-CACHE ORCHESTRATION PREFLIGHT REPORT")
     print("=" * 78)
     print(f"Timestamp:       {results['timestamp']}")
     print(f"Overall Status:  {results['status']}")
@@ -1576,7 +1575,7 @@ def build_evaluation_caches(
 # ---------------------------------------------------------------------------
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Phase 10B Attack-Cache Orchestration CLI (safe by default).",
+        description="Attack-Cache Orchestration CLI.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(

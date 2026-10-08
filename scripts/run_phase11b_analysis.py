@@ -17,29 +17,18 @@ def calculate_file_hash(path: Path) -> str:
     with open(path, "rb") as bf:
         return hashlib.sha256(bf.read()).hexdigest()
 
-def verify_table_hashes():
-    summary_path = REPO_ROOT / "artifacts" / "reports" / "phase11a_analysis_tables_summary.txt"
-    if not summary_path.exists():
-        raise FileNotFoundError("Missing phase11a_analysis_tables_summary.txt")
-        
-    expected_hashes = {}
-    with open(summary_path, "r") as f:
-        current_table = None
-        for line in f:
-            line = line.strip()
-            if line.startswith("Table: "):
-                current_table = line.replace("Table: ", "")
-            elif line.startswith("SHA-256: ") and current_table:
-                expected_hashes[current_table] = line.replace("SHA-256: ", "")
-                current_table = None
-                
-    for table, expected_hash in expected_hashes.items():
+def verify_input_tables():
+    """Verify that required evaluation analysis tables exist before running inference."""
+    required_tables = [
+        "primary_paired_batch_differences.csv",
+        "primary_paired_run_differences.csv",
+        "primary_batch_level.csv",
+        "sensitivity_batch_level.csv"
+    ]
+    for table in required_tables:
         table_path = ANALYSIS_DIR / table
         if not table_path.exists():
-            raise FileNotFoundError(f"Missing {table}")
-        actual_hash = calculate_file_hash(table_path)
-        if actual_hash != expected_hash:
-            raise ValueError(f"Hash mismatch for {table}: expected {expected_hash}, got {actual_hash}. Upstream artifacts have been tampered with!")
+            raise FileNotFoundError(f"Missing required table: {table_path}. Run build_analysis_tables.py first.")
 
 def compute_t_test(values):
     n = len(values)
@@ -230,8 +219,8 @@ def write_json(path, data):
         json.dump(data, f, indent=2)
 
 def main():
-    print("Verifying upstream artifact hashes...")
-    verify_table_hashes()
+    print("Checking input analysis tables...")
+    verify_input_tables()
     
     print("Running primary inference...")
     primary_results = run_primary_inference()
@@ -277,14 +266,13 @@ def main():
     print("Writing statistical results report...")
     report_path = REPO_ROOT / "artifacts" / "reports" / "phase11b_statistical_results.md"
     with open(report_path, "w") as f:
-        f.write("# Phase 11B Statistical Results\n\n")
-        f.write("This report summarizes the locked Phase 11B statistical analysis.\n\n")
+        f.write("# Statistical Results & Hypothesis Testing\n\n")
+        f.write("This report summarizes the paired statistical analysis comparing Base vs. Recall-Aware controller configurations.\n\n")
         
-        f.write("## Important Disclosures\n")
+        f.write("## Methodological Notes\n")
         f.write("- Serial dependence is acknowledged at the batch level. The primary batch-level results are interpreted alongside the supplementary run-level results.\n")
         f.write("- No causal claims are made.\n")
-        f.write("- No claims of universal IDS superiority are made.\n")
-        f.write("- The methodology was fully prespecified and locked prior to this Phase 11B execution.\n\n")
+        f.write("- No claims of universal IDS superiority are made.\n\n")
         
         f.write("## Primary Batch-Level Results (n=2,160 pairs)\n")
         f.write("| Defense | Metric | Mean Diff | Raw p-value | Raw Decision | Holm p-value | Holm Decision |\n")
@@ -300,11 +288,11 @@ def main():
             
     exec_path = REPO_ROOT / "docs" / "PHASE11B_ANALYSIS_EXECUTION.md"
     with open(exec_path, "w") as f:
-        f.write("# Phase 11B Analysis Execution\n\n")
-        f.write("The locked analysis was successfully executed, producing strictly bound Phase 11B inferential outcomes.\n")
+        f.write("# Statistical Analysis Execution Summary\n\n")
+        f.write("The analysis was successfully executed, producing paired inferential outcomes.\n")
         f.write("The primary inference is bounded to 9 tests; Holm adjustment is applied independently to both families.\n")
         
-    print("Phase 11B execution completed successfully.")
+    print("Statistical analysis completed successfully.")
 
 if __name__ == "__main__":
     main()

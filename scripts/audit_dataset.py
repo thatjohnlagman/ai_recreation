@@ -1,13 +1,11 @@
 """
 scripts/audit_dataset.py
-Phase 3 — Full chunked dataset audit + 300k working-sample extraction.
+Dataset audit and stratified working-sample extraction from raw CSE-CIC-IDS2018 CSVs.
 
 Strategy:
     Two-pass approach:
-    Pass 1 — Audit (count valid rows, schema, class distribution). Can be skipped if file_stats.json exists.
-    Pass 2 — Streaming exact per-stratum hypergeometric sampling.
-             Maintains remaining population and quota per stratum.
-             Selects exact allocations chunk-by-chunk using hypergeometric distribution.
+    Pass 1 — Audit: Count valid rows, inspect schema, and calculate class distribution.
+    Pass 2 — Sampling: Streaming hypergeometric sampling across traffic classes.
 
 Produces:
     data/manifests/raw_files.csv
@@ -455,7 +453,7 @@ def write_outputs(
 def main() -> None:
     t_start = time.time()
     print("=" * 70)
-    print("PHASE 3 — Dataset Audit + Working Sample Extraction")
+    print("Dataset Audit & Stratified Sample Extraction")
     print("=" * 70)
 
     csv_files = sorted(RAW_DIR.glob("*.csv"))
@@ -510,7 +508,7 @@ def main() -> None:
     )
 
     elapsed = time.time() - t_start
-    print(f"\n✓ Phase 3 complete in {elapsed:.1f}s ({elapsed / 60:.1f} min)")
+    print(f"\n✓ Dataset audit and extraction complete in {elapsed:.1f}s ({elapsed / 60:.1f} min)")
     print("  Next: python scripts/preprocess_dataset.py")
 
 

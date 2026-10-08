@@ -244,7 +244,7 @@ def reject_unexpected_artifacts(inv_hashes, eval_dir, repo_root):
             if rel not in inv_hashes:
                 if "quarantine_" in rel or "_quarantined_" in rel:
                     continue
-                raise ValueError(f"Unexpected artifact not in Phase 10D inventory: {rel}")
+                raise ValueError(f"Unexpected artifact not in evaluation inventory: {rel}")
                 
     staging = list(eval_dir.glob(".staging*"))
     check_eq(len(staging), 0, "Staging directories found")

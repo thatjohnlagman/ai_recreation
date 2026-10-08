@@ -1,5 +1,5 @@
 """
-Phase 10A Training-Derived Runtime Pilot.
+Training-Derived Runtime Pilot.
 
 Timing and resource measurements use ONLY training-partition data.
 No evaluation, crafting, or measurement records are accessed.

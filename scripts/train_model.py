@@ -1,6 +1,6 @@
 """
 scripts/train_model.py
-Phase 5 — Model Training (Frozen Random Forest)
+Model Training: Train baseline Random Forest on X_train.
 
 Produces:
     artifacts/models/frozen_rf.joblib
@@ -89,7 +89,7 @@ def plot_learning_curve(sizes: list[int], metrics: list[dict], out_path: Path):
     plt.plot(sizes, f1, marker='d', label="F1-Score")
     plt.plot(sizes, prauc, marker='x', label="PR-AUC")
     
-    plt.title("Random Forest OOB Performance by Training Set Size (Phase 5)")
+    plt.title("Random Forest OOB Performance by Training Set Size")
     plt.xlabel("Number of Training Records")
     plt.ylabel("Score")
     plt.ylim([0.8, 1.0])
@@ -104,7 +104,7 @@ def train() -> None:
     set_global_seeds(rf_cfg["random_state"])
 
     print("=" * 70)
-    print("PHASE 5 — Training Frozen Random Forest & Learning Curve")
+    print("Training Baseline Random Forest & Learning Curve")
     print("=" * 70)
 
     # 1. Load the sub-training partition ONLY
@@ -190,7 +190,7 @@ def train() -> None:
     fig_path = REPORTS_DIR / "learning_curve.png"
     plot_learning_curve(sizes, metrics_log, fig_path)
     
-    report_md = f"""# Phase 5 Learning Curve Report
+    report_md = f"""# Model Training & Learning Curve Report
     
 ## Frozen Configuration
 * `n_estimators`: {rf_cfg['n_estimators']}
@@ -223,9 +223,9 @@ As training size increases from 25% ({sizes[0]:,}) to 100% ({sizes[-1]:,}), we o
         
     peak_ram = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1048576 if sys.platform == "darwin" else 1024)
     elapsed = time.time() - t0
-    print(f"\n✓ Phase 5 complete in {elapsed:.1f}s")
+    print(f"\n✓ Model training complete in {elapsed:.1f}s")
     print(f"  Peak RAM: {peak_ram:.1f} MB")
-    print("\n  Next: Validate reload consistency via tests.")
+    print("\n  Next: Calibrate defense parameters.")
 
 if __name__ == "__main__":
     train()

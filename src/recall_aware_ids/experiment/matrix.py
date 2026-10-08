@@ -17,8 +17,8 @@ class RunConfig:
 
 def generate_evaluation_matrix(configs_dir: Path) -> pd.DataFrame:
     """
-    Generates the deterministic evaluation matrix for Phase 10 and validates it
-    against the frozen configurations.
+    Generates the deterministic evaluation matrix and validates it
+    against the experiment configurations.
     """
     with open(configs_dir / "experiment.yaml") as f:
         exp_yaml = yaml.safe_load(f)

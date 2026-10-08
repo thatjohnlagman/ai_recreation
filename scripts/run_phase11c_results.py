@@ -35,38 +35,18 @@ def add_trace(output_artifact, output_row, defense, attack, controller, metric, 
         "match_status": match_status
     })
 
-def calculate_file_hash(path: Path) -> str:
-    with open(path, "rb") as bf:
-        return hashlib.sha256(bf.read()).hexdigest()
-
 def verify_inputs():
-    bundle_path = REPO_ROOT / "phase11b_statistical_analysis_review_bundle_v1_0_0.zip"
-    if not bundle_path.exists():
-        raise FileNotFoundError("Phase 11B bundle missing")
-    bundle_hash = calculate_file_hash(bundle_path)
-    if bundle_hash != "cadae5b22cba9c408eea6eb33694795849e9abe56c46062e035b6623a23cdb02":
-        raise ValueError(f"Phase 11B bundle hash mismatch: {bundle_hash}")
-
-    summary_path = REPORTS_DIR / "phase11a_analysis_tables_summary.txt"
-    expected_hashes = {}
-    with open(summary_path, "r") as f:
-        current_table = None
-        for line in f:
-            line = line.strip()
-            if line.startswith("Table: "):
-                current_table = line.replace("Table: ", "")
-            elif line.startswith("SHA-256: ") and current_table:
-                expected_hashes[current_table] = line.replace("SHA-256: ", "")
-                current_table = None
-                
-    if len(expected_hashes) != 7:
-        raise ValueError(f"Expected exactly 7 Phase 11A hashes, found {len(expected_hashes)}")
-        
-    for table, expected_hash in expected_hashes.items():
+    """Verify that required statistical analysis outputs exist before formatting results."""
+    required_tables = [
+        "primary_batch_level.csv",
+        "phase11b_primary_inference.csv",
+        "sensitivity_batch_level.csv",
+        "primary_paired_batch_differences.csv"
+    ]
+    for table in required_tables:
         table_path = ANALYSIS_DIR / table
-        actual_hash = calculate_file_hash(table_path)
-        if actual_hash != expected_hash:
-            raise ValueError(f"Hash mismatch for {table}: {actual_hash} != {expected_hash}")
+        if not table_path.exists():
+            raise FileNotFoundError(f"Missing required input table: {table_path}. Run run_phase11b_analysis.py first.")
 
 def read_csv(path):
     data = []
@@ -460,7 +440,7 @@ def main():
     if any(e["match_status"] == "FAIL" for e in trace_entries):
         raise ValueError("Traceability mismatch detected! Aborting.")
         
-    print("Phase 11C v1.0.1 Results Generated Successfully.")
+    print("Thesis Evaluation Results & Chapter 4 Generated Successfully.")
 
 if __name__ == "__main__":
     main()

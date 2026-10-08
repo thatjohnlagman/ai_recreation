@@ -160,12 +160,17 @@ class RecallAwareController:
         if self.pending_decision.batch_id != batch_id_int:
             raise ValueError(f"Pending decision exists for batch {self.pending_decision.batch_id}, but observations submitted for {batch_id_int}")
 
-        # Calculate values before modifying state (Atomicity)
+        # ---------------------------------------------------------------------
+        # Step 1: Update rolling observation window (sliding window)
+        # ---------------------------------------------------------------------
         proposed_window = collections.deque(self.window)
         proposed_window.append((batch_id_int, tp_int, fn_int))
         if len(proposed_window) > self.window_size:
             proposed_window.popleft()
 
+        # ---------------------------------------------------------------------
+        # Step 2: Calculate rolling recall: Recall = TP / (TP + FN) across window
+        # ---------------------------------------------------------------------
         window_tp_sum = sum(obs[1] for obs in proposed_window)
         window_fn_sum = sum(obs[2] for obs in proposed_window)
         total_obs = window_tp_sum + window_fn_sum
@@ -173,7 +178,12 @@ class RecallAwareController:
         zero_denominator = (total_obs == 0)
         rolling_recall = self.zero_division_value if zero_denominator else float(window_tp_sum) / float(total_obs)
 
-        # State transition
+        # ---------------------------------------------------------------------
+        # Step 3: Tri-state feedback logic:
+        #   - Red: Recall < Rcritical -> Rapid fast decay to suppress evasion
+        #   - Yellow: Recall < Rmin   -> Moderate slow decay
+        #   - Green: Healthy recall    -> Growth multiplier towards target
+        # ---------------------------------------------------------------------
         if rolling_recall < self.r_critical:
             state = "Red"
             multiplier = self.fast_decay
@@ -184,6 +194,9 @@ class RecallAwareController:
             state = "Green"
             multiplier = self.growth_factor
 
+        # ---------------------------------------------------------------------
+        # Step 4: Scale intensity and clip to bounds [intensity_min, intensity_max]
+        # ---------------------------------------------------------------------
         used_intensity = self.pending_decision.intensity
         unclipped_next_intensity = used_intensity * float(multiplier)
         clipped_next_intensity = float(np.clip(unclipped_next_intensity, self.intensity_min, self.intensity_max))

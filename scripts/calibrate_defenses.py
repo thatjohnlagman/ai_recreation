@@ -120,7 +120,7 @@ def run_calibration():
         "selected": {}
     }
     
-    phase8_success = True
+    calibration_success = True
     print(f"BASELINE: {results['baseline']}")
     
     X_val = X_cal.values.astype(np.float32)
@@ -170,7 +170,7 @@ def run_calibration():
     if not afp_valid:
         print("No valid AFP candidate found!")
         afp_selected = None
-        phase8_success = False
+        calibration_success = False
     else:
         afp_valid.sort(key=lambda x: (x["mean_epsilon_i"], x["epsilon_base"], x["alpha"]), reverse=True)
         afp_selected = afp_valid[0]
@@ -215,7 +215,7 @@ def run_calibration():
     if not rs_valid:
         print("No valid RS candidate found!")
         rs_selected = None
-        phase8_success = False
+        calibration_success = False
     else:
         rs_valid.sort(key=lambda x: x["sigma"], reverse=True)
         rs_selected = rs_valid[0]
@@ -262,7 +262,7 @@ def run_calibration():
     if not fs_valid:
         print("No valid FS candidate found!")
         fs_selected = None
-        phase8_success = False
+        calibration_success = False
     else:
         fs_valid.sort(key=lambda x: x["squeezing_intensity"], reverse=True)
         fs_selected = fs_valid[0]
@@ -292,9 +292,9 @@ def run_calibration():
         
     results["date_frozen"] = "REMAINS_UNSET"
     
-    results["phase8_success"] = phase8_success
+    results["calibration_success"] = calibration_success
     
-    if phase8_success:
+    if calibration_success:
         # Update defenses.yaml
         defenses_cfg["afp"]["epsilon_base"] = results["selected"]["afp"]["epsilon_base"]
         defenses_cfg["afp"]["alpha"] = results["selected"]["afp"]["alpha"]
@@ -317,15 +317,15 @@ def run_calibration():
     # Save markdown report
     md_path = PROJECT_ROOT / "artifacts" / "reports" / "defense_calibration.md"
     with open(md_path, "w") as f:
-        f.write("# Phase 8: Defense Calibration Report\n\n")
-        if phase8_success:
+        f.write("# Defense Calibration Report\n\n")
+        if calibration_success:
             f.write("## Selected Parameters\n")
             f.write(f"- **AFP**: epsilon_base={results['selected']['afp']['epsilon_base']}, alpha={results['selected']['afp']['alpha']} (Recall: {results['selected']['afp']['recall']})\n")
             f.write(f"- **RS**: sigma={results['selected']['rs']['sigma']} (Recall: {results['selected']['rs']['recall']})\n")
             f.write(f"- **FS**: squeezing_intensity={results['selected']['fs']['squeezing_intensity']} (Recall: {results['selected']['fs']['recall']})\n\n")
         else:
             f.write("## Calibration Failed\n")
-            f.write("No valid candidates found for one or more defenses. Phase 8 explicitly aborted.\n\n")
+            f.write("No valid candidates found for one or more defenses. Calibration aborted.\n\n")
             
         f.write("## Baseline Metrics\n")
         f.write(f"- Recall: {results['baseline']['recall']}\n\n")
@@ -336,8 +336,8 @@ def run_calibration():
         f.write(f"- `experiment.date_frozen`: {results['date_frozen']}\n")
         
     print("Calibration complete. Results saved to artifacts/reports/defense_calibration.json and artifacts/reports/defense_calibration.md")
-    if not phase8_success:
-        print("PHASE 8 CALIBRATION FAILED: Constraints not met.")
+    if not calibration_success:
+        print("CALIBRATION FAILED: Constraints not met.")
         sys.exit(1)
         
 if __name__ == "__main__":
