@@ -1,0 +1,27 @@
+# model.yaml
+# Random Forest IDS classifier configuration
+# Frozen before final evaluation — do NOT retrain after freezing.
+# Source: Springer paper (Ennaji et al. 2025/2026) for starting values;
+# thesis is authoritative on the classifier family and freeze requirement.
+
+random_forest:
+  n_estimators: 200
+  max_depth: 20
+  criterion: "gini"
+  n_jobs: 2             # Limited to 2 on M2/8GB per handoff — NOT -1
+  random_state: 42
+  class_weight: null    # No rebalancing — preserve natural distribution
+  # No SMOTE, undersampling, or oversampling per thesis methodology
+
+serialization:
+  model_path: "artifacts/models/frozen_rf.joblib"
+  hash_path: "artifacts/models/frozen_rf.sha256"
+  scaler_path: "artifacts/preprocessors/standard_scaler.joblib"
+  afp_profile_path: "artifacts/preprocessors/afp_benign_profile.parquet"
+  feature_names_path: "artifacts/preprocessors/feature_names.json"
+  feature_mask_path: "artifacts/preprocessors/feature_mask.json"
+
+baseline_outputs:
+  confusion_matrix_path: "artifacts/reports/baseline_confusion_matrix.json"
+  metrics_path: "artifacts/reports/baseline_metrics.json"
+  per_family_recall_path: "artifacts/reports/baseline_per_family_recall.csv"

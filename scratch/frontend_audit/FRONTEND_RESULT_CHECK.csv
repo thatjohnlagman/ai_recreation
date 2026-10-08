@@ -1,0 +1,6 @@
+page/component,displayed value,API/JS source,canonical artifact and row,expected value,aggregation/rounding,PASS/FAIL/UNVERIFIABLE
+Results Matrix,AFP Base Recall 80.26%,STATIC_C1_C7_MATRIX,phase11c_rq3_statistical_decisions.csv (afp base_mean),0.8022,Indiscriminate average vs rigorous pooling,FAIL
+Results Matrix,AFP C1 Recall 93.19%,STATIC_C1_C7_MATRIX,phase11c_rq3_statistical_decisions.csv (afp c1_mean),0.9319,Matches pooled C1 average,PASS
+Results Summary,Evasions Prevented 6465,STATIC_BENCHMARK_SUMMARY,None (Fake derivation),None,int(diff_r * 50000),FAIL
+Line Charts,Rolling Recall Line,results.js updateLineCharts(),None (Math.random()),None,Mock Generation,FAIL
+Operator Summary,Active Def Precision 100.00%,server.py get_evaluation_results(),None (Init default),None,Hardcoded 20000 TP / 0 FP,FAIL

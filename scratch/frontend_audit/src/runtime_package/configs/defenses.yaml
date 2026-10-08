@@ -1,0 +1,77 @@
+afp:
+  label: Adaptive Feature Poisoning
+  code_name: StudyDefinedAFP
+  intensity_parameter: epsilon_base
+  sigma_floor: 1.0e-06
+  epsilon_base_grid:
+  - 0.0001
+  - 0.0002
+  - 0.0003
+  - 0.0004
+  - 0.0005
+  alpha_grid:
+  - 0.5
+  # -------------------------------------------------------------------
+  # PRIMARY DEMO DEFENSE: Adaptive Feature Poisoning (AFP)
+  # This actively injects adversarial perturbation bounds (epsilon)
+  # directly into the packet features to confuse inbound ML attacks.
+  # -------------------------------------------------------------------
+  epsilon_base: 0.0003
+  
+  # The Recall-Aware Controller dynamically scales epsilon between these bounds!
+  intensity_min: 0.00003
+  intensity_max: 0.0003
+  noise_distribution: uniform
+  apply_to: feature_mask_eligible_numerical
+  eligible_feature_count: 63
+  protected_feature_count: 15
+  feature_mask_source: artifacts/preprocessors/feature_mask.json
+  alpha: 0.5
+randomized_smoothing:
+  label: Randomized Smoothing
+  code_name: StudyDefinedRandomizedSmoothing
+  intensity_parameter: sigma
+  ensemble_size: 11
+  tie_breaking: first_class
+  calibration_grid:
+    sigma:
+    - 0.0001
+    - 0.0002
+    - 0.0003
+    - 0.0004
+    - 0.0005
+  sigma: 0.0002
+  intensity_min: 0.0
+  intensity_max: 0.0002
+  apply_to: feature_mask_eligible_numerical
+  eligible_feature_count: 63
+  protected_feature_count: 15
+  feature_mask_source: artifacts/preprocessors/feature_mask.json
+  chunk_size: 100
+feature_squeezing:
+  label: Feature Squeezing
+  code_name: StudyDefinedFeatureSqueezing
+  intensity_parameter: squeezing_intensity
+  calibration_grid:
+    squeezing_intensity:
+    - 1
+    - 2
+    - 3
+    - 4
+    - 5
+    - 6
+  squeezing_intensity: 2
+  intensity_min: 0.0
+  intensity_max: 2
+  note: Multiplicative controller updates may not change d every batch due to int()
+    conversion
+  apply_to: feature_mask_eligible_numerical
+  eligible_feature_count: 63
+  protected_feature_count: 15
+  feature_mask_source: artifacts/preprocessors/feature_mask.json
+calibration:
+  rule: strongest_valid_perturbation
+  target_metric: recall
+  min_acceptable_recall: 0.8
+  max_invalid_fraction: 0.05
+  calibration_report: artifacts/reports/defense_calibration.md
