@@ -104,12 +104,31 @@ async function toggleLiveBenchmark() {
   
   if (useLiveBenchmark) {
     try {
+      // Force Recall-Aware mode on backend so chart always moves!
+      await fetch("/api/dashboard/set-mode", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "recall-aware" })
+      });
       await fetch("/api/dashboard/reset", { method: "POST" });
+      
+      // Clear feeds before starting live polling
+      baseFeedEvents = [];
+      raFeedEvents = [];
+      renderFeedTable("base", baseFeedEvents);
+      renderFeedTable("ra", raFeedEvents);
+      
       await fetchResults();
     } catch (e) {
       console.warn("Reset failed", e);
     }
   } else {
+    // Clear live feeds
+    baseFeedEvents = [];
+    raFeedEvents = [];
+    renderFeedTable("base", baseFeedEvents);
+    renderFeedTable("ra", raFeedEvents);
+    
     if (latestResultsData) {
       renderAll(latestResultsData);
     }
@@ -368,12 +387,12 @@ function updateComparisonColumns() {
 
   // Find Base arm and Recall-Aware arm for the selected defense
   const baseArm = matrixToUse.find(m => m.defense.toLowerCase() === defKey && m.mode.toLowerCase() === "base") || {
-    recall_str: "77.80%", precision_str: "100.00%", f1_str: "87.51%", intensity: "-", tp: 0, fn: 0
+    recall_str: "0.00%", precision_str: "0.00%", f1_str: "0.00%", intensity: "-", tp: 0, fn: 0
   };
 
   const raModeToSearch = useLiveBenchmark ? "recall-aware" : "c1";
   const raArm = matrixToUse.find(m => m.defense.toLowerCase() === defKey && m.mode.toLowerCase() === raModeToSearch) || {
-    recall_str: "89.40%", precision_str: "100.00%", f1_str: "94.40%", intensity: "-", state: "-", tp: 0, fn: 0
+    recall_str: "0.00%", precision_str: "0.00%", f1_str: "0.00%", intensity: "-", state: "-", tp: 0, fn: 0
   };
 
   const summaryItem = summaryToUse.find(s => s.defense.toLowerCase() === defKey) || {
@@ -702,7 +721,7 @@ function renderMatrixTable(data) {
     if (arm) {
       const stateClass = (arm.state || "").toLowerCase();
       html += `
-        <div style="width: 100%; text-align: center; font-weight: 800; font-size: 11px; margin-top: 4px; color: var(--text-primary);">${escapeHtml(arm.defense).toUpperCase()}</div>
+        
       `;
     } else {
       html += `<div style="text-align:center; padding: 20px 0; color:var(--text-muted); font-size:10px;">No data</div>`;
@@ -729,6 +748,9 @@ function renderSummaryTable(summary) {
 
   let html = "";
   summary.forEach(row => {
+    const isCurrent = row.defense.toLowerCase() === window.currentSelectedDefense;
+    if (!isCurrent) return;
+
     const isPositiveRec = row.delta_recall_num > 0;
     const deltaRecClass = isPositiveRec ? "positive" : (row.delta_recall_num < 0 ? "negative" : "neutral");
 
@@ -745,29 +767,28 @@ function renderSummaryTable(summary) {
     else if (stUpper.includes("BYPASS")) stateClass = "bypassed";
     else stateClass = "green";
 
-    const isCurrent = row.defense.toLowerCase() === currentSelectedDefense;
-    const rowHighlight = isCurrent ? "background: rgba(59, 130, 246, 0.05);" : "";
+    const rowHighlight = ""; // No highlight needed since it's only one row
 
     html += `
-      <tr style="${rowHighlight}; cursor: pointer;" onclick="handleSelectDefense('${row.defense.toLowerCase()}')">
-        <td style="font-weight: 700; font-size: 13px;">${escapeHtml(row.defense)}</td>
-        <td style="text-align: center; font-family: var(--font-mono, monospace); font-size: 11px;">
-           <span style="color: #3b82f6;">${row.base_prec}</span> / 
-           <span style="color: #8b5cf6;">${row.base_f1}</span> / 
-           <span style="color: #10b981;">${row.base_recall}</span>
+      <tr style="${rowHighlight}">
+        <td style="font-weight: 800; font-size: 14px;">${escapeHtml(row.defense).toUpperCase()}</td>
+        <td style="text-align: center; font-family: var(--font-mono, monospace); font-size: 13px;">
+           <span style="color: #3b82f6;">${escapeHtml(row.base_prec || "0.00%")}</span> / 
+           <span style="color: #8b5cf6;">${escapeHtml(row.base_f1 || "0.00%")}</span> / 
+           <span style="color: #10b981;">${escapeHtml(row.base_recall || "0.00%")}</span>
         </td>
-        <td style="text-align: center; font-family: var(--font-mono, monospace); font-size: 11px;">
-           <span style="color: #3b82f6; font-weight: 700;">${row.ra_prec}</span> / 
-           <span style="color: #8b5cf6; font-weight: 700;">${row.ra_f1}</span> / 
-           <span style="color: #10b981; font-weight: 700;">${row.ra_recall}</span>
+        <td style="text-align: center; font-family: var(--font-mono, monospace); font-size: 13px;">
+           <span style="color: #3b82f6; font-weight: 700;">${escapeHtml(row.ra_prec || "0.00%")}</span> / 
+           <span style="color: #8b5cf6; font-weight: 700;">${escapeHtml(row.ra_f1 || "0.00%")}</span> / 
+           <span style="color: #10b981; font-weight: 700;">${escapeHtml(row.ra_recall || "0.00%")}</span>
         </td>
-        <td style="text-align: center; font-family: var(--font-mono, monospace); font-size: 11px;">
-          <span class="delta-pill ${deltaPrecClass}" style="font-size: 9px; padding: 1px 3px;">${row.delta_prec}</span> / 
-          <span class="delta-pill ${deltaF1Class}" style="font-size: 9px; padding: 1px 3px;">${row.delta_f1}</span> / 
-          <span class="delta-pill ${deltaRecClass}" style="font-size: 9px; padding: 1px 3px;">${row.delta_recall}</span>
+        <td style="text-align: center; font-family: var(--font-mono, monospace); font-size: 13px;">
+          <span class="delta-pill ${deltaPrecClass}">${escapeHtml(row.delta_prec || "0.00%")}</span> / 
+          <span class="delta-pill ${deltaF1Class}">${escapeHtml(row.delta_f1 || "0.00%")}</span> / 
+          <span class="delta-pill ${deltaRecClass}">${escapeHtml(row.delta_recall || "0.00%")}</span>
         </td>
-        <td style="text-align: center;">
-          <span class="delta-pill ${evClass}">${escapeHtml(row.evasions_prevented)}</span>
+        <td style="text-align: center; font-family: var(--font-mono, monospace); font-size: 13px;">
+          <span class="delta-pill ${evClass}">${escapeHtml(row.evasions_prevented || "0")}</span>
         </td>
       </tr>
     `;
