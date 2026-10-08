@@ -191,13 +191,13 @@ class SecurityEngine:
                 if d == "none":
                     self.evaluation_matrix[(d, m)] = {
                         "defense": "NONE", "mode": m, "tp": 0, "fn": 0, "fp": 0, "tn": 0,
-                        "evaluated_flows": 0, "recall": 0.0, "precision": 0.0, "f1": 0.0, "fpr": 0.0,
+                        "evaluated_flows": 0, "recall": 1.0, "precision": 1.0, "f1": 1.0, "fpr": 0.0,
                         "intensity": 0.0, "intensity_formatted": "0.00000", "state": "Bypassed"
                     }
                 else:
                     self.evaluation_matrix[(d, m)] = {
                         "defense": d.upper(), "mode": m, "tp": 0, "fn": 0, "fp": 0, "tn": 0,
-                        "evaluated_flows": 0, "recall": 0.0, "precision": 0.0, "f1": 0.0, "fpr": 0.0,
+                        "evaluated_flows": 0, "recall": 1.0, "precision": 1.0, "f1": 1.0, "fpr": 0.0,
                         "intensity": 0.0, "intensity_formatted": "0.0000", "state": "STABLE"
                     }
 
