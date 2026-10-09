@@ -388,6 +388,18 @@ class SecurityEngine:
         self.recall = None
         self.fpr = None
         
+        # Reset the evaluation matrix and chart histories to clean state
+        self._init_evaluation_results()
+        self.defense_histories = {
+            "afp": {"labels": deque([], maxlen=20), "recall": deque([], maxlen=20), "intensity": deque([], maxlen=20)},
+            "rs": {"labels": deque([], maxlen=20), "recall": deque([], maxlen=20), "intensity": deque([], maxlen=20)},
+            "fs": {"labels": deque([], maxlen=20), "recall": deque([], maxlen=20), "intensity": deque([], maxlen=20)},
+            "none": {"labels": deque([], maxlen=20), "recall": deque([], maxlen=20), "intensity": deque([], maxlen=20)},
+        }
+        self.history_labels.clear()
+        self.history_recall.clear()
+        self.history_intensity.clear()
+        
         if self.controller is not None:
             self.controller.reset()
             self.batch_id = 0
