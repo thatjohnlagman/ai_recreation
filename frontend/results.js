@@ -1072,21 +1072,21 @@ function renderResearchCharts() {
     });
   }
 
-  // 1. Base vs C1 Recall
+  // 1. Base vs RA Recall
   createBarChart('chart-base-c1-recall', 'bar', RESEARCH_CHART_DATA.base_vs_c1.labels, [
     { label: 'Base', data: RESEARCH_CHART_DATA.base_vs_c1.base_recall, backgroundColor: 'rgba(59, 130, 246, 0.8)' },
-    { label: '+ RA (C1)', data: RESEARCH_CHART_DATA.base_vs_c1.c1_recall, backgroundColor: 'rgba(16, 185, 129, 0.8)' }
+    { label: '+ RA', data: RESEARCH_CHART_DATA.base_vs_c1.c1_recall, backgroundColor: 'rgba(16, 185, 129, 0.8)' }
   ], 100);
 
-  // 2. Base vs C1 F1
+  // 2. Base vs RA F1
   createBarChart('chart-base-c1-f1', 'bar', RESEARCH_CHART_DATA.base_vs_c1.labels, [
     { label: 'Base', data: RESEARCH_CHART_DATA.base_vs_c1.base_f1, backgroundColor: 'rgba(59, 130, 246, 0.8)' },
-    { label: '+ RA (C1)', data: RESEARCH_CHART_DATA.base_vs_c1.c1_f1, backgroundColor: 'rgba(139, 92, 246, 0.8)' }
+    { label: '+ RA', data: RESEARCH_CHART_DATA.base_vs_c1.c1_f1, backgroundColor: 'rgba(139, 92, 246, 0.8)' }
   ], 100);
 
   // 3. Precision Change
   createBarChart('chart-prec-diff', 'bar', RESEARCH_CHART_DATA.base_vs_c1.labels, [
-    { label: 'C1 - Base Diff', data: RESEARCH_CHART_DATA.base_vs_c1.prec_diff, backgroundColor: 'rgba(239, 68, 68, 0.8)' }
+    { label: 'RA - Base Diff', data: RESEARCH_CHART_DATA.base_vs_c1.prec_diff, backgroundColor: 'rgba(239, 68, 68, 0.8)' }
   ], null);
 
   // 4. Sensitivity C1-C7
