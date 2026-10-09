@@ -1089,13 +1089,7 @@ function renderResearchCharts() {
     { label: 'C1 - Base Diff', data: RESEARCH_CHART_DATA.base_vs_c1.prec_diff, backgroundColor: 'rgba(239, 68, 68, 0.8)' }
   ], null);
 
-  // 4. Scenario Recall
-  createBarChart('chart-afp-scenario', 'bar', RESEARCH_CHART_DATA.afp_scenario.labels, [
-    { label: 'AFP Base', data: RESEARCH_CHART_DATA.afp_scenario.base_recall, backgroundColor: 'rgba(59, 130, 246, 0.8)' },
-    { label: 'AFP + RA', data: RESEARCH_CHART_DATA.afp_scenario.c1_recall, backgroundColor: 'rgba(16, 185, 129, 0.8)' }
-  ], 100);
-
-  // 5. Sensitivity C1-C7
+  // 4. Sensitivity C1-C7
   createBarChart('chart-sensitivity', 'line', RESEARCH_CHART_DATA.sensitivity_recall.labels, [
     { label: 'AFP', data: RESEARCH_CHART_DATA.sensitivity_recall.afp, borderColor: 'rgba(59, 130, 246, 1)', backgroundColor: 'rgba(59, 130, 246, 1)', fill: false, tension: 0.1 },
     { label: 'Feature Squeezing (FS)', data: RESEARCH_CHART_DATA.sensitivity_recall.fs, borderColor: 'rgba(16, 185, 129, 1)', backgroundColor: 'rgba(16, 185, 129, 1)', fill: false, tension: 0.1 },
