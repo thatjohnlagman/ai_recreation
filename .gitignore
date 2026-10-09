@@ -8,5 +8,7 @@ __pycache__/
 datasets/demo/*_20k.csv
 operator_token.txt
 .operator_token
-*.zip
 create_package.py
+
+runtime_state/*.sqlite3*
+scratch/
