@@ -368,6 +368,16 @@ function renderAll(data) {
 
   // Render Section 4: Takeaways
   renderTakeaways(data.takeaways || []);
+  
+  const panel = document.getElementById("static-research-charts-panel");
+  if (panel) {
+    if (!useLiveBenchmark) {
+      panel.style.display = "block";
+      renderResearchCharts();
+    } else {
+      panel.style.display = "none";
+    }
+  }
 }
 
 function updateComparisonColumns() {
@@ -983,4 +993,112 @@ function exportResultsCSV() {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+const RESEARCH_CHART_DATA = {
+  "base_vs_c1": {
+    "labels": ["AFP", "Feature Squeezing (FS)", "Randomized Smoothing (RS)"],
+    "base_recall": [80.23, 92.68, 80.57],
+    "c1_recall": [93.19, 93.45, 93.21],
+    "base_f1": [88.94, 96.11, 89.16],
+    "c1_f1": [96.25, 96.47, 96.27],
+    "prec_diff": [-0.36, -0.13, -0.36]
+  },
+  "afp_scenario": {
+    "labels": ["Silent Probing", "Surrogate Transfer", "Decision Boundary"],
+    "base_recall": [80.66, 80.62, 79.40],
+    "c1_recall": [93.70, 93.64, 92.25]
+  },
+  "sensitivity_recall": {
+    "labels": ["C1", "C2", "C3", "C4", "C5", "C6", "C7"],
+    "afp": [93.18, 93.17, 93.20, 90.07, 93.39, 92.56, 93.40],
+    "fs": [93.46, 93.47, 93.43, 92.72, 93.48, 93.46, 93.46],
+    "rs": [93.21, 93.23, 93.23, 90.12, 93.40, 92.61, 93.43]
+  }
+};
+
+let researchChartsInstance = {};
+
+function renderResearchCharts() {
+  const commonOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { labels: { color: '#94a3b8', font: { size: 10, family: 'var(--font-sans)' } } },
+      tooltip: {
+        backgroundColor: 'rgba(15, 23, 42, 0.9)',
+        titleColor: '#fff',
+        bodyColor: '#cbd5e1',
+        borderColor: 'rgba(255,255,255,0.1)',
+        borderWidth: 1,
+        padding: 10,
+        callbacks: {
+          label: function(context) {
+            let label = context.dataset.label || '';
+            if (label) { label += ': '; }
+            if (context.parsed.y !== null) { label += context.parsed.y + (context.chart.canvas.id === 'chart-prec-diff' ? ' pp' : '%'); }
+            return label;
+          }
+        }
+      }
+    },
+    scales: {
+      y: {
+        grid: { color: 'rgba(255, 255, 255, 0.05)', drawBorder: false },
+        ticks: { color: '#64748b', font: { size: 10 } }
+      },
+      x: {
+        grid: { display: false, drawBorder: false },
+        ticks: { color: '#64748b', font: { size: 10 } }
+      }
+    }
+  };
+
+  function createBarChart(ctxId, type, labels, datasets, yMax) {
+    const ctx = document.getElementById(ctxId);
+    if (!ctx) return;
+    if (researchChartsInstance[ctxId]) researchChartsInstance[ctxId].destroy();
+    
+    let options = JSON.parse(JSON.stringify(commonOptions));
+    if (yMax) {
+      options.scales.y.max = yMax;
+      options.scales.y.min = 0;
+    }
+
+    researchChartsInstance[ctxId] = new Chart(ctx, {
+      type: type,
+      data: { labels: labels, datasets: datasets },
+      options: options
+    });
+  }
+
+  // 1. Base vs C1 Recall
+  createBarChart('chart-base-c1-recall', 'bar', RESEARCH_CHART_DATA.base_vs_c1.labels, [
+    { label: 'Base', data: RESEARCH_CHART_DATA.base_vs_c1.base_recall, backgroundColor: 'rgba(59, 130, 246, 0.8)' },
+    { label: '+ RA (C1)', data: RESEARCH_CHART_DATA.base_vs_c1.c1_recall, backgroundColor: 'rgba(16, 185, 129, 0.8)' }
+  ], 100);
+
+  // 2. Base vs C1 F1
+  createBarChart('chart-base-c1-f1', 'bar', RESEARCH_CHART_DATA.base_vs_c1.labels, [
+    { label: 'Base', data: RESEARCH_CHART_DATA.base_vs_c1.base_f1, backgroundColor: 'rgba(59, 130, 246, 0.8)' },
+    { label: '+ RA (C1)', data: RESEARCH_CHART_DATA.base_vs_c1.c1_f1, backgroundColor: 'rgba(139, 92, 246, 0.8)' }
+  ], 100);
+
+  // 3. Precision Change
+  createBarChart('chart-prec-diff', 'bar', RESEARCH_CHART_DATA.base_vs_c1.labels, [
+    { label: 'C1 - Base Diff', data: RESEARCH_CHART_DATA.base_vs_c1.prec_diff, backgroundColor: 'rgba(239, 68, 68, 0.8)' }
+  ], null);
+
+  // 4. Scenario Recall
+  createBarChart('chart-afp-scenario', 'bar', RESEARCH_CHART_DATA.afp_scenario.labels, [
+    { label: 'AFP Base', data: RESEARCH_CHART_DATA.afp_scenario.base_recall, backgroundColor: 'rgba(59, 130, 246, 0.8)' },
+    { label: 'AFP + RA', data: RESEARCH_CHART_DATA.afp_scenario.c1_recall, backgroundColor: 'rgba(16, 185, 129, 0.8)' }
+  ], 100);
+
+  // 5. Sensitivity C1-C7
+  createBarChart('chart-sensitivity', 'line', RESEARCH_CHART_DATA.sensitivity_recall.labels, [
+    { label: 'AFP', data: RESEARCH_CHART_DATA.sensitivity_recall.afp, borderColor: 'rgba(59, 130, 246, 1)', backgroundColor: 'rgba(59, 130, 246, 1)', fill: false, tension: 0.1 },
+    { label: 'Feature Squeezing (FS)', data: RESEARCH_CHART_DATA.sensitivity_recall.fs, borderColor: 'rgba(16, 185, 129, 1)', backgroundColor: 'rgba(16, 185, 129, 1)', fill: false, tension: 0.1 },
+    { label: 'Randomized Smoothing (RS)', data: RESEARCH_CHART_DATA.sensitivity_recall.rs, borderColor: 'rgba(239, 68, 68, 1)', backgroundColor: 'rgba(239, 68, 68, 1)', fill: false, tension: 0.1 }
+  ], null);
 }
